@@ -165,7 +165,7 @@ status_t dp_image_small(dp_read_fn read, void *ctx, uint64_t size, uint8_t **out
     /* The small file: the header, the program headers right after it,
      * then each note where its program header now says. */
     uint64_t at = sizeof(eh) + eh.phnum * sizeof(struct phdr);
-    uint8_t *small = malloc(at + notes);
+    uint8_t *small = jam_malloc(at + notes);
     if (!small)
         return ERR_NO_MEMORY;
     for (unsigned i = 0; i < eh.phnum && st == OK; i++) {
@@ -177,7 +177,7 @@ status_t dp_image_small(dp_read_fn read, void *ctx, uint64_t size, uint8_t **out
         at += ph[i].filesz;
     }
     if (st != OK) {
-        free(small);
+        jam_free(small);
         return st;
     }
     eh.phoff = sizeof(eh);
@@ -196,7 +196,7 @@ status_t dp_image_wants(dp_read_fn read, void *ctx, uint64_t size, struct wants 
     status_t st = dp_image_small(read, ctx, size, &small, &n);
     if (st == OK) {
         st = wants_read(small, n, w);
-        free(small);
+        jam_free(small);
     }
     return st;
 }
@@ -273,14 +273,14 @@ static status_t read_allow(char **out)
     st = file_stat(&f, &size, NULL);
     if (st == OK && size > DP_ALLOW_MAX)
         st = ERR_OUT_OF_RANGE;
-    char *text = st == OK ? malloc(size + 1) : NULL;
+    char *text = st == OK ? jam_malloc(size + 1) : NULL;
     if (st == OK && !text)
         st = ERR_NO_MEMORY;
     if (st == OK)
         st = file_read(&f, 0, text, size, &got);
     file_close(&f);
     if (st != OK) {
-        free(text);
+        jam_free(text);
         return st;
     }
     text[got] = '\0';   /* shorter than its stat said: what was there */
@@ -305,7 +305,7 @@ status_t dp_allow_hash(const char *path, char hex[DP_HEX_LEN + 1])
         }
         line = nl ? nl + 1 : NULL;
     }
-    free(all);
+    jam_free(all);
     return st;
 }
 
@@ -317,10 +317,10 @@ static status_t table_hashes(struct jfile *f, uint64_t pages, handle_t *out)
 {
     uint64_t bytes = pages * SHA256_BYTES;
     handle_t t;
-    uint8_t *chunk = malloc(TABLE_CHUNK);
+    uint8_t *chunk = jam_malloc(TABLE_CHUNK);
     status_t st = chunk ? jam_vmo_create(bytes, 0, &t) : ERR_NO_MEMORY;
     if (st != OK) {
-        free(chunk);
+        jam_free(chunk);
         return st;
     }
     for (uint64_t at = 0; at < bytes && st == OK; at += TABLE_CHUNK) {
@@ -331,7 +331,7 @@ static status_t table_hashes(struct jfile *f, uint64_t pages, handle_t *out)
         if (st == OK)
             st = jam_vmo_write(t, at, chunk, len);
     }
-    free(chunk);
+    jam_free(chunk);
     if (st != OK) {
         jam_handle_close(t);
         return st;

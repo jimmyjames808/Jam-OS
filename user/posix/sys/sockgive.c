@@ -159,7 +159,7 @@ static long given_read(const struct posixfds_fd *rec, const void *data, struct s
 
 static struct sock *sock_from_given(const struct sock_given *g)
 {
-    struct sock *s = calloc(1, sizeof(*s));
+    struct sock *s = jam_calloc(1, sizeof(*s));
     if (!s)
         return NULL;
     s->type = (int)g->type;
@@ -218,14 +218,14 @@ long sock_adopt(const struct posixfds_fd *rec, const void *data, const handle_t 
     if (st != OK) {
         for (unsigned i = 0; i < 4; i++)
             jam_handle_close(hs[i]);
-        free(s);
+        jam_free(s);
         return r ? r : lx_err(st);
     }
     sock_state_set(s, g.type == SOCK_STREAM ? SK_STREAM : SK_DGRAM);
     *out = fd_new(&sock_ops, rec->status, s);
     if (!*out) {
         net_close(&s->ns);
-        free(s);
+        jam_free(s);
         return -ENOMEM;
     }
     if (g.type == SOCK_STREAM)
@@ -249,7 +249,7 @@ long sock_listener_adopt(const struct posixfds_fd *rec, const void *data, const 
     *out = fd_new(&sock_ops, rec->status, s);
     if (!*out) {
         net_listener_close(&s->l);
-        free(s);
+        jam_free(s);
         return -ENOMEM;
     }
     return 0;

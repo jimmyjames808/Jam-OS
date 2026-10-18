@@ -748,12 +748,12 @@ status_t ns_prepare_in(const char *const *grants, struct ns_out *o)
 
 status_t ns_prepare(const char *const *grants, struct ns_out **out)
 {
-    struct ns_out *o = malloc(sizeof(*o));
+    struct ns_out *o = jam_malloc(sizeof(*o));
     if (!o)
         return ERR_NO_MEMORY;
     status_t st = ns_prepare_in(grants, o);
     if (st != OK) {
-        free(o);
+        jam_free(o);
         return st;
     }
     *out = o;
@@ -771,7 +771,7 @@ void ns_prepared_drop(struct ns_out *o)
 {
     if (o)
         ns_prepared_close(o);
-    free(o);
+    jam_free(o);
 }
 
 status_t ns_send_in(handle_t to, uint32_t kind, struct ns_out *o)

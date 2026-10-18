@@ -83,10 +83,10 @@ static struct memobj *obj_of(struct fd_desc *d)
 
 struct memobj *memobj_new(const char *name, bool sealing, long *err)
 {
-    struct memobj *m = calloc(1, sizeof(*m));
+    struct memobj *m = jam_calloc(1, sizeof(*m));
     status_t st = m ? jam_vmo_create(0, VMO_KEEP_PAGES, &m->vmo) : ERR_NO_MEMORY;
     if (st != OK) {
-        free(m);
+        jam_free(m);
         *err = lx_err(st);
         return NULL;
     }
@@ -108,7 +108,7 @@ void memobj_unref(struct memobj *m)
     if (__atomic_sub_fetch(&m->refs, 1, __ATOMIC_ACQ_REL))
         return;
     jam_handle_close(m->vmo);
-    free(m);
+    jam_free(m);
 }
 
 uint64_t memobj_size(struct memobj *m)
@@ -309,7 +309,7 @@ static long memfd_give(struct fd_desc *d, struct fd_given *out)
     long r = 0;
     void *data = kind_data(&w, sizeof(w), &r);
     if (!r && (r = vmo_for(d, &out->handles[0])))
-        free(data);
+        jam_free(data);
     if (r)
         return r;
     out->kind = POSIXFDS_MEMFD;
@@ -376,7 +376,7 @@ static struct memobj *obj_from_wire(handle_t vmo, const struct memfd_wire *w)
     struct memobj *m = NULL;
     if (jam_vmo_get_size(vmo, &vmo_size) == OK && !w->reserved && !(w->seals & ~SEALS_KNOWN) &&
         w->size <= vmo_size && strnlen(w->name, NAME_LEN) < NAME_LEN)
-        m = calloc(1, sizeof(*m));
+        m = jam_calloc(1, sizeof(*m));
     if (!m) {
         jam_handle_close(vmo);
         return NULL;

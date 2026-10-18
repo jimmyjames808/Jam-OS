@@ -225,7 +225,7 @@ static long program(const char *abs, struct program *p)
  * r->search (a PATH: ':'-separated; an empty part is the directory dir). */
 static long find_program(const struct jam_spawn_req *r, const char *dir, struct program *prog)
 {
-    char *abs = malloc(PATH_MAX), *part = malloc(PATH_MAX);
+    char *abs = jam_malloc(PATH_MAX), *part = jam_malloc(PATH_MAX);
     long e = abs && part ? 0 : -ENOMEM;
     if (!e && (!r->search || strchr(r->path, '/'))) {
         e = spawn_absolute(r->path, dir, abs);
@@ -252,8 +252,8 @@ static long find_program(const struct jam_spawn_req *r, const char *dir, struct 
         if (e && denied)
             e = -EACCES;
     }
-    free(abs);
-    free(part);
+    jam_free(abs);
+    jam_free(part);
     return e;
 }
 
@@ -330,7 +330,7 @@ static int count(char *const *v)
 static status_t pack_strings(int argc, char *const *argv, char *const *envp, uint8_t **out,
                              uint32_t *len)
 {
-    uint8_t *b = malloc(EXEC_STRINGS_BYTES);
+    uint8_t *b = jam_malloc(EXEC_STRINGS_BYTES);
     uint32_t n = 0, count = 0;
     if (!b)
         return ERR_NO_MEMORY;
@@ -339,7 +339,7 @@ static status_t pack_strings(int argc, char *const *argv, char *const *envp, uin
         for (int i = 0; v && v[i] && (pass || i < argc); i++, count++) {
             size_t l = strlen(v[i]) + 1;
             if (l > EXEC_STRINGS_BYTES - n || count == EXEC_STRINGS_MAX) {
-                free(b);
+                jam_free(b);
                 return ERR_OUT_OF_RANGE;
             }
             memcpy(b + n, v[i], l);
@@ -372,7 +372,7 @@ static status_t start_sealed(const struct jam_spawn_req *r, const struct program
     if (st == OK)
         st = jam_channel_create(sigch, &theirs);
     if (st != OK) {
-        free(strings);
+        jam_free(strings);
         if (ours_job)
             jam_handle_close(ours_job);
         return st;
@@ -388,7 +388,7 @@ static status_t start_sealed(const struct jam_spawn_req *r, const struct program
         image = HANDLE_INVALID;
     st = exec_prog_start(p->sealed, (uint16_t)count(r->argv), strings, len, ours_job, theirs,
                          &image, image ? 1 : 0, proc, job);   /* ours_job, theirs, image: init's */
-    free(strings);
+    jam_free(strings);
     if (st != OK)
         jam_handle_close(*sigch);
     return st;
@@ -556,12 +556,12 @@ static long exec_replace(const struct jam_spawn_req *r, struct spawnfd *t,
 {
     static const char *const no_env[] = { NULL };
     handle_t thread = HANDLE_INVALID, sig = HANDLE_INVALID, ours = startup_handle(SR_SIGNALS);
-    char *exe = malloc(PATH_MAX);
+    char *exe = jam_malloc(PATH_MAX);
     long e = exe ? thread_apply(0, dup_thread, &thread) : -ENOMEM;
     if (!e && ours)
         e = lx_err(jam_handle_duplicate(ours, RIGHT_SAME, &sig));
     if (e) {
-        free(exe);
+        jam_free(exe);
         if (thread)
             jam_handle_close(thread);
         return e;
@@ -588,7 +588,7 @@ static long exec_replace(const struct jam_spawn_req *r, struct spawnfd *t,
     if (j.held)
         sig_thread_release();
     jam_handle_close(thread);
-    free(exe);
+    jam_free(exe);
     return j.err ? j.err : -spawn_errno(st);
 }
 
@@ -608,7 +608,7 @@ static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
         return ENOSYS;   /* no scheduling policies to give */
     struct spawnfd *t = NULL;
     struct posixfds_out ho = { 0 };
-    struct program prog = { malloc(PATH_MAX), HANDLE_INVALID, 0, HANDLE_INVALID,
+    struct program prog = { jam_malloc(PATH_MAX), HANDLE_INVALID, 0, HANDLE_INVALID,
                             HANDLE_INVALID };
     long e = prog.name ? spawnfd_begin(&t) : -ENOMEM;
     if (!e)
@@ -631,7 +631,7 @@ static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
         jam_handle_close(prog.sealed);   /* started, or init drops it */
     if (prog.handover)
         jam_handle_close(prog.handover);
-    free(prog.name);
+    jam_free(prog.name);
     if (ec)
         return ec;
     e = lx_child_add(c.proc, c.sigch, c.job, c.pid, s.pgid ? (int32_t)s.pgid : c.pid,

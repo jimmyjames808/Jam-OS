@@ -98,7 +98,7 @@ static void free_event(struct fsw_chan *q, struct fsw_event *e)
     if (e == &q->over)
         q->over_queued = false;
     else
-        free(e);
+        jam_free(e);
 }
 
 /* Queue the channel's one IN_Q_OVERFLOW, unless it is queued already. */
@@ -126,7 +126,7 @@ static void queue(struct fsw *w, uint32_t c, uint32_t id, uint32_t mask, uint32_
         overflow(q);
         return;
     }
-    struct fsw_event *e = malloc(sizeof(*e) + len);
+    struct fsw_event *e = jam_malloc(sizeof(*e) + len);
     if (!e) {
         overflow(q);
         return;

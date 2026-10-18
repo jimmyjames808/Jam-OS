@@ -87,7 +87,7 @@ static void set_free(void *p)
 {
     struct pollset *ps = p;
     netwait_destroy(ps->w);   /* its port, and every binding with it */
-    free(ps);
+    jam_free(ps);
     self_set = NULL;
 }
 
@@ -116,16 +116,16 @@ static struct pollset *set_get(void)
     if (self_set)
         return self_set;
     pthread_once(&key_once, key_make);
-    struct pollset *ps = calloc(1, sizeof(*ps));
+    struct pollset *ps = jam_calloc(1, sizeof(*ps));
     if (!ps || !key_ok || netwait_create(NETWAIT_MAX, &ps->w) != OK) {
-        free(ps);
+        jam_free(ps);
         return NULL;
     }
     for (uint32_t i = 0; i < NETWAIT_MAX; i++)
         ps->places[i].item = NO_ITEM;
     if (pthread_setspecific(set_key, ps) != 0) {   /* freed at the thread's exit, or never made */
         netwait_destroy(ps->w);
-        free(ps);
+        jam_free(ps);
         return NULL;
     }
     self_set = ps;

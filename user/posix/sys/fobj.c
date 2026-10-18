@@ -118,7 +118,7 @@ static void settle(struct fobj *fresh, struct fobj **out)
     lock_give(&objs_lock);
     if (share) {
         file_close(&fresh->jf);
-        free(fresh);
+        jam_free(fresh);
         fresh = o;
     }
     *out = fresh;
@@ -130,7 +130,7 @@ static void settle(struct fobj *fresh, struct fobj **out)
 static long fresh_obj(handle_t ch, handle_t buf, uint32_t ff, const char *m, uint32_t features,
                       struct fobj **out)
 {
-    struct fobj *o = calloc(1, sizeof(*o));
+    struct fobj *o = jam_calloc(1, sizeof(*o));
     if (!o) {
         jam_handle_close(ch);
         jam_handle_close(buf);
@@ -139,7 +139,7 @@ static long fresh_obj(handle_t ch, handle_t buf, uint32_t ff, const char *m, uin
     bool known = m[0] != '\0';
     status_t st = jf_map(ch, buf, ff, known, &o->jf, &o->size, &o->id);
     if (st != OK) {
-        free(o);
+        jam_free(o);
         return lx_err(st);
     }
     o->refs = 1;
@@ -345,5 +345,5 @@ void fobj_put(struct fobj *o)
         return;
     if (o->jf.ch)
         file_close(&o->jf);
-    free(o);
+    jam_free(o);
 }

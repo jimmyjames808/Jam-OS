@@ -39,7 +39,9 @@
  * sig_fault_begin on the faulting thread, which reads the record by the
  * thread-local pointer alone and takes sig_lock unless the thread holds
  * it itself (`holder`, marked by every take), and sig_action sets or
- * removes the entry as the fault signals gain or lose handlers. */
+ * removes the entry as the fault signals gain or lose handlers. A fault
+ * on a thread holding sig_lock or the layer heap's lock (heap.c) runs no
+ * handler: it is the kernel's kill. */
 #include <stdlib.h>
 #include <errno.h>
 #include <signal.h>
@@ -470,7 +472,7 @@ void sig_thread_begin(handle_t handle, uint32_t tid, uint64_t mask)
     if (t)
         memset(t, 0, sizeof(*t));
     else
-        t = calloc(1, sizeof(*t));
+        t = jam_calloc(1, sizeof(*t));
     if (!t)
         return;   /* no memory: this thread gets no signals (none is routed to it) */
     t->handle = handle;
@@ -1037,7 +1039,8 @@ bool sig_fault_begin(int sig, struct sig_act_io *act, uint64_t *was)
     if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE) || sig_on_signal_thread())
         return false;
     struct sig_thread *t = mine_now();
-    if (!t || __atomic_load_n(&holder, __ATOMIC_RELAXED) == thread_pointer())
+    if (!t || __atomic_load_n(&holder, __ATOMIC_RELAXED) == thread_pointer() ||
+        heap_holder() == thread_pointer())   /* a handler's calls would wait for it */
         return false;
     take();
     struct sig_act a = acts[sig];

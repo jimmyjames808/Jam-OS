@@ -88,7 +88,7 @@ static void drop_held(struct jwl_conn *c)
         struct jwl_held *b = c->held;
         c->held = b->next;
         close_handles(b->h, b->nh);
-        free(b);
+        jam_free(b);
     }
     c->held_tail = NULL;
     c->held_bytes = 0;
@@ -163,13 +163,13 @@ static status_t check_tables(const struct jwl_conn_config *cfg)
 status_t jwl_conn_create(const struct jwl_conn_config *cfg, struct jwl_conn **out)
 {
     status_t st = check_tables(cfg);
-    struct jwl_conn *c = st == OK ? calloc(1, sizeof(*c)) : NULL;
+    struct jwl_conn *c = st == OK ? jam_calloc(1, sizeof(*c)) : NULL;
     if (st == OK && !c)
         st = ERR_NO_MEMORY;
     if (st == OK)
         st = jwl_map_init(&c->map, cfg->side, cfg->display, cfg->known, cfg->nknown);
     if (st != OK) {
-        free(c);
+        jam_free(c);
         jam_handle_close(cfg->ch);
         return st;
     }
@@ -188,7 +188,7 @@ void jwl_conn_destroy(struct jwl_conn *c)
     die(c, ERR_BAD_STATE);
     jam_handle_close(c->ch);
     jwl_map_free(&c->map);
-    free(c);
+    jam_free(c);
 }
 
 bool jwl_conn_backlogged(const struct jwl_conn *c)
@@ -369,7 +369,7 @@ static struct jwl_held *grow_tail(struct jwl_conn *c, uint32_t want)
     if (cap < want)
         cap = want;
     uint32_t bytes = c->held_bytes - held_cost(t->cap) + held_cost(cap);
-    struct jwl_held *n = bytes <= JWL_HELD_MAX ? malloc(sizeof(*n) + cap) : NULL;
+    struct jwl_held *n = bytes <= JWL_HELD_MAX ? jam_malloc(sizeof(*n) + cap) : NULL;
     if (!n)
         return NULL;
     memcpy(n, t, sizeof(*t) + t->len);
@@ -380,7 +380,7 @@ static struct jwl_held *grow_tail(struct jwl_conn *c, uint32_t want)
     *link = n;
     c->held_tail = n;
     c->held_bytes = bytes;
-    free(t);
+    jam_free(t);
     return n;
 }
 
@@ -400,7 +400,7 @@ static status_t hold(struct jwl_conn *c)
     } else {
         if (held_cost(c->out_len) > JWL_HELD_MAX - c->held_bytes)
             return overflow(c);
-        t = malloc(sizeof(*t) + c->out_len);
+        t = jam_malloc(sizeof(*t) + c->out_len);
         if (!t)
             return overflow(c);
         t->next = NULL;
@@ -454,7 +454,7 @@ static status_t drain(struct jwl_conn *c)
         if (!c->held)
             c->held_tail = NULL;
         c->held_bytes -= held_cost(b->cap);
-        free(b);
+        jam_free(b);
     }
     return OK;
 }

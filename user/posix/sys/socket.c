@@ -220,9 +220,9 @@ static long sock_ioctl(struct fd_desc *d, unsigned long req, long arg)
     if (sock_state(s) == SK_STREAM && !s->rd_shut) {
         n = sockring_ready(&s->ns.r.rx);
     } else if (sock_state(s) == SK_DGRAM) {
-        if (!s->kept && (s->kept = malloc(sizeof(*s->kept))) &&
+        if (!s->kept && (s->kept = jam_malloc(sizeof(*s->kept))) &&
             net_sock_take(&s->ns, s->kept) != OK) {
-            free(s->kept);
+            jam_free(s->kept);
             s->kept = NULL;
         }
         n = s->kept ? s->kept->len : 0;
@@ -339,8 +339,8 @@ static void sock_close(struct fd_desc *d)
         net_listener_close(&s->l);   /* its waiting connections are reset */
         break;
     }
-    free(s->kept);
-    free(s);
+    jam_free(s->kept);
+    jam_free(s);
 }
 
 const struct fd_ops sock_ops = {
@@ -393,7 +393,7 @@ long lx_socket(long domain, long type, long proto, long d, long e, long f)
         return -EPROTONOSUPPORT;
     if (kind != SOCK_STREAM && kind != SOCK_DGRAM)
         return -ESOCKTNOSUPPORT;   /* raw sockets and the rest: not built */
-    struct sock *s = calloc(1, sizeof(*s));
+    struct sock *s = jam_calloc(1, sizeof(*s));
     if (!s)
         return -ENOMEM;
     s->type = (int)kind;

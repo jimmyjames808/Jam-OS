@@ -213,7 +213,7 @@ static long accept_wait(struct fd_desc *d, struct sock *s, bool nonblock, struct
  * options (Linux's accepted sockets inherit them). */
 static long accept_install(const struct sock_opts *opts, struct net_sock *ns, long flags)
 {
-    struct sock *n = calloc(1, sizeof(*n));
+    struct sock *n = jam_calloc(1, sizeof(*n));
     if (!n) {
         net_close(ns);
         return -ENOMEM;

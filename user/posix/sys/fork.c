@@ -39,8 +39,11 @@
  *   5. mem.c's mem_lock
  *   6. rlimit.c's limits_lock (brk asks the limit with mem_lock held)
  *   7. signal.c's sig_lock
+ *   8. heap.c's lock (the layer's heap), given back as soon as the clone
+ *      is made (heap_back), so the parent's walk below may allocate
  * Each is a leaf but for that one nesting: none is held across a wait, a
- * call into another of these modules but a later one, or malloc. With
+ * call into another of these modules but a later one, or an allocation
+ * (the heap's lock, held across none of these, is a leaf). With
  * musl's fork (third_party/musl/src/process/fork.c, _Fork.c) the whole
  * order is: the program's pthread_atfork prepare handlers; musl's locks
  * (the dynamic linker's, pthread keys', aio's, pthread_create's, the
@@ -53,14 +56,17 @@
  * lock, and signal.c keeps an ended thread's record for the next thread
  * rather than freeing it (a thread ends holding musl's thread list lock,
  * which a fork takes after malloc's). libjam holds none of its own locks
- * across the clone and allocates nothing in the parent's fork. vfork and
- * clone skip musl's handlers and locks (as on Linux), not ours, but for
- * malloc's, which they take first, as musl's fork does: their child's calls
- * into the layer allocate (execve's first of all), where Linux's allocate
- * nothing in the process, so a child cloned while another thread held it
- * would wait for it for ever (docs/FORK-REVIEW-LIBC.md, finding 1). A raw
- * SYS_fork or _Fork takes none: it can't be told from musl's fork, which
- * holds it already.
+ * across the clone and allocates nothing in the parent's fork. The layer
+ * allocates only from its own heap (heap.c), whose lock every way in
+ * takes (fork, _Fork, a raw SYS_fork, vfork, both clones): a child's
+ * calls into the layer allocate (execve's first of all), where Linux's
+ * allocate nothing in the process, so a child cloned while another thread
+ * held it would wait for it for ever (docs/FORK-REVIEW-LIBC.md, finding
+ * 1). vfork and clone skip musl's handlers and locks (as on Linux), not
+ * ours, but for malloc's, which they take first, as musl's fork does, so
+ * that their child's own malloc finds it free too. A raw SYS_fork or
+ * _Fork takes none of musl's: it can't be told from musl's fork, which
+ * holds malloc's already.
  *
  * Not on the list, so possibly held for ever in a child if another thread
  * had one at the clone: each description's lock and those of the kinds'
@@ -117,6 +123,7 @@ struct how {
     struct jam_fork_args *args;   /* fork_core's: prepare names the VMOs vmar_clone copies */
     bool no_room;     /* prepare couldn't list them: the fork fails (ENOMEM) */
     bool by_musl;     /* SYS_fork: musl's fork holds malloc's lock across it already */
+    bool heap_held;   /* the parent: the layer heap's lock, from prepare to the clone */
 };
 
 /* musl's (its malloc's glue, hidden there; the layer is in the same
@@ -274,12 +281,25 @@ static void prepare(void *ctx)
     how->args->vmos = vmos;   /* libjam reads them after this hook (<os.h>) */
     how->args->children = children;
     how->args->n = n;
+    heap_fork(LX_FORK_TAKE);   /* last: a leaf (heap.c) */
+    how->heap_held = true;
+}
+
+/* The parent: the heap's lock back once the clone is made (the child's
+ * copy of the heap is whole), so give's walk may allocate. */
+static void heap_back(struct how *how)
+{
+    if (how->heap_held) {
+        how->heap_held = false;
+        heap_fork(LX_FORK_GIVE);
+    }
 }
 
 static status_t give(void *ctx, handle_t to, handle_t proc)
 {
-    const struct how *how = ctx;
+    struct how *how = ctx;
     (void)proc;
+    heap_back(how);
     struct lx_fork_io io = { .gen = gens, .ch = to, .st = how->no_room ? ERR_NO_MEMORY : OK,
                              .m = { .magic = POSIXFORK_MAGIC, .version = POSIXFORK_VERSION } };
     fd_fork_walk(&io);
@@ -290,8 +310,9 @@ static status_t give(void *ctx, handle_t to, handle_t proc)
 
 static void parent(void *ctx, status_t st)
 {
-    const struct how *how = ctx;
+    struct how *how = ctx;
     (void)st;
+    heap_back(how);   /* a failed clone had no give */
     for (unsigned i = NSTEPS; i-- > 0;)
         steps[i](LX_FORK_GIVE);
     if (!how->by_musl)
@@ -301,6 +322,7 @@ static void parent(void *ctx, status_t st)
 static void child(void *ctx, handle_t from)
 {
     const struct how *how = ctx;
+    heap_fork(LX_FORK_CHILD);   /* first: anything below may allocate */
     if (!how->by_musl)
         __malloc_atfork(1);
     lx_start_forked();

@@ -52,7 +52,7 @@ struct etc_file {
 
 /* An etc_file made for one open: a block device's file (BLOCK_DIR). */
 struct dynamic {
-    struct etc_file f;   /* first: free() takes &f */
+    struct etc_file f;   /* first: jam_free() takes &f */
     uint64_t        ino;
     char            path[64];
     char            text[24];
@@ -256,7 +256,7 @@ static void etc_close(struct fd_desc *d)
 {
     const struct etc_file *f = file_of(d);
     if (!is_static(f))
-        free((void *)f);
+        jam_free((void *)f);
 }
 
 const struct fd_ops etc_ops = {
@@ -274,13 +274,13 @@ const struct fd_ops etc_ops = {
 static const struct etc_file *block_file(const char *abs, unsigned place, enum block_leaf leaf,
                                          long *err)
 {
-    struct dynamic *c = calloc(1, sizeof(*c));
+    struct dynamic *c = jam_calloc(1, sizeof(*c));
     if (!c) {
         *err = -ENOMEM;
         return NULL;
     }
     if (!block_text(place, leaf, c->text)) {
-        free(c);
+        jam_free(c);
         *err = -EIO;
         return NULL;
     }
@@ -326,7 +326,7 @@ long etc_open(const char *abs, int flags)
     struct fd_desc *d = fd_new(&etc_ops, (uint32_t)flags & OPEN_STATUS, (void *)f);
     if (!d) {
         if (!is_static(f))
-            free((void *)f);
+            jam_free((void *)f);
         return -ENOMEM;
     }
     return fd_install(d, 0, flags & O_CLOEXEC);
@@ -341,7 +341,7 @@ long etc_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *
         return r;
     *out = fd_new(&etc_ops, rec->status, (void *)f);
     if (!*out && !is_static(f))
-        free((void *)f);
+        jam_free((void *)f);
     return *out ? 0 : -ENOMEM;
 }
 

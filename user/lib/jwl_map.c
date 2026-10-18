@@ -61,12 +61,12 @@ static status_t grow(struct jwl_range *r)
     uint32_t cap = r->cap ? r->cap * 2 : 16;
     if (cap > JWL_OBJECTS_MAX)
         cap = JWL_OBJECTS_MAX;
-    struct jwl_object *v = calloc(cap, sizeof(*v));
+    struct jwl_object *v = jam_calloc(cap, sizeof(*v));
     if (!v)
         return ERR_NO_MEMORY;
     if (r->n)
         memcpy(v, r->v, r->n * sizeof(*v));
-    free(r->v);
+    jam_free(r->v);
     r->v = v;
     r->cap = cap;
     return OK;
@@ -108,8 +108,8 @@ status_t jwl_map_init(struct jwl_map *m, enum jwl_side side, const struct jwl_in
 
 void jwl_map_free(struct jwl_map *m)
 {
-    free(m->r[0].v);
-    free(m->r[1].v);
+    jam_free(m->r[0].v);
+    jam_free(m->r[1].v);
     memset(m, 0, sizeof(*m));
 }
 

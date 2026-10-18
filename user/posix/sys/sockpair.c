@@ -265,7 +265,7 @@ bool sockp_passcred(struct fd_desc *d)
 static void fd_drop(struct sp_fd *e)
 {
     close_all(e->hs, e->rec.nhandles);
-    free(e->data);
+    jam_free(e->data);
     e->data = NULL;
 }
 
@@ -298,7 +298,7 @@ static bool records_take(struct sp_fds *f, const uint8_t *r, uint32_t len, uint1
         ok = e->rec.fd == (int32_t)f->n && e->rec.data_len <= POSIXFDS_DATA_MAX &&
              PAD8(e->rec.data_len) <= len - at - REC_BYTES &&
              e->rec.nhandles <= POSIXFDS_KIND_HANDLES && e->rec.nhandles <= nh - used;
-        e->data = ok && e->rec.data_len ? malloc(e->rec.data_len) : NULL;
+        e->data = ok && e->rec.data_len ? jam_malloc(e->rec.data_len) : NULL;
         ok = ok && (e->data || !e->rec.data_len);
         if (!ok)
             break;
@@ -336,7 +336,7 @@ static enum part take_part(struct pipe_end *p, uint32_t got, handle_t *hs, uint3
     }
     *skip = SP_HDR + h.rec_len;
     bool last = h.part == h.parts - 1;
-    if (!p->fds && !(p->fds = calloc(1, sizeof(*p->fds)))) {
+    if (!p->fds && !(p->fds = jam_calloc(1, sizeof(*p->fds)))) {
         close_all(hs, nh);   /* no memory: the bytes go on alone */
         return last ? PART_LAST : PART_DROP;
     }
@@ -461,7 +461,7 @@ static void deliver_fds(struct pipe_end *p, struct fdpass_sink *s)
         }
         struct fd_desc *d = NULL;
         long r = fdpass_adopt(&e->rec, e->data, e->hs, sp_policy.kinds, &d);   /* hs gone */
-        free(e->data);
+        jam_free(e->data);
         e->data = NULL;
         long fd = r ? r : fd_install(d, 0, s->cloexec);   /* d's reference gone */
         if (fd < 0)
@@ -693,7 +693,7 @@ static long send_bytes(struct pipe_end *p, const struct tx *t, size_t from)
 {
     size_t left = t->total - from;
     uint8_t *gather = NULL;
-    if (t->iovcnt > 1 && left && !(gather = malloc(left < PIPE_SIZE ? left : PIPE_SIZE)))
+    if (t->iovcnt > 1 && left && !(gather = jam_malloc(left < PIPE_SIZE ? left : PIPE_SIZE)))
         return -ENOMEM;
     size_t done = 0;
     long r = 0;
@@ -709,7 +709,7 @@ static long send_bytes(struct pipe_end *p, const struct tx *t, size_t from)
         else
             r = room(t, false);   /* the reader is behind */
     }
-    free(gather);
+    jam_free(gather);
     return done ? (long)done : r;
 }
 
@@ -718,7 +718,7 @@ static long send_record(struct pipe_end *p, const struct tx *t)
 {
     if (t->total > PIPE_SIZE)
         return -EMSGSIZE;
-    uint8_t *gather = t->iovcnt > 1 && t->total ? malloc(t->total) : NULL;
+    uint8_t *gather = t->iovcnt > 1 && t->total ? jam_malloc(t->total) : NULL;
     if (t->iovcnt > 1 && t->total && !gather)
         return -ENOMEM;
     const uint8_t *b = t->total ? bytes_at(t, 0, t->total, gather) : NULL;
@@ -730,7 +730,7 @@ static long send_record(struct pipe_end *p, const struct tx *t)
         if (r != -EAGAIN || t->nb || (r = room(t, false)) != 0)
             break;
     }
-    free(gather);
+    jam_free(gather);
     return r;
 }
 
@@ -835,9 +835,9 @@ static bool record_fits(const struct fd_given *gs, const uint16_t *cut, unsigned
 /* A send with the n descriptors fds: the bytes that went, or -errno. */
 static long send_fds(struct pipe_end *p, const struct tx *t, const int *fds, unsigned n)
 {
-    struct fd_given *gs = calloc(n, sizeof(*gs));
-    uint8_t *msg = malloc(PIPE_SIZE);
-    uint16_t *cut = malloc((n + 1) * sizeof(*cut));
+    struct fd_given *gs = jam_calloc(n, sizeof(*gs));
+    uint8_t *msg = jam_malloc(PIPE_SIZE);
+    uint16_t *cut = jam_malloc((n + 1) * sizeof(*cut));
     long r = gs && msg && cut ? 0 : -ENOMEM;
     size_t first = 0;
     while (!r) {   /* each round a try: the records made anew, every part written */
@@ -853,9 +853,9 @@ static long send_fds(struct pipe_end *p, const struct tx *t, const int *fds, uns
         if (r == -EAGAIN && !t->nb)
             r = 0;   /* refused for room after the look (another writer): again */
     }
-    free(cut);
-    free(msg);
-    free(gs);
+    jam_free(cut);
+    jam_free(msg);
+    jam_free(gs);
     if (r)
         return r;
     if (p->seq || first == t->total)
@@ -1011,7 +1011,7 @@ static void sp_close(struct fd_desc *d)
 {
     struct pipe_end *p = pipe_end_of(d);
     fds_drop(p->fds);
-    free(p->fds);
+    jam_free(p->fds);
     pipe_end_free(p);
 }
 

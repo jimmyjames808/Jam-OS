@@ -581,8 +581,8 @@ long lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t val
         room = nkids;
         lock_give(&lock);
         if (to != &one)
-            free(to);
-        to = malloc(sizeof(*to) * room);
+            jam_free(to);
+        to = jam_malloc(sizeof(*to) * room);
         if (!to)
             return -ENOMEM;
         lock_take(&lock);
@@ -610,7 +610,7 @@ long lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t val
             r = e;
     }
     if (to != &one)
-        free(to);
+        jam_free(to);
     return r ? r : (long)matched;
 }
 

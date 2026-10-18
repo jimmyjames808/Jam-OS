@@ -244,7 +244,7 @@ __attribute__((constructor)) static void keep_argv0(void)
 {
     stack_addr = (uintptr_t)__builtin_frame_address(0);
     if (program_invocation_name)
-        argv0 = strdup(program_invocation_name);
+        argv0 = jam_strdup(program_invocation_name);
 }
 
 uintptr_t proc_stack_addr(void)
@@ -300,7 +300,7 @@ static bool is_us(const struct image *im)
 static bool found(const char *prefix, const char *rest)
 {
     size_t a = strlen(prefix), b = strlen(rest);
-    exe_path = a + b < PATH_BYTES ? malloc(a + b + 1) : NULL;
+    exe_path = a + b < PATH_BYTES ? jam_malloc(a + b + 1) : NULL;
     if (!exe_path)
         return false;
     memcpy(exe_path, prefix, a);
@@ -323,13 +323,13 @@ static bool file_is_us(const struct path *p)
 {
     if (p->where != PATH_MOUNT || path_libc(p) != LIBC_NONE)
         return false;
-    struct image im = { .buf = malloc(CHUNK) };
+    struct image im = { .buf = jam_malloc(CHUNK) };
     im.fd = im.buf ? lx_openat(AT_FDCWD, (long)(uintptr_t)p->abs, O_RDONLY | O_CLOEXEC, 0, 0, 0)
                    : -ENOMEM;
     bool us = im.fd >= 0 && is_us(&im);
     if (im.fd >= 0)
         (void)lx_close(im.fd, 0, 0, 0, 0, 0);   /* a read-only open: nothing to lose */
-    free(im.buf);
+    jam_free(im.buf);
     return us;
 }
 
@@ -349,8 +349,8 @@ static bool boot_name(const char *abs, char name[PATH_BYTES])
 /* The file argv[0] names, if it is this program. exe_lock. */
 static bool from_argv0(const struct bootfs_view *fs, bool boot)
 {
-    char *name = malloc(PATH_BYTES);
-    struct path *p = malloc(sizeof(*p));
+    char *name = jam_malloc(PATH_BYTES);
+    struct path *p = jam_malloc(sizeof(*p));
     bool ok = false;
     if (name && p && argv0 && argv0[0] != '/' && argv0[0]) {
         /* the shell's "bin/x", or a bare name as its run finds it */
@@ -362,8 +362,8 @@ static bool from_argv0(const struct bootfs_view *fs, bool boot)
         else
             ok = file_is_us(p) && found("", p->abs);
     }
-    free(p);
-    free(name);
+    jam_free(p);
+    jam_free(name);
     return ok;
 }
 
@@ -373,9 +373,9 @@ static bool from_argv0(const struct bootfs_view *fs, bool boot)
 static bool from_handover(void)
 {
     const char *given = lx_handover_exe();
-    struct path *p = given ? malloc(sizeof(*p)) : NULL;
+    struct path *p = given ? jam_malloc(sizeof(*p)) : NULL;
     bool ok = p && !path_set(given, p) && path_libc(p) == LIBC_NONE && found("", p->abs);
-    free(p);
+    jam_free(p);
     return ok;
 }
 
@@ -756,13 +756,13 @@ long proc_readlink(const struct path *p, char *buf, size_t size)
     if (a.node != N_FD)
         return -EINVAL;   /* a directory */
     struct fd_desc *d = fd_get(a.fd);
-    char *text = d ? malloc(PATH_BYTES) : NULL;
+    char *text = d ? jam_malloc(PATH_BYTES) : NULL;
     r = !d ? -ENOENT : !text ? -ENOMEM : 0;
     if (!r) {
         link_of(d, text);
         r = copy_link(text, buf, size);
     }
-    free(text);
+    jam_free(text);
     if (d)
         fd_put(d);
     return r;
@@ -790,7 +790,7 @@ static long open_file(const struct at *a, const struct path *p, long flags)
         return -ENOTDIR;
     if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_TRUNC))
         return -EACCES;
-    struct pfile_state *st = calloc(1, sizeof(*st));
+    struct pfile_state *st = jam_calloc(1, sizeof(*st));
     if (!st)
         return -ENOMEM;
     for (unsigned i = 0; i < PFILES; i++)
@@ -841,7 +841,7 @@ static long share(struct fd_desc *d, long flags)
 /* Anything but a memfd, by what its link says. */
 static long reopen_other(struct fd_desc *d, long flags, bool dir)
 {
-    char *t = malloc(PATH_BYTES);
+    char *t = jam_malloc(PATH_BYTES);
     if (!t)
         return -ENOMEM;
     link_of(d, t);
@@ -856,7 +856,7 @@ static long reopen_other(struct fd_desc *d, long flags, bool dir)
         r = dir ? -ENOTDIR : share(d, flags);
     else
         r = -ENXIO;   /* a socket or an anonymous kind: Linux's answer */
-    free(t);
+    jam_free(t);
     return r;
 }
 
@@ -1128,7 +1128,7 @@ static long pf_fill(struct fd_desc *d)
     if (r)
         return r;
     lock_take(&d->lock);
-    free(s->text);
+    jam_free(s->text);
     s->text = text;
     s->len = len;
     lock_give(&d->lock);
@@ -1234,8 +1234,8 @@ static long pf_stat(struct fd_desc *d, struct stat *st)
 
 static void pf_close(struct fd_desc *d)
 {
-    free(pf_of(d)->text);
-    free(d->priv);
+    jam_free(pf_of(d)->text);
+    jam_free(d->priv);
 }
 
 /* No .give: a child left out of the hand-over opens its own. Always ready

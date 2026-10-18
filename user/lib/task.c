@@ -65,7 +65,7 @@ struct task_set *task_set_create(const struct task_opts *o)
     uint32_t stack = o->stack_bytes ? o->stack_bytes : TASK_STACK_DEFAULT;
     if (stack < TASK_STACK_MIN || stack % 16)
         return NULL;
-    struct task_set *s = calloc(1, sizeof(*s) + o->max_tasks * sizeof(struct task));
+    struct task_set *s = jam_calloc(1, sizeof(*s) + o->max_tasks * sizeof(struct task));
     if (!s)
         return NULL;
     s->opts = *o;
@@ -82,9 +82,9 @@ bool task_set_destroy(struct task_set *s)
     bool none_live = true;
     for (uint32_t i = 0; i < s->opts.max_tasks; i++) {
         none_live = none_live && !s->slots[i].live;
-        free(s->slots[i].stack);   /* a live task is abandoned: never switched to again */
+        jam_free(s->slots[i].stack);   /* a live task is abandoned: never switched to again */
     }
-    free(s);
+    jam_free(s);
     return none_live;
 }
 
@@ -164,7 +164,7 @@ struct task *task_start(struct task_set *s, void (*fn)(void *arg), void *arg)
             t = &s->slots[i];
     if (!t || !fn)
         return NULL;
-    if (!t->stack && !(t->stack = malloc(s->opts.stack_bytes)))
+    if (!t->stack && !(t->stack = jam_malloc(s->opts.stack_bytes)))
         return NULL;
     prepare_stack(s, t);
     t->live = true;

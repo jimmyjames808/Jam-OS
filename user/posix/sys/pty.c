@@ -202,7 +202,7 @@ static void master_free(struct master *m)
         pty_release(m->pty, m->gen);
     if (m->sctl)
         jam_handle_close(m->sctl);
-    free(m);
+    jam_free(m);
 }
 
 /* fork (docs/FORK-PLAN.md section 1.6): the bytes as a socketpair end's,
@@ -295,7 +295,7 @@ static long ptmx_open(int flags)
         return -ENOSPC;
     struct pty p = { .used = true, .gen = gen, .cols = DEF_COLS, .rows = DEF_ROWS };
     handle_t master = HANDLE_INVALID;
-    struct master *m = calloc(1, sizeof(*m));
+    struct master *m = jam_calloc(1, sizeof(*m));
     status_t st = m ? pty_console(&p, &master) : ERR_NO_MEMORY;
     lock_take(&pty_lock);
     ptys[i] = p;   /* all of it, or the parts made: released below if it failed */
@@ -303,7 +303,7 @@ static long ptmx_open(int flags)
     if (st != OK) {
         if (master)
             jam_handle_close(master);
-        free(m);
+        jam_free(m);
         pty_release(i, gen);
         return st == ERR_NO_MEMORY ? -ENOMEM : -EAGAIN;
     }
@@ -440,7 +440,7 @@ static long session_adopt(handle_t hs[3], const struct winsize *ws, pid_t *pid)
 {
     struct process_info info;
     handle_t ctl2 = HANDLE_INVALID;
-    struct master *m = calloc(1, sizeof(*m));
+    struct master *m = jam_calloc(1, sizeof(*m));
     status_t st = m ? jam_process_get_info(hs[2], &info) : ERR_NO_MEMORY;
     if (st == OK)
         st = jam_handle_duplicate(hs[1], RIGHT_SAME, &ctl2);
@@ -448,14 +448,14 @@ static long session_adopt(handle_t hs[3], const struct winsize *ws, pid_t *pid)
         (void)session_ctl_hangup(hs[1]);
         for (unsigned k = 0; k < 3; k++)
             jam_handle_close(hs[k]);
-        free(m);
+        jam_free(m);
         return lx_err(st);
     }
     long r = lx_session_add(hs[2], ctl2, (int32_t)info.pid);   /* moves both */
     if (r) {
         jam_handle_close(hs[0]);   /* lx_session_add hung it up */
         jam_handle_close(hs[1]);
-        free(m);
+        jam_free(m);
         return r;
     }
     *m = (struct master){ .pty = -1, .sctl = hs[1], .cols = ws ? ws->ws_col : DEF_COLS,

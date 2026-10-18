@@ -147,7 +147,7 @@ status_t keep_restore(handle_t keep, uint64_t deadline_ns, keep_take_fn take, vo
                       struct keep_restored *out)
 {
     static const struct keepch_events events = { .restore = on_restore, .done = on_done };
-    struct restore_run *r = calloc(1, sizeof(*r));
+    struct restore_run *r = jam_calloc(1, sizeof(*r));
     if (!r)
         return ERR_NO_MEMORY;
     r->keep = keep;
@@ -174,7 +174,7 @@ status_t keep_restore(handle_t keep, uint64_t deadline_ns, keep_take_fn take, vo
     }
     if (out)
         *out = r->got;
-    free(r);
+    jam_free(r);
     return st;
 }
 
@@ -402,7 +402,7 @@ status_t keeper_restore(struct keeper *k)
 {
     if (k->ch == HANDLE_INVALID)
         return ERR_BAD_STATE;
-    struct batch *b = calloc(1, sizeof(*b));
+    struct batch *b = jam_calloc(1, sizeof(*b));
     if (!b)
         return ERR_NO_MEMORY;
     status_t st = OK;
@@ -422,7 +422,7 @@ status_t keeper_restore(struct keeper *k)
         st = flush(k, b, n);
     if (st == OK)
         st = keepch_done(k->ch, b->slots, b->handles);
-    free(b);
+    jam_free(b);
     return st;
 }
 

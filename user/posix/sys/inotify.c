@@ -137,7 +137,7 @@ static bool room_locked(struct ino *n, uint32_t need)
     uint32_t cap = n->cap ? n->cap : 4096;
     while (cap - n->len < need)
         cap *= 2;
-    uint8_t *b = realloc(n->buf, cap);
+    uint8_t *b = jam_realloc(n->buf, cap);
     if (!b)
         return false;
     n->buf = b;
@@ -209,7 +209,7 @@ static long watch_room_locked(struct ino *n)
     if (n->nw < n->room)
         return 0;
     uint32_t room = n->room ? n->room * 2 : 16;
-    struct ino_watch *w = realloc(n->w, room * sizeof(*w));
+    struct ino_watch *w = jam_realloc(n->w, room * sizeof(*w));
     if (!w)
         return -ENOMEM;
     n->w = w;
@@ -232,7 +232,7 @@ static int watch_new_locked(struct ino *n, unsigned c, uint32_t id, uint32_t mas
 
 static void forget_locked(struct ino *n, struct ino_watch *w)
 {
-    free(w->path);
+    jam_free(w->path);
     *w = n->w[--n->nw];
 }
 
@@ -307,7 +307,7 @@ static void take_locked(struct ino *n)
             uint32_t room = take_room(n), got = 0;
             uint8_t more = 0;
             if (!tmp)
-                tmp = malloc(FSWATCH_TAKE_BYTES);
+                tmp = jam_malloc(FSWATCH_TAKE_BYTES);
             status_t st = !tmp || room < FSWATCH_RECORD_FIXED ? ERR_BUFFER_TOO_SMALL
                           : fswatch_take_within(ch, FILE_TIMEOUT, room, &more, tmp, &got);
             if (st == ERR_PEER_CLOSED) {
@@ -323,7 +323,7 @@ static void take_locked(struct ino *n)
                 break;
         }
     }
-    free(tmp);
+    jam_free(tmp);
     if (again)
         (void)jam_event_signal(n->bell, 0, FSWATCH_BELL);
     held_locked(n);
@@ -448,11 +448,11 @@ static void ino_close(struct fd_desc *d)
         if (n->chans[c].koid && n->chans[c].ch != HANDLE_INVALID)
             jam_handle_close(n->chans[c].ch);   /* the service ends the channel's watches */
     for (uint32_t i = 0; i < n->nw; i++)
-        free(n->w[i].path);
+        jam_free(n->w[i].path);
     jam_handle_close(n->bell);
-    free(n->w);
-    free(n->buf);
-    free(n);
+    jam_free(n->w);
+    jam_free(n->buf);
+    jam_free(n);
 }
 
 /* No give (a spawned child, or across execve, never gets it) and absent
@@ -500,9 +500,9 @@ long lx_inotify_init1(long flags, long b, long c, long d, long e, long f)
         return -EINVAL;
     if (instances() >= INOTIFY_MAX_INSTANCES)
         return -EMFILE;   /* max_user_instances */
-    struct ino *n = calloc(1, sizeof(*n));
+    struct ino *n = jam_calloc(1, sizeof(*n));
     if (!n || jam_event_create(&n->bell) != OK) {
-        free(n);
+        jam_free(n);
         return -ENOMEM;
     }
     n->next_wd = 1;
@@ -548,7 +548,7 @@ static long quiet_add(struct fd_desc *d, const struct path *p, uint32_t mask)
         w->mask = (mask & IN_MASK_ADD ? w->mask : 0) | mask;
         r = w->wd;
     } else if (!(r = watch_room_locked(n))) {
-        char *path = strdup(p->abs);
+        char *path = jam_strdup(p->abs);
         r = path ? watch_new_locked(n, INO_QUIET, 0, mask, path) : -ENOMEM;
     }
     lock_give(&d->lock);
@@ -704,7 +704,7 @@ long lx_inotify_add_watch(long fd, long pathname, long mask_l, long d, long e, l
         return -EBADF;
     struct path *p = NULL;
     long r = desc->ops != &inotify_ops ? -EINVAL : 0;
-    if (!r && !(p = malloc(sizeof(*p))))
+    if (!r && !(p = jam_malloc(sizeof(*p))))
         r = -ENOMEM;
     if (!r)
         r = path_get(AT_FDCWD, (const char *)(uintptr_t)pathname, p);
@@ -712,7 +712,7 @@ long lx_inotify_add_watch(long fd, long pathname, long mask_l, long d, long e, l
         p->nofollow = (mask & IN_DONT_FOLLOW) != 0;
         r = add_path(desc, p, mask);
     }
-    free(p);
+    jam_free(p);
     fd_put(desc);
     return r;
 }

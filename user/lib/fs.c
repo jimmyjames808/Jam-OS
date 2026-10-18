@@ -465,7 +465,7 @@ status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out)
      * 0 starts a listing afresh. */
     bool going_on = b && index && index >= b->first && !strcmp(b->path, path);
     if (!b)
-        b = malloc(sizeof(*b));
+        b = jam_malloc(sizeof(*b));
     if (!b)
         st = ERR_NO_MEMORY;
     if (st == OK && !going_on) {
@@ -490,7 +490,7 @@ status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out)
         b = NULL;
     }
     lock_give(&cached_lock);
-    free(b);
+    jam_free(b);
     return st;
 }
 

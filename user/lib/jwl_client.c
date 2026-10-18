@@ -477,7 +477,7 @@ status_t jwl_client_roundtrip(struct jwl_client *c, uint64_t deadline)
 
 status_t jwl_client_create(const struct jwl_client_config *cfg, struct jwl_client **out)
 {
-    struct jwl_client *c = calloc(1, sizeof(*c));
+    struct jwl_client *c = jam_calloc(1, sizeof(*c));
     if (!c)
         return ERR_NO_MEMORY;
     c->cfg = *cfg;
@@ -488,7 +488,7 @@ status_t jwl_client_create(const struct jwl_client_config *cfg, struct jwl_clien
     try_connect(c);
     if (c->state == JWLC_DEAD) {
         status_t st = c->why;
-        free(c);
+        jam_free(c);
         return st;
     }
     *out = c;
@@ -536,7 +536,7 @@ void jwl_client_destroy(struct jwl_client *c)
         jwl_conn_destroy(c->conn);
     }
     jwlc_clip_free(c);
-    free(c);
+    jam_free(c);
 }
 
 status_t jwl_client_status(const struct jwl_client *c)

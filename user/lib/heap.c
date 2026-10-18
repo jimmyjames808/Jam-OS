@@ -202,3 +202,10 @@ void free(void *p)
     release_locked(b);
     unlock();
 }
+
+/* libjam's own allocations (<os.h>): in a native program, this heap. (In a
+ * POSIX one, libc.a holds the call layer's heap under these names, and not
+ * this file.) */
+void *jam_malloc(size_t n) __attribute__((alias("malloc")));
+void *jam_calloc(size_t n, size_t size) __attribute__((alias("calloc")));
+void  jam_free(void *p) __attribute__((alias("free")));

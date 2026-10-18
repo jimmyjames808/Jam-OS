@@ -207,12 +207,12 @@ static long dgram_recv_locked(struct sock *s, struct xfer *x)
         return 0;
     struct net_dgram *g = s->kept;
     if (!g) {
-        g = x->flags & MSG_PEEK ? malloc(sizeof(*g)) : x->dg;
+        g = x->flags & MSG_PEEK ? jam_malloc(sizeof(*g)) : x->dg;
         if (!g)
             return -ENOMEM;
         status_t st = net_sock_take(&s->ns, g);
         if (st != OK && g != x->dg)
-            free(g);
+            jam_free(g);
         if (st == ERR_SHOULD_WAIT)
             return -EAGAIN;
         if (st != OK)
@@ -228,7 +228,7 @@ static long dgram_recv_locked(struct sock *s, struct xfer *x)
     x->port = g->port;
     x->dg_len = g->len;
     if (!(x->flags & MSG_PEEK) && s->kept) {
-        free(s->kept);
+        jam_free(s->kept);
         s->kept = NULL;
     }
     return (long)n;
@@ -585,7 +585,7 @@ static long umsg_in(struct umsg *u, long msg, bool recv)
     if (!recv && len > CTL_MAX)
         return -ENOBUFS;
     size_t room = len > CTL_MAX ? CTL_MAX : len;   /* a receive's: no more is ever written */
-    if (room > CTL_FAST && !(u->ctl = malloc(room))) {
+    if (room > CTL_FAST && !(u->ctl = jam_malloc(room))) {
         u->ctl = u->cfast;
         return -ENOMEM;
     }
@@ -618,7 +618,7 @@ static void umsg_done(struct umsg *u)
 {
     fd_iov_done(u->iov, u->fast);
     if (u->ctl != u->cfast)
-        free(u->ctl);
+        jam_free(u->ctl);
 }
 
 static long recvmsg_user(long fd, long msg, long flags)

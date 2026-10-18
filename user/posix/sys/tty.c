@@ -445,7 +445,7 @@ static void tty_close(struct fd_desc *d)
     struct tty *t = d->priv;
     jam_handle_close(t->ch);
     jam_handle_close(t->data);
-    free(t);
+    jam_free(t);
 }
 
 static const struct fd_ops tty_ops = {
@@ -461,10 +461,10 @@ static const struct fd_ops tty_ops = {
 static long tty_new(const handle_t hs[TTY_HANDLES], uint32_t status, int pty, uint32_t gen,
                     bool may_ctty, struct fd_desc **out)
 {
-    struct tty *t = calloc(1, sizeof(*t));
+    struct tty *t = jam_calloc(1, sizeof(*t));
     struct fd_desc *d = t ? fd_new(&tty_ops, status, t) : NULL;
     if (!d) {
-        free(t);
+        jam_free(t);
         for (unsigned i = 0; i < TTY_HANDLES; i++)
             jam_handle_close(hs[i]);
         return -ENOMEM;

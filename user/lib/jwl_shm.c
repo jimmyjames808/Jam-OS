@@ -56,7 +56,7 @@ status_t jwl_pool_create(struct jwl_client *c, uint64_t size, struct jwl_pool **
     if (!size || size > (INT32_MAX & ~(PAGE_SIZE - 1)))
         return ERR_INVALID_ARGS;
     size = page_up(size);
-    struct jwl_pool *p = calloc(1, sizeof(*p));
+    struct jwl_pool *p = jam_calloc(1, sizeof(*p));
     if (!p)
         return ERR_NO_MEMORY;
     uint64_t addr = 0;
@@ -68,7 +68,7 @@ status_t jwl_pool_create(struct jwl_client *c, uint64_t size, struct jwl_pool **
             jam_handle_close(p->vmo);
     }
     if (st != OK) {
-        free(p);
+        jam_free(p);
         return st;
     }
     p->c = c;
@@ -121,7 +121,7 @@ void jwl_pool_destroy(struct jwl_pool *p)
         }
     (void)jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)p->data, p->size);
     jam_handle_close(p->vmo);
-    free(p);
+    jam_free(p);
 }
 
 uint8_t *jwl_pool_data(const struct jwl_pool *p)
@@ -172,7 +172,7 @@ status_t jwl_buffer_create(struct jwl_pool *p, uint64_t offset, int32_t width, i
     uint64_t bytes = (uint64_t)stride * (uint64_t)height;
     if (offset > p->size || bytes > p->size - offset || !format_ok(p->c, format))
         return ERR_INVALID_ARGS;
-    struct jwl_buffer *b = calloc(1, sizeof(*b));
+    struct jwl_buffer *b = jam_calloc(1, sizeof(*b));
     if (!b)
         return ERR_NO_MEMORY;
     b->pool = p;
@@ -205,7 +205,7 @@ void jwl_buffer_destroy(struct jwl_buffer *b)
             *pb = b->next;
             break;
         }
-    free(b);
+    jam_free(b);
 }
 
 uint32_t *jwl_buffer_pixels(const struct jwl_buffer *b)

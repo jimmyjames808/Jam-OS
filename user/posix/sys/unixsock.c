@@ -200,7 +200,7 @@ static long file_key(const char *path, uint8_t key[UNIX_KEY_BYTES])
 
 long ulisten_bind(const struct unix_name *n, struct ulisten **out)
 {
-    struct ulisten *l = calloc(1, sizeof(*l));
+    struct ulisten *l = jam_calloc(1, sizeof(*l));
     if (!l)
         return -ENOMEM;
     l->name = *n;
@@ -210,7 +210,7 @@ long ulisten_bind(const struct unix_name *n, struct ulisten **out)
     if (!r && !n->abstract && (r = file_make(n->bytes, key)) != 0)
         jam_handle_close(l->ch);   /* the broker drops the listener */
     if (r) {
-        free(l);
+        jam_free(l);
         return r;
     }
     *out = l;
@@ -266,7 +266,7 @@ const struct unix_name *ulisten_name(const struct ulisten *l)
 void ulisten_close(struct ulisten *l)
 {
     jam_handle_close(l->ch);   /* the broker drops it; the socket file stays, as on Linux */
-    free(l);
+    jam_free(l);
 }
 
 /* ---- connections --------------------------------------------------------------------- */
