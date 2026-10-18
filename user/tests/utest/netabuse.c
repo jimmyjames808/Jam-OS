@@ -21,6 +21,7 @@
 #include <os.h>
 #include "netdrv.h"
 #include "netpkt.h"
+#include "tcppeer.h"
 #include "utest.h"
 
 #define ANY_ERROR 1   /* expect: any status below 0 */
@@ -199,6 +200,117 @@ bool t_netsock_caps(void)
     jam_handle_close(a);
     jam_handle_close(b);
     jam_handle_close(extra);
+    CHECK(netdrv_stop());
+    return true;
+}
+
+/* netstack's memory at the caps (docs/BENCH.md): everything the caps allow
+ * at once with the default rings, 512 datagram sockets and 1,024 TCP
+ * connections (an ordinary opener 256 sockets and 512 connections, a
+ * second ordinary one 256 connections, a system one 256 sockets and 256
+ * connections), asked for in stages, with netstack's job and counters said
+ * after each. Every one must fit the ring byte budgets (64 MiB an opener,
+ * 128 MiB in all, 96 MiB ordinary openers'). The fake host answers every
+ * SYN, so the connections are open (all 1,024 lwIP pcbs established),
+ * idle: the rings are only as touched as an idle connection touches them.
+ * Closing gives every handle back (the pages left are said). */
+struct memrow {
+    uint64_t pages, handles;
+    struct net_counters c;
+};
+
+static bool memnow(struct memrow *m)
+{
+    CHECK(netdrv_job_used(&m->pages, &m->handles));
+    CHECK_ST(net_get_counters(netdrv_net(), &m->c), OK);
+    return true;
+}
+
+static void memsay(const char *what, const struct memrow *m, const struct memrow *base)
+{
+    printf("utest: netsock_mem: %s: netstack's job %lu pages (%lu KiB; +%lu KiB), %lu handles, "
+           "heap used %u, ring bytes %u KiB, %u sockets, %u connections\n", what,
+           (unsigned long)m->pages, (unsigned long)(m->pages * 4),
+           (unsigned long)((m->pages - base->pages) * 4), (unsigned long)m->handles,
+           m->c.heap_used, m->c.ring_bytes / 1024, m->c.sockets, m->c.tcp_conns);
+}
+
+/* A connection from opener o to the fake host (PEER_IP port 9000), which
+ * answers netstack's SYN at once: the connection is open when this
+ * returns the call. Frames before the SYN (earlier connections' ACKs) are
+ * passed over. */
+static bool host_answers(handle_t o, struct net_sock *s)
+{
+    uint8_t fr[PKT_FRAME_MAX];
+    CHECK_ST(net_tcp_open(o, PEER_IP, 9000, 0, 0, s), OK);
+    for (unsigned k = 0; k < 64; k++) {   /* a few frames at most */
+        uint32_t n;
+        const uint8_t *t;
+        size_t len;
+        CHECK_ST(netdrv_recv(fr, &n, NETDRV_WAIT), OK);
+        if (!pkt_is_ipv4(fr, n, PEER_IP, 6, &t, &len) || len < 20 ||
+            (t[13] & (TP_SYN | TP_ACK)) != TP_SYN)
+            continue;
+        struct tp p = { .ip = PEER_IP, .mac = pkt_peer_mac, .port = pkt_get16(t + 2),
+                        .our = pkt_get16(t), .snd = 0x52000000u, .rcv = pkt_get32(t + 4) + 1,
+                        .win = 0xffff };
+        CHECK(netdrv_send(fr, tp_frame(fr, &p, TP_SYN | TP_ACK, NULL, 0)));
+        CHECK_ST(net_tcp_wait_open(s, now() + NETDRV_WAIT), OK);
+        return true;
+    }
+    FAIL("no SYN for connection to port 9000");
+}
+
+bool t_netsock_mem(void)
+{
+    static struct net_sock us[NET_SOCKETS_MAX], ts[NET_TCP_MAX];
+    handle_t a, b, c;
+    struct memrow m0, m1, m2, m3;
+    unsigned nu = 0, nt = 0;
+    CHECK(netdrv_start());
+    CHECK(netdrv_ping(1, true));
+    CHECK(opener(&a));
+    CHECK_ST(svc_connect_until(netdrv_net(), now() + NETDRV_WAIT, &c), OK);
+    CHECK_ST(svc_connect_until(netdrv_net_sys(), now() + NETDRV_WAIT, &b), OK);
+    CHECK(memnow(&m0));
+    memsay("no sockets", &m0, &m0);
+    CHECK(socks(a, us, &nu, NET_SOCKETS_PER_OPENER));
+    CHECK(socks(b, us, &nu, NET_SOCKETS_PER_OPENER));
+    CHECK(memnow(&m1));
+    CHECK_EQ(m1.c.sockets, NET_SOCKETS_MAX);
+    memsay("512 sockets", &m1, &m0);
+    for (unsigned i = 0; i < NET_TCP_PER_OPENER; i++, nt++)
+        CHECK(host_answers(a, &ts[nt]));
+    for (unsigned i = 0; i < NET_PROG_TCP - NET_TCP_PER_OPENER; i++, nt++)
+        CHECK(host_answers(c, &ts[nt]));
+    for (unsigned i = 0; i < NET_TCP_MAX - NET_PROG_TCP; i++, nt++)
+        CHECK(host_answers(b, &ts[nt]));
+    CHECK(memnow(&m2));
+    CHECK_EQ(m2.c.tcp_conns, NET_TCP_MAX);
+    memsay("512 sockets and 1,024 connections open", &m2, &m0);
+    struct net_sock x;
+    CHECK_ST(net_tcp_open(b, PEER_IP, 9000, 0, 0, &x), ERR_NO_RESOURCES);   /* all taken */
+    for (unsigned i = 0; i < nt; i++) {   /* all of them still open */
+        uint32_t state;
+        status_t err;
+        net_tcp_status(&ts[i], &state, &err);
+        CHECK_EQ(state, SOCKRING_STATE_OPEN);
+    }
+    for (unsigned i = 0; i < nt; i++)
+        net_close(&ts[i]);
+    for (unsigned i = 0; i < nu; i++)
+        net_close(&us[i]);
+    uint64_t end = now() + NETDRV_WAIT;
+    do {
+        CHECK(memnow(&m3));
+    } while ((m3.c.sockets || m3.c.tcp_conns || m3.c.ring_bytes || m3.handles > m0.handles) &&
+             now() < end);
+    CHECK(!m3.c.sockets && !m3.c.tcp_conns && !m3.c.ring_bytes);
+    CHECK(m3.handles <= m0.handles);   /* every socket's handles are given back */
+    memsay("all closed", &m3, &m0);
+    jam_handle_close(a);
+    jam_handle_close(b);
+    jam_handle_close(c);
     CHECK(netdrv_stop());
     return true;
 }
