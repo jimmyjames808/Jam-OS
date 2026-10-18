@@ -50,6 +50,8 @@
  *   gone: a forked child removes the directory it is in and execs; the
  *     new image's directory is that one, gone (getcwd ENOENT, nothing
  *     made there), as Linux's (FR2's finding 2).
+ *   secure: a case started AT_SECURE (as a raised program is) execs
+ *     itself: the new image is AT_SECURE too (FJ1, FR2's finding 4).
  *
  * "posixtest --child-exec native" is utest's (exec_native: a native
  * starter, the shell's way, waits on a POSIX program that execs). */
@@ -60,10 +62,12 @@
 #include <fcntl.h>
 #include <jamos/libjam.h>
 #include <poll.h>
+#include <posixfds.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/auxv.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/inotify.h>
@@ -308,6 +312,15 @@ static int run_inotify(char **argv)
     RUN(in >= 0 && inotify_add_watch(in, "/etc", IN_CREATE) > 0);
     errno = 0;
     RUN(read(in, buf, sizeof(buf)) == -1 && errno == EAGAIN);
+    return run_end();
+}
+
+/* secure: made by a case started AT_SECURE (exec_secure): this image is
+ * too, in its auxiliary vector and to musl (issetugid). */
+static int run_secure(void)
+{
+    RUN(getauxval(AT_SECURE) == 1);
+    RUN(issetugid() == 1);
     return run_end();
 }
 
@@ -588,6 +601,17 @@ static void exec_inotify(void)
     CHECK(!"the case's own execve");
 }
 
+/* secure: this process started AT_SECURE (run_case's hand-over marks it,
+ * as init's /svc/exec marks a raised program) and execs itself: the new
+ * image is AT_SECURE too (FJ1; FR2's finding 4). */
+static void exec_secure(void)
+{
+    CHECK(getauxval(AT_SECURE) == 1);
+    char *const args[] = { "posixtest", "--child-exec", "run", "secure", NULL };
+    execv(SELF_EXE, args);
+    CHECK(!"the case's own execve");
+}
+
 static void exec_signals(void)
 {
     pid_t pid = fork();
@@ -861,7 +885,7 @@ static const struct {
     { "same", exec_same },       { "threads", exec_threads }, { "cloexec", exec_cloexec },
     { "signals", exec_signals }, { "charge", exec_charge },   { "fail", exec_fail },
     { "chromium", exec_chromium }, { "clone", exec_clone },   { "gone", exec_gone },
-    { "inotify", exec_inotify },
+    { "inotify", exec_inotify }, { "secure", exec_secure },
 };
 #define NCASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -890,6 +914,8 @@ int pt_child_exec(int argc, char **argv)
             return run_native(argv);
         if (!strcmp(mode, "inotify") && argc >= 5)
             return run_inotify(argv);
+        if (!strcmp(mode, "secure"))
+            return run_secure();
         return 3;
     }
     if (!strcmp(what, "native")) {   /* utest's: exec at once */
@@ -932,8 +958,12 @@ static void run_case(unsigned i)
         return;
     }
     const char *const argv[] = { "posixtest", "--child-exec", "case", cases[i].name, NULL };
+    /* "secure" starts as a raised program does: a hand-over marked
+     * AT_SECURE (and no descriptors: musl's secure start opens 0 to 2). */
+    static const struct posixfds_out secure = { .cwd = "/", .secure = true };
     struct spawn_args a = { .path = "bin/posixtest", .argc = 4, .argv = argv, .job = job,
-                            .ns = NS_ALL };
+                            .ns = NS_ALL,
+                            .handover = !strcmp(cases[i].name, "secure") ? &secure : NULL };
     status_t st = spawn(&a, &proc);
     CHECK(st == OK);
     struct process_info info = { 0 };
