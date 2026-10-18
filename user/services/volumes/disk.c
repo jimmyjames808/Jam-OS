@@ -630,14 +630,13 @@ static bool take_ch(struct disk *d, handle_t ch)
 static void attach(void *ctx, uint32_t id, uint8_t bus, uint8_t unit, handle_t ch)
 {
     (void)ctx;
-    (void)unit;
     struct disk *d = disk_named(id);
     if (d && d->state != DISK_DOWN)
         drop_services(d, DISK_DOWN);   /* its old channel's end not seen yet */
     if (!d && (d = disk_alloc()) != NULL) {
         d->id = id;
         d->bus = bus;
-        disk_number(d);
+        disk_number(d, unit);
     }
     if (!d) {
         say(true, "volumes: disk %u: no room for another disk", id);

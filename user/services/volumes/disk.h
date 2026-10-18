@@ -58,7 +58,8 @@ struct disk {
     bool            test;       /* from VOLUMES_TEST_DISK */
     uint8_t         bus;        /* DISKS_BUS_* (0: a test disk) */
     bool            known;      /* the steps got its info and partitions (the listing's `ready`) */
-    uint8_t         number;     /* its N in "nvme0" / "usb0": the lowest free one of its bus */
+    uint8_t         number;     /* its N in "nvme0" / "usb0": an NVMe drive's place in the PCI order
+                                 * (devmgr's attach `unit`), a stick's the lowest free one */
     uint32_t        id;         /* usb-bus's device id (DISKS_ATTACH's), or TEST_ID | n */
     handle_t        ch;         /* our end of its `storage` channel (0: DISK_DOWN) */
     uint16_t        gen;        /* bumped at every use of the slot: in its port key */
@@ -123,7 +124,7 @@ struct list_health {
 
 /* listing.c */
 struct disk *disk_named(uint32_t id);             /* the real disk called id, or NULL */
-void        disk_number(struct disk *d);          /* d's N: the lowest free one of its bus */
+void        disk_number(struct disk *d, uint8_t unit);   /* d's N: `unit` if the bus fixed it, else the lowest free one of its bus */
 const char *disk_label(const struct disk *d);     /* "nvme0", "usb0" (static buffer) */
 /* DISK_IDENT: ask an NVMe drive's identity (true: asked, or given up on at once; false: not
  * an NVMe drive, go on). Its answer: ident_answer. */
