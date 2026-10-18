@@ -370,13 +370,14 @@ static status_t make_shared(uint32_t ino, uint32_t igen, uint32_t flags, uint64_
      * name may have been handed out writable by an instance before. */
     struct xf_map *m = &kept->maps[i];
     bool written = found && (s < 0 || m->written);
+    status_t error = s >= 0 ? m->error : OK;   /* the file's, for its next file.sync */
     if (s < 0)
         memset(&mh[i], 0, sizeof(mh[i]));
     mh[i].vmo = v;
     mh[i].size = vmo_size(fsize);
     *m = (struct xf_map){
         .used = true, .kind = FILE_MAP_READ, .written = written, .ino = ino, .igen = igen,
-        .key = key,
+        .error = error, .key = key,
     };
     /* Never dropped if the request runs again or its reply fails: the
      * key is the file's, so the request run again finds the slot and its

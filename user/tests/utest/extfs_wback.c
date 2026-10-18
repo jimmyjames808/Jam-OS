@@ -335,6 +335,15 @@ static bool full(void)
      * reads the disk alone after this). */
     if (!read_as_mapped(&fn))
         return false;
+    /* Mapped again while the VMO lives (extfs let go of its handle at the
+     * open's close): the error stays for the next fsync. */
+    handle_t again = HANDLE_INVALID;
+    uint64_t size = 0;
+    CHECK_ST(t_open(&r, fn.path, FS_READ | FS_WRITE, &f), OK);
+    st = file_map_until(f.ch, dl(), FILE_MAP_WRITE, &again, &size);
+    t_close(&f);
+    CHECK_ST(st, OK);
+    CHECK_ST(jam_handle_close(again), OK);
     CHECK_ST(fsync(&fn), ERR_NO_SPACE);
     CHECK_ST(fsync(&fn), OK);   /* once */
     CHECK_ST(msync(&fn), OK);
