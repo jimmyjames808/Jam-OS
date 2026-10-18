@@ -356,8 +356,11 @@ KTEST(vmar_resident_sys)
     KT_EQ(sys_vmar_create(&t, &other), OK);
     KT_EQ(sys_vmo_create(&t, 4 * PG, 0, &h), OK);
     struct aspace *self = aspace_of(&t, vmar), *child = aspace_of(&t, other);
-    uint64_t a = 0;
-    KT_EQ(sys_vmar_map(&t, vmar, h, 0, 4 * PG, VMAR_READ | VMAR_WRITE, &a), OK);
+    /* At a fixed place with room on both sides: placed top down, the
+     * fresh address space's one mapping sits at the very top, and the
+     * probes past it below would be out of the user range. */
+    uint64_t a = 1ull << 40;
+    KT_EQ(sys_vmar_map(&t, vmar, h, 0, 4 * PG, VMAR_READ | VMAR_WRITE | VMAR_FIXED, &a), OK);
     KT_EQ(aspace_fault(self, a + PG, ASPACE_WRITE), OK);
     uint8_t *b = kmalloc(VMAR_RESIDENT_MAX + 1);
     KT_ASSERT(b);
