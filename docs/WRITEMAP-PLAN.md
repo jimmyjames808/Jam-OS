@@ -1287,6 +1287,15 @@ and one after doesn't; an error met by an `fsync`'s write-back reaches
 both opens held across it and both mappers once each; finding 5's
 re-map check kept).
 
+Runs (the PC): batch 18214755, 20 runs, all PASS: PC `make check`, the
+full init run (`extfs_wback` ok), ktest at 4 and 8 CPUs
+(`pager_dirty_errseq` ok), `extfs-svc-test.sh`, `extfs-test.sh` basic,
+cut and storm, `pager-test.sh` jam, jstorm, wmsync, wcut, wpress and
+whostile, `posix-mmap-test.sh` wshared, the shell scripts basic, cmds,
+commands and files, and kdump save. The tests were not run with the
+change taken out: each checks the finding's symptom as written (a second
+mapper's or open's report after the first one's).
+
 ## 6. Tests
 
 | What | Where |
