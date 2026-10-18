@@ -1,0 +1,5 @@
+posix
+svc net
+svc dns
+svc wayland
+mount /data rw
