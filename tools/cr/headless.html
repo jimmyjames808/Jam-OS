@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- The page of cr-test.sh's `headless` case (docs/CR-PLAN.md, track CB3).
+     The case copies it three times, filling in the two words between at
+     signs in the picture's address and the title: the picture's place
+     (nothing: beside the page on /data; or a second name, mac.jam, over HTTP
+     and over HTTPS) and the page's name (local, http or https).
+     tools/cr/headless-check.py knows where everything is on the 800x600
+     screenshot: the red box (40, 40) 320x140, the picture (40, 200) 320x160
+     (pic.svg: an orange rounded rectangle, a darker circle at its (80, 80)
+     of radius 50, white text), the heading under them. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>CB3 @WHERE@</title>
+</head>
+<body style="margin:0;background:#1e3a5f;font-family:Inter,sans-serif">
+<div style="width:320px;height:140px;background:#e94560;margin:40px 40px 20px"></div>
+<img id="pic" src="@BASE@pic.svg" width="320" height="160" style="display:block;margin:0 40px">
+<h1 style="color:#fff;margin:24px 40px 8px;font-size:32px">Hello from Jam OS</h1>
+<p id="js" style="color:#cdd;margin:0 40px">the script did not run</p>
+<script>
+// What the DOM dump shows: the script ran (JS is interpreted, --jitless) and
+// the picture, from another name, arrived with its size.
+var pic = document.getElementById('pic');
+var say = function (text) {
+  document.getElementById('js').textContent = 'js ok ' + (6 * 7) + ', ' + text;
+};
+if (pic.complete && pic.naturalWidth) say('picture ' + pic.naturalWidth + 'x' + pic.naturalHeight);
+pic.onload = function () { say('picture ' + pic.naturalWidth + 'x' + pic.naturalHeight); };
+pic.onerror = function () { say('picture failed'); };
+</script>
+</body>
+</html>

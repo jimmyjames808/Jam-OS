@@ -55,6 +55,23 @@
 #           console line; then tools/cr/shell-wl-check.py looks at the
 #           screenshots (<outdir>/shell-wl/run/shell-wl-*.png) where the page
 #           drew; 1280x800 only (the clicks are at pixel positions)
+#   headless  headless_shell (track CB3) in one process (--no-sandbox
+#           --single-process --no-zygote --headless --disable-gpu
+#           --js-flags=--jitless): the kept tree's out/jamos program (a relink
+#           leaves it there: tools/cr/build.sh start headless_shell) and its
+#           three paks, Inter and a fonts.conf on a 2 GiB stick; one boot runs
+#           it twice on each of three copies of tools/cr/headless.html,
+#           --dump-dom and --screenshot (800x600): the page on /data
+#           (file://); the page by name over HTTP (www.jam, netpeer's DNS and
+#           relay to a server here) with its picture from a second name
+#           (mac.jam); the page over HTTPS (a server here with a certificate
+#           openssl made for the run, trusted by this run only through
+#           --ignore-certificate-errors-spki-list with its SPKI hash, not the
+#           blanket --ignore-certificate-errors), and once more without the
+#           flag, which must be refused. tools/cr/headless-check.py checks
+#           the DOM dumps, the PNGs (size, colours at a few pixels) and what
+#           the servers saw (tools/cr/headless-server.py's logs); needs
+#           openssl and an ext /data; <outdir>/headless/ has them all
 #
 # The toolchain is fetched first if it isn't there (tools/cr/toolchain.sh:
 # clang, cmake, and for `rust` Rust; gperf, which Chromium's build needs, is
@@ -304,13 +321,122 @@ case_shell_wl() {
     sed 's/^/cr-test: /' "$dir/check.out"
 }
 
+case_headless() {
+    dir=$out/headless
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    cr=${CR_DIR:-$HOME/cr}
+    version=$(awk '$1 == "version" { print $2 }' ports/chromium/recipe)
+    srcdir=$cr/$version/src/chromium-$version
+    # The kept tree's own out/jamos: a relink (tools/cr/build.sh start
+    # headless_shell) leaves the program and its paks there.
+    paks="headless_lib_data.pak headless_lib_strings.pak headless_command_resources.pak"
+    for f in "$srcdir/out/jamos/headless_shell" $(for p in $paks; do echo "$srcdir/out/jamos/$p"; done); do
+        [ -f "$f" ] || { echo "FAIL (no $f: tools/cr/build.sh start headless_shell builds it)" > "$dir/result"; return; }
+    done
+    command -v openssl > /dev/null || { echo "FAIL (no openssl on the build host)" > "$dir/result"; return; }
+    image=${PORTS_TEST_IMAGE:-build/jamos.img}
+    [ -f "$image" ] || { echo "FAIL (no $image: make image first)" > "$dir/result"; return; }
+    # The files the guest wrote are read out of its saved stick by jamext.
+    if [ "$(python3 tools/mkimage.py --data-fs "$image")" != ext ]; then
+        echo "FAIL (the image's /data is not ext: the case reads its files out with jamext)" > "$dir/result"
+        return
+    fi
+    if ! make -s build/host/jamext > "$dir/jamext.out" 2>&1; then
+        echo "FAIL (no build/host/jamext, see $dir/jamext.out)" > "$dir/result"
+        return
+    fi
+    # What goes on /data beside the program: Inter and a fontconfig file
+    # naming it, the page and its picture. The same page goes to the web
+    # directory twice, its picture from a second name (mac.jam), once for
+    # each scheme.
+    mkdir -p "$dir/add/out/jamos/fonts" "$dir/web"
+    cp third_party/inter/Inter-Regular.ttf "$dir/add/out/jamos/fonts/"
+    printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
+        '<fontconfig><dir>/data/cr/out/jamos/fonts</dir><cachedir>/data/cr/tmp/fccache</cachedir></fontconfig>' \
+        > "$dir/add/out/jamos/fonts/fonts.conf"
+    sed -e 's|@BASE@||' -e 's|@WHERE@|local|' tools/cr/headless.html > "$dir/add/out/jamos/page.html"
+    sed -e 's|@BASE@|http://mac.jam:8000/|' -e 's|@WHERE@|http|' tools/cr/headless.html > "$dir/web/page-http.html"
+    sed -e 's|@BASE@|https://mac.jam:8443/|' -e 's|@WHERE@|https|' tools/cr/headless.html > "$dir/web/page-https.html"
+    cp tools/cr/headless-pic.svg "$dir/add/out/jamos/pic.svg"
+    cp tools/cr/headless-pic.svg "$dir/web/pic.svg"
+    # The certificate, for this run only: made now, for the two names, and
+    # trusted by the browser through its public key's hash (base64 of the
+    # SHA-256 of the SubjectPublicKeyInfo, what the flag takes).
+    if ! openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 \
+         -keyout "$dir/key.pem" -out "$dir/cert.pem" -subj /CN=www.jam \
+         -addext subjectAltName=DNS:www.jam,DNS:mac.jam > "$dir/openssl.out" 2>&1; then
+        cat "$dir/openssl.out"
+        echo "FAIL (openssl could not make the certificate, see $dir/openssl.out)" > "$dir/result"
+        return
+    fi
+    spki=$(openssl x509 -in "$dir/cert.pem" -pubkey -noout | openssl pkey -pubin -outform der |
+           openssl dgst -sha256 -binary | openssl base64 -A)
+    if [ ${#spki} != 44 ]; then
+        echo "FAIL (the certificate's SPKI hash is '$spki', not 44 characters)" > "$dir/result"
+        return
+    fi
+    say "headless: the test certificate's SPKI hash is $spki"
+    sed "s|@SPKI@|$spki|" tools/cr/headless.txt > "$dir/headless.txt"
+    # The shell cuts a command line at 240 characters (USING.md): a longer
+    # line would run something else.
+    if awk '/^send / && length($0) > 245 { print "cr-test: headless: line too long (" length($0) - 5 "): " $0; bad = 1 } END { exit bad }' "$dir/headless.txt"; then
+        :
+    else
+        echo "FAIL (a send line of tools/cr/headless.txt is over the shell's 240 characters)" > "$dir/result"
+        return
+    fi
+    stick=$dir/headless-stick.img
+    if ! python3 tools/cr/base-stick.py --data-mib 2048 --programs headless_shell \
+         --program-dir "$srcdir/out/jamos" --out-files "$(echo $paks | tr ' ' ',')" --source-files "" \
+         --add "$dir/add" "$image" "$stick" "$srcdir/out/jamos" "$srcdir" "$srcdir/out/jamos" \
+         > "$dir/stick.out" 2>&1; then
+        cat "$dir/stick.out"
+        echo "FAIL (the stick, see $dir/stick.out)" > "$dir/result"
+        return
+    fi
+    sed 's/^/cr-test: /' "$dir/stick.out"
+    # the guest's reach: 8000 is the HTTP server, 8443 the HTTPS one (the
+    # pages name those ports)
+    # shellcheck disable=SC2046 # two words, the ports
+    set -- $(python3 tools/netpeer.py --free-ports 2)
+    python3 tools/cr/headless-server.py "$dir/web" "$1" "$dir/http-server.log" > "$dir/http-server.out" 2>&1 &
+    hpid=$!
+    python3 tools/cr/headless-server.py "$dir/web" "$2" "$dir/https-server.log" --tls "$dir/cert.pem" "$dir/key.pem" \
+        > "$dir/https-server.out" 2>&1 &
+    spid=$!
+    QEMU_SAVE=$dir/saved.img QEMU_IMAGE=$stick QEMU_INPUT=$dir/headless.txt QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} \
+        QEMU_MEM=${QEMU_MEM:-4G} QEMU_NET=1 QEMU_NET_PEER="--tcp-relay 8000:$1,8443:$2" \
+        tools/qemu-test.sh "$dir/run" headless shell > "$dir/qemu.out" 2>&1
+    qrc=$?
+    kill "$hpid" "$spid" 2> /dev/null
+    rm -f "$stick" "$dir/key.pem"
+    # what the guest wrote, out of the saved stick
+    for f in dom-local.html dom-http.html dom-https.html dom-nocert.html local.png http.png https.png; do
+        build/host/jamext -q --part 2 get "$dir/saved.img" "/cr/tmp/$f" "$dir/$f" > /dev/null 2>&1 ||
+            say "headless: no $f on the stick"
+    done
+    rm -f "$dir/saved.img"
+    if [ $qrc -ne 0 ]; then
+        echo "FAIL (the script: $(grep 'serial-feed: .*: no ' "$dir/qemu.out" | tail -1 | sed 's/^serial-feed: //'), see $dir/run/)" > "$dir/result"
+        return
+    fi
+    if python3 tools/cr/headless-check.py "$dir" > "$dir/check.out" 2>&1; then
+        echo PASS > "$dir/result"
+    else
+        echo "FAIL (see $dir/check.out)" > "$dir/result"
+    fi
+    sed 's/^/cr-test: /' "$dir/check.out"
+}
+
 for c in "$@"; do
     case $c in
     hello) case_hello ;;
     rust) case_rust ;;
     base) case_base ;;
     shell-wl) case_shell_wl ;;
-    *) echo "cr-test: no case $c (hello, rust, base, shell-wl)" >&2
+    headless) case_headless ;;
+    *) echo "cr-test: no case $c (hello, rust, base, shell-wl, headless)" >&2
        mkdir -p "$out/$c"
        echo "FAIL (no such case)" > "$out/$c/result" ;;
     esac
