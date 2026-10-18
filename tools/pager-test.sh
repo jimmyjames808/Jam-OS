@@ -638,17 +638,19 @@ nwrites() {
 
 # boot_cut <run> <script> <drive> <marker> <delta>: boot, and kill -9 QEMU
 # when the trace of the drive's commands has <delta> more Writes than it had
-# when the log first showed <marker>. The drive is throttled (QEMU's
-# throttle: tools/qemu-test.sh's QEMU_NVME_THROTTLE: without it five Writes
-# take less time than the poll between two looks at the trace; at 2 a second
-# the kill lands on the point's Write, further out the exact Write matters
-# less than the time it takes to get there, and the drive takes 30 a
-# second). Sets `cut` to the Writes traced when the kill was sent, or empty
+# when the log first showed <marker>. The drive is throttled to 30 Writes a
+# second (QEMU's throttle: tools/qemu-test.sh's QEMU_NVME_THROTTLE: without
+# it five Writes take less time than the poll between two looks at the
+# trace). extfs-test.sh's cut case goes to 2 a second for its first ten
+# points, so that the kill lands on the point's Write; here the boot and the
+# file made before the storm would not get through at 2 (120 s waits), and
+# which Write the kill lands on matters less than that it lands in the
+# storm. Sets `cut` to the Writes traced when the kill was sent, or empty
 # when the run ended first.
 boot_cut() {
     rn=$1 script=$2 drv=$3 marker=$4 delta=$5
     cut=
-    thr="x-iops-write=$([ "$delta" -le 10 ] && echo 2 || echo 30)"
+    thr="x-iops-write=30"
     QEMU_TIMEOUT=${QEMU_TIMEOUT:-420} QEMU_INPUT="$script" QEMU_NVME="$drv" QEMU_NVME_THROTTLE="$thr" \
         QEMU_EXTRA="-trace pci_nvme_write -D $out/$rn.trace" \
         tools/qemu-test.sh "$out" "$rn" shell > "$out/$rn.out" 2>&1 &
