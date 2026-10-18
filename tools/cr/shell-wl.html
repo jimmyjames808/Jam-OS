@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<!-- cr-test.sh's shell-wl page (docs/CR-PLAN.md, CB4): content_shell on
+     Jam OS's desktop loads it by name and says each event as a console
+     line, "cb4: <what>", which content_shell logs on its stderr (the
+     shell's terminal, mirrored to the serial port). The places are fixed
+     (the test clicks at them): the red box at (40, 40) 320x140, the text
+     box at (40, 300) 300x36, the list at (40, 380). The page is 3000
+     pixels tall, for the wheel, with a yellow band at 700 to 900 that
+     scrolling brings into the window (695 pixels tall on the test's
+     1280x800 desktop). -->
+<html><head><meta charset="utf-8"><title>Jam OS page</title>
+<style>
+body { margin: 0; height: 3000px; background: #0f4c5c; font-family: Inter, sans-serif; color: #fff }
+#box { position: fixed; left: 40px; top: 40px; width: 320px; height: 140px; background: #e94560 }
+#said { position: fixed; left: 40px; top: 200px; font-size: 20px; color: #f5d76e }
+#text { position: fixed; left: 40px; top: 300px; width: 300px; height: 36px; font-size: 20px; box-sizing: border-box }
+#list { position: fixed; left: 40px; top: 380px; width: 160px; height: 36px; font-size: 20px }
+#band { position: absolute; left: 0; top: 700px; width: 100%; height: 200px; background: #f5d76e }
+</style></head>
+<body>
+<div id="box"></div>
+<div id="said">Hello from Jam OS</div>
+<input id="text" value="">
+<select id="list"><option>One</option><option>Two</option><option>Three</option></select>
+<div id="band"></div>
+<script>
+function say(what) {
+    console.log("cb4: " + what);
+    document.getElementById("said").textContent = what;
+}
+var box = document.getElementById("box"), text = document.getElementById("text");
+var list = document.getElementById("list");
+box.addEventListener("click", function (e) { say("click " + e.clientX + " " + e.clientY); });
+text.addEventListener("input", function () { say("input " + text.value); });
+list.addEventListener("change", function () { say("list " + list.value); });
+var wheels = 0;
+addEventListener("wheel", function (e) { wheels++; say("wheel " + (e.deltaY > 0 ? "down" : "up") + " " + wheels); });
+var lastY = -1;
+setInterval(function () {
+    if (scrollY != lastY) { lastY = scrollY; if (scrollY > 0) say("scrolled " + Math.round(scrollY)); }
+}, 200);
+addEventListener("load", function () { say("loaded " + innerWidth + "x" + innerHeight); });
+</script>
+</body></html>

@@ -22,7 +22,7 @@
 #         idle class, the ports' output in ~/cr/ports. --clean removes the
 #         kept tree first (a clean build); --gen stops after GN; --keep=N
 #         lets ninja go on past N failures (to see many at once); targets
-#         replace base_unittests, test_child_process and headless_shell
+#         replace base_unittests, test_child_process, headless_shell and content_shell
 #         (ports/chromium/build.sh reads them from ~/cr/<version>/build.conf).
 # status  whether a build runs, its run, its time so far, ninja's last
 #         progress line, the peak memory so far; at the end its result,

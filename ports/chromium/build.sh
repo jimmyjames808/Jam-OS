@@ -16,8 +16,8 @@
 # paths stay the same from build to build, so the commands do).
 # $kept/build.conf, if there,
 # can say `targets=...` (the ninja targets, default base_unittests,
-# test_child_process, which base_unittests starts, and headless_shell:
-# each named so a stale link of it is redone, below), `keep=N` (ninja goes
+# test_child_process, which base_unittests starts, headless_shell and
+# content_shell: each named so a stale link of it is redone, below), `keep=N` (ninja goes
 # on past N failures: -k) or
 # `stop=gen` (GN only, then stop).
 build() {
@@ -43,7 +43,7 @@ build() {
     export GOPROXY=off GOTOOLCHAIN=local GOTELEMETRY=off GOFLAGS=-mod=mod \
         GOCACHE=$kept/go/cache GOPATH=$kept/go/path
 
-    targets="base_unittests test_child_process headless_shell"
+    targets="base_unittests test_child_process headless_shell content_shell"
     stop=
     keep=1
     # shellcheck disable=SC1091
@@ -99,9 +99,11 @@ install() {
     mkdir -p "$d"
     # headless_command_resources.pak: the page --dump-dom, --screenshot and
     # --print-to-pdf run in, read from beside the program (without it they
-    # print nothing and exit 0)
+    # print nothing and exit 0); content_shell.pak: content_shell's
+    # resources, read from beside it too (without it it aborts at start)
     for f in base_unittests test_child_process headless_shell headless_lib_data.pak \
-             headless_lib_strings.pak headless_command_resources.pak; do
+             headless_lib_strings.pak headless_command_resources.pak content_shell \
+             content_shell.pak; do
         cp "out/jamos/$f" "$d/$f"
     done
 }

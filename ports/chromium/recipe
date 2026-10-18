@@ -13,13 +13,17 @@
 # (Linux x86_64: Chromium's tools are Linux binaries).
 #
 # CB1 builds base_unittests and headless_shell (files/args.gn); CB2 runs
-# the first, CB3 the second. The programs' lists are wants/<name>. The
+# the first, CB3 the second; CB4 adds content_shell, on the desktop
+# (Ozone's Wayland). The programs' lists are wants/<name>: each program
+# needs its `program` line below, as the link takes a program's list from
+# there (one linked without it asks only for `posix`, so it starts with
+# no /data). The
 # licence line is Chromium's own; the third parties' licences (its
 # about:credits) come with the `chrome` target (CB6).
 name        chromium
 version     155.0.8059.39
 revision    1
-summary     the Chromium web browser's code: base_unittests and headless_shell
+summary     the Chromium web browser's code: base_unittests, headless_shell and content_shell
 homepage    https://www.chromium.org/
 category    www
 licence     BSD-3-Clause
@@ -50,3 +54,5 @@ program     lib/chromium/test_child_process
 program     lib/chromium/headless_shell
 files       lib/chromium/headless_lib_data.pak lib/chromium/headless_lib_strings.pak
 files       lib/chromium/headless_command_resources.pak
+program     lib/chromium/content_shell
+files       lib/chromium/content_shell.pak

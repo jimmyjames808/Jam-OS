@@ -43,6 +43,18 @@
 #           image (tools/cr/base-stick.py fills an ext one with jamext;
 #           QEMU_BOOT_NVME=1 boots the stick as an installed NVMe drive); results in
 #           <outdir>/base/run/ (results.txt, failures/, enosys.txt, summary.txt)
+#   shell-wl content_shell (track CB4) on the desktop, Ozone's Wayland, one
+#           process, software output: the kept tree's out/jamos program (a
+#           relink leaves it there: tools/cr/build.sh start content_shell),
+#           its pak and Inter on a 2 GiB stick (tools/cr/base-stick.py's
+#           lists), a USB keyboard and mouse; it loads tools/cr/shell-wl.html
+#           by name from an http.server here (netpeer's DNS and relay), and
+#           tools/cr/shell-wl.txt clicks, types, opens the list's popup and
+#           picks from it by keys and by a click, turns the wheel and closes
+#           the window (Super+Q: exit 0), each step waited for as the page's
+#           console line; then tools/cr/shell-wl-check.py looks at the
+#           screenshots (<outdir>/shell-wl/run/shell-wl-*.png) where the page
+#           drew; 1280x800 only (the clicks are at pixel positions)
 #
 # The toolchain is fetched first if it isn't there (tools/cr/toolchain.sh:
 # clang, cmake, and for `rust` Rust; gperf, which Chromium's build needs, is
@@ -229,12 +241,76 @@ case_base() {
     rm -f "$stick"
 }
 
+case_shell_wl() {
+    dir=$out/shell-wl
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    cr=${CR_DIR:-$HOME/cr}
+    version=$(awk '$1 == "version" { print $2 }' ports/chromium/recipe)
+    srcdir=$cr/$version/src/chromium-$version
+    # The kept tree's own out/jamos: a relink (tools/cr/build.sh start
+    # content_shell) leaves the program there, not in the stage.
+    for f in "$srcdir/out/jamos/content_shell" "$srcdir/out/jamos/content_shell.pak"; do
+        [ -f "$f" ] || { echo "FAIL (no $f: tools/cr/build.sh start content_shell builds it)" > "$dir/result"; return; }
+    done
+    image=${PORTS_TEST_IMAGE:-build/jamos.img}
+    [ -f "$image" ] || { echo "FAIL (no $image: make image first)" > "$dir/result"; return; }
+    if [ "$(python3 tools/mkimage.py --data-fs "$image")" = ext ] &&
+       ! make -s build/host/jamext > "$dir/jamext.out" 2>&1; then
+        echo "FAIL (no build/host/jamext, see $dir/jamext.out)" > "$dir/result"
+        return
+    fi
+    # Inter and a fontconfig file naming it, beside the program; the page
+    # in a directory of its own, served by name (www.jam, netpeer's DNS).
+    mkdir -p "$dir/add/out/jamos/fonts" "$dir/web"
+    cp third_party/inter/Inter-Regular.ttf "$dir/add/out/jamos/fonts/"
+    printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
+        '<fontconfig><dir>/data/cr/out/jamos/fonts</dir><cachedir>/data/cr/tmp/fccache</cachedir></fontconfig>' \
+        > "$dir/add/out/jamos/fonts/fonts.conf"
+    cp tools/cr/shell-wl.html "$dir/web/page.html"
+    stick=$dir/shell-stick.img
+    if ! python3 tools/cr/base-stick.py --data-mib 2048 --programs content_shell \
+         --program-dir "$srcdir/out/jamos" --out-files content_shell.pak --source-files "" \
+         --add "$dir/add" "$image" "$stick" "$srcdir/out/jamos" "$srcdir" "$srcdir/out/jamos" \
+         > "$dir/stick.out" 2>&1; then
+        cat "$dir/stick.out"
+        echo "FAIL (the stick, see $dir/stick.out)" > "$dir/result"
+        return
+    fi
+    sed 's/^/cr-test: /' "$dir/stick.out"
+    # shellcheck disable=SC2046 # one word, the port
+    set -- $(python3 tools/netpeer.py --free-ports 1)
+    python3 -m http.server "$1" --bind 127.0.0.1 --directory "$dir/web" > "$dir/http.log" 2>&1 &
+    hpid=$!
+    QEMU_IMAGE=$stick QEMU_INPUT=tools/cr/shell-wl.txt QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} \
+        QEMU_MEM=${QEMU_MEM:-4G} QEMU_NET=1 QEMU_NET_PEER="--tcp-relay 8000:$1" \
+        QEMU_USB="-device usb-kbd,bus=xhci.0,port=2 -device usb-mouse,bus=xhci.0,port=3" \
+        tools/qemu-test.sh "$dir/run" shell-wl shell > "$dir/qemu.out" 2>&1
+    qrc=$?
+    kill "$hpid" 2> /dev/null
+    rm -f "$stick"
+    # what the page said (of the text box's lines, one a key, the last)
+    grep -a -o 'cb4: [^"]*' "$dir/run/shell-wl.log" 2> /dev/null | uniq |
+        awk '!/^cb4: input / || /Hello Jam$/' | sed 's/^/cr-test: page said: /'
+    if [ $qrc -ne 0 ]; then
+        echo "FAIL (the script: $(grep 'serial-feed: .*: no ' "$dir/qemu.out" | tail -1 | sed 's/^serial-feed: //'), see $dir/run/)" > "$dir/result"
+        return
+    fi
+    if python3 tools/cr/shell-wl-check.py "$dir/run" > "$dir/check.out" 2>&1; then
+        echo PASS > "$dir/result"
+    else
+        echo "FAIL (the screenshots, see $dir/check.out)" > "$dir/result"
+    fi
+    sed 's/^/cr-test: /' "$dir/check.out"
+}
+
 for c in "$@"; do
     case $c in
     hello) case_hello ;;
     rust) case_rust ;;
     base) case_base ;;
-    *) echo "cr-test: no case $c (hello, rust, base)" >&2
+    shell-wl) case_shell_wl ;;
+    *) echo "cr-test: no case $c (hello, rust, base, shell-wl)" >&2
        mkdir -p "$out/$c"
        echo "FAIL (no such case)" > "$out/$c/result" ;;
     esac

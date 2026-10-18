@@ -1,0 +1,75 @@
+# cr-test.sh's shell-wl script (docs/CR-PLAN.md, track CB4): content_shell
+# on the desktop (Ozone's Wayland, one process, software output) loads
+# tools/cr/shell-wl.html from www.jam by name (netpeer's DNS and its relay
+# to the case's http.server), and the page says each event it gets as a
+# console line, "cb4: <what>" (content_shell logs those on its stderr, the
+# shell's terminal, which the serial port mirrors).
+#
+# The geometry is the tiling layout's at 1280x800: the terminal on the
+# left, content_shell's window on the right with the page's top-left
+# corner at (647, 92), 623x695 (the case's check, shell-wl-check.py, has
+# the same numbers). While the window has the focus, what this script
+# types reaches it (the compositor's keyboard: serial text is typed on the
+# US layout), not the shell, so content_shell is ended by Super+Q (the
+# window closed: content_shell quits, status 0).
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send export TMPDIR=/data/cr/tmp HOME=/data/cr/tmp FONTCONFIG_FILE=/data/cr/out/jamos/fonts/fonts.conf
+wait {prompt}
+send H=/data/cr/out/jamos/content_shell; U=http://www.jam:8000/page.html
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --disable-gpu --js-flags=--jitless --enable-logging=stderr $U
+wait 120 cb4: loaded 623x695
+sleep 2
+shot shell-wl-page
+# a click on the red box: the page's own coordinates of (800, 200)
+pointer 800 200
+monitor mouse_button 1
+monitor mouse_button 0
+wait 20 cb4: click 153 108
+# keys: a click in the text box, then text (Shift for the capitals)
+pointer 750 410
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+type Hello Jam
+wait 20 cb4: input Hello Jam
+# the list's popup: opened by a click, Down twice and Enter
+pointer 720 490
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 2
+shot shell-wl-list
+type \e[B
+sleep 1
+type \e[B
+sleep 1
+type \r
+wait 20 cb4: list Three
+# and again, a row clicked (Two, the second under the list)
+pointer 720 490
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 2
+pointer 720 557
+monitor mouse_button 1
+monitor mouse_button 0
+wait 20 cb4: list Two
+# the wheel: three notches down (QEMU's dz -1) over the page
+pointer 900 650
+monitor mouse_move 0 0 -1
+sleep 1
+monitor mouse_move 0 0 -1
+sleep 1
+monitor mouse_move 0 0 -1
+wait 20 cb4: wheel down 3
+seen 20 cb4: scrolled
+sleep 2
+shot shell-wl-wheel
+# Super+Q: the window closed, content_shell ends by itself
+monitor sendkey meta_l-q
+wait 60 content_shell exited with code 0
+wait {prompt}
+send reboot -f
+wait 60 reboot: resetting
