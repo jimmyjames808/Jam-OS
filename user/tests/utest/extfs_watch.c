@@ -305,6 +305,14 @@ static bool stop(const char *name)
     return ramdisk_destroy(&xd);
 }
 
+/* stop, the disk not saved: a hostile run's, whose journal fills 4 MiB of
+ * extfs-svc-test's /data and checks nothing the others' don't. */
+static bool stop_unsaved(void)
+{
+    CHECK(fat_stop(&r));
+    return ramdisk_destroy(&xd);
+}
+
 static status_t setattr(const char *path, uint32_t mask, uint32_t mode)
 {
     return fs_setattr_until(r.fs, dl(), path, L(path), 0, mask, mode, 0, 0, 1000000000,
@@ -1550,7 +1558,7 @@ bool t_extfs_watch_threads(void)
             CHECK(s.step[i] == 0 && s.rounds[i] == CR_ROUNDS);
     }
     unwatcher(&a);
-    return stop("watch-threads");
+    return stop_unsaved();
 }
 
 /* What extfs did with an abusive message on ch: ended the channel (0),
@@ -1812,7 +1820,7 @@ bool t_extfs_watch_abuse(void)
            (unsigned long)h0, (unsigned long)h1, (unsigned long)((now() - t0) / NS_PER_MS));
     CHECK_EQ(h1, h0);
     unwatcher(&good);
-    return stop("watch-abuse");
+    return stop_unsaved();
 }
 
 #define MEM_ROUNDS 500u
@@ -1867,5 +1875,5 @@ bool t_extfs_watch_unread(void)
     CHECK_EQ(ngot, (int)(FSWATCH_QUEUE_BYTES / (FSWATCH_RECORD_FIXED + 200) + 1));
     CHECK(got[ngot - 1].id == 0 && got[ngot - 1].mask == IN(Q_OVERFLOW));
     unwatcher(&a);
-    return stop("watch-unread");
+    return stop_unsaved();
 }
