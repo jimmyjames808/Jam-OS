@@ -465,7 +465,10 @@ bool t_extfs_restart_locks(void);
 bool t_extfs_dirs(void);
 bool t_extfs_dirs_views(void);
 bool t_extfs_dirs_limits(void);
+bool t_extfs_dirs_gone(void);
 bool t_extfs_restart_dirs(void);
+bool t_extfs_restart_gone(void);
+bool t_extfs_restart_tree(void);   /* extfs_restart.c: the channels across the steps */
 int  extfs_dirs_child(int argc, char **argv);
 bool t_fs_no_locks(void);
 int  extfs_watch_child(int argc, char **argv);

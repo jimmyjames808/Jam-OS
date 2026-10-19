@@ -19,7 +19,8 @@
  * mapped files (inode, kind, key), the watches (watch.c's table: the
  * watcher channels and their views, the watched inodes), the record locks
  * (locks.c's table and lock owners), the directory channels (the
- * directory's inode and generation, the view's flags and root). The block
+ * directory's inode and generation, the view's flags and root, a removed
+ * one's parent). The block
  * cache, the directory hash, where each directory lies (walk.c's places),
  * the watchers' queued events and the locks' waits are not kept (a
  * successor's queues start with IN_Q_OVERFLOW; a waiter asks again; a
@@ -162,7 +163,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 10u           /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 11u           /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied
@@ -193,7 +194,9 @@ struct xf_view {
 
 /* One directory channel (fs.opendir; its channel is dirs.c's). Its view
  * is a copy of the one it was opened through (that channel may close
- * first). */
+ * first). A directory removed while a channel holds it stays, with no
+ * name, on the orphan list until its last channel closes; its ".." is the
+ * parent it had then (docs/DIRHANDLE-PLAN.md 3.3). */
 struct xf_dir {
     bool     used;
     uint32_t gen;             /* bumped on every opendir of the slot: its port key */
@@ -204,6 +207,9 @@ struct xf_dir {
     uint32_t root_igen;       /* ... and the root's generation, */
     int32_t  view;            /* checked unless this is -1 (the mount's own channel), else 0 */
     uint32_t pid;             /* the process that opened it (XF_DIRS_PROC) */
+    uint32_t up_ino;          /* removed: the directory it was removed from (set before the
+                               * removal commits; read only once its link count is 0) ... */
+    uint32_t up_igen;         /* ... and that one's generation */
 };
 
 /* One VMO file.map made (pager.c): the file it shows, and how. */
@@ -386,6 +392,8 @@ void     op_made(uint32_t kind, uint32_t index);
 /* The process that wrote the running request (fs and file requests: the
  * kernel's CHANNEL_READ_PID, kept in its slot; 0 for the others). */
 uint32_t op_pid(void);
+/* A request runs (its transaction open): work after an answer waits for it. */
+bool     op_running(void);
 
 /* The volume may be changed: mounted writable, its journal open. */
 bool     writable(void);
@@ -398,7 +406,7 @@ void     tx_abort(void);
  * read-only, its superblock marked as having errors, the log told. */
 void     went_bad(const char *what);
 
-/* After the answer: drop orphan `ino` (unless it is open), or finish
+/* After the answer: drop orphan `ino` (unless it is held: files_held), or finish
  * shortening file `ino` (on the orphan list since the request; `own`:
  * its entry on the list is the truncation's, taken off at the end). */
 void     defer_drop(uint32_t ino);
@@ -417,9 +425,13 @@ uint32_t new_generation(void);
 
 #define W_NOFOLLOW 0x1        /* a link as the last name is the answer, not followed */
 #define W_STAT     0x2        /* fs.stat: `etc` itself shows unless all of etc is hidden */
+#define W_GONE     0x4        /* a removed directory may be the answer (getattr, stat, sync,
+                               * statfs, opendir: docs/DIRHANDLE-PLAN.md 3.3) */
 
 struct xf_walk {
     bool     found;           /* the path names something: `in` */
+    bool     gone;            /* ... a removed directory a channel holds (W_GONE): it has no
+                               * place, so no view hides it */
     bool     has_name;        /* it ends in a name (not the view's root, ".", ".."): `dir`
                                * holds it, and `name` is it */
     bool     must_dir;        /* it ended in '/' */
@@ -448,7 +460,10 @@ struct xf_walk {
  * channel's directory, its own ".." entry, up to the view's root), links
  * inside the view followed (up to XF_LINKS_MAX: ERR_LINK_LOOP past it),
  * the search bit of every directory looked into checked. The last name
- * need not be there (found false). Errors: ERR_LINK_OUT (an absolute
+ * need not be there (found false). A directory channel's directory removed
+ * (held: dirs.c): "" and "." name it (w->gone; with W_GONE only), ".." the
+ * parent it had (dirs_up), where the rest is walked from; every other
+ * name, and a '/' path, ERR_NOT_FOUND. Errors: ERR_LINK_OUT (an absolute
  * link, or ".." above the view's root: w->kind, used, next);
  * ERR_NOT_FOUND, ERR_NOT_DIR on the way (ERR_NOT_FOUND too for a
  * directory channel whose directory is gone, or lies where its view
@@ -532,8 +547,9 @@ status_t files_truncate(struct ext_inode *in, uint64_t size);
 bool     files_has(uint32_t ino);
 /* ... open for writing (FS_WRITE or FS_APPEND)? */
 bool     files_writing(uint32_t ino);
-/* ... open or mapped: its inode lives, if it has no name, on the orphan
- * list until neither (adopt.c keeps such orphans across a restart). */
+/* ... open, mapped or a directory channel's (dirs_has): its inode lives,
+ * if it has no name, on the orphan list until none (adopt.c keeps such
+ * orphans across a restart). */
 bool     files_held(uint32_t ino);
 void     files_event(uint64_t key);
 void     files_unheld(void);
@@ -591,6 +607,18 @@ status_t dirs_of_id(const struct xf_ctx *c, uint64_t id, struct xf_ctx *out, str
 uint64_t dirs_volume(void);
 /* fs.view's add on a directory channel: ERR_NOT_SUPPORTED. */
 status_t dirs_no_view(void *host, handle_t ch, uint32_t flags);
+/* Directory `in` was removed from `parent` (its last name: on the orphan
+ * list), inside the running request: every channel holding it remembers
+ * parent as its "..". */
+void     dirs_removed(const struct ext_inode *in, const struct ext_inode *parent);
+/* The parent removed directory ino (generation gen) had, as its channels
+ * remember it: false if no channel holds it. */
+bool     dirs_up(uint32_t ino, uint32_t gen, uint32_t *up, uint32_t *up_gen);
+/* Does a directory channel hold inode ino? */
+bool     dirs_has(uint32_t ino);
+/* Every directory channel closed (the service stops): a removed directory
+ * goes with its last (defer_drop). */
+void     dirs_close_all(void);
 void     dirs_event(uint64_t key);
 void     dirs_unheld(void);
 void     dirs_drop(uint32_t i);
@@ -831,6 +859,8 @@ enum xf_die {
     XF_DIE_SUPPLY,            /* a page request read, its pages not supplied */
     XF_DIE_WBACK,             /* a write-back's step: a run begun, its data written, the
                                * batch committed, a run answered (wback.c) */
+    XF_DIE_REMOVED,           /* a held directory's removal recorded (dirs.c: its ".."
+                               * remembered), not committed */
     XF_DIE_COUNT,
 };
 bool     test_word(const char *w);

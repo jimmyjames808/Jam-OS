@@ -22,6 +22,10 @@
  *                                 written), its data written (no commit),
  *                                 the batch committed (no PAGER_OP_WRITTEN
  *                                 yet), a run answered;
+ *                       removed   a directory a channel holds removed (an
+ *                                 rmdir, or a rename over it), its ".."
+ *                                 remembered in the state (dirs.c), the
+ *                                 request not committed;
  *   hang=<point>:<n>  the same points; the n-th time extfs reaches one it
  *                     stops answering for good (sleeps until it is killed),
  *                     with the pages of the run it began still writing:
@@ -60,7 +64,7 @@
 static const char *const point_names[XF_DIE_COUNT] = {
     [XF_DIE_WRITE] = "write", [XF_DIE_JOURNAL] = "journal", [XF_DIE_COMMIT] = "commit",
     [XF_DIE_ANSWERED] = "answered", [XF_DIE_MAP] = "map", [XF_DIE_SUPPLY] = "supply",
-    [XF_DIE_WBACK] = "wback",
+    [XF_DIE_WBACK] = "wback", [XF_DIE_REMOVED] = "removed",
 };
 
 static struct {

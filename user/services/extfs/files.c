@@ -12,8 +12,9 @@
  * Unlink of an open file succeeds: the inode, with no name left, is on the
  * orphan list (on the disk, so a cut frees it at the next mount) and
  * lives while a slot names it, or a mapped file's (pager.c); its last
- * close or unmap drops it (defer_drop). A successor keeps the orphans its
- * state holds open or mapped (adopt.c).
+ * close or unmap drops it (defer_drop). A removed directory lives so while
+ * a directory channel holds it (dirs.c). A successor keeps the orphans its
+ * state holds open, mapped or as a directory channel's (adopt.c).
  *
  * file.map is pager.c's; here are its checks, the changes its mappings
  * must see (a write's bytes, maps_wrote; a truncate's size, maps_resized)
@@ -126,7 +127,7 @@ bool files_writing(uint32_t ino)
 
 bool files_held(uint32_t ino)
 {
-    return files_has(ino) || maps_has(ino);
+    return files_has(ino) || maps_has(ino) || dirs_has(ino);
 }
 
 /* The file's inode as it is now: ERR_IO if it isn't the one opened (it
