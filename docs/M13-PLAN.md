@@ -1505,7 +1505,10 @@ pipe.c, dup.c, dev.c, etc.c, memfd.c (and memfd.h), eventfd.c and user.c.
   set calls go through `__synccall`, which needs signals once the process
   has a second thread (B4).
 - **/etc**: passwd, group, hosts (localhost, and 127.0.1.1 for `jamos`,
-  uname's nodename), services, resolv.conf (empty), shells. There is no
+  uname's nodename), services, resolv.conf (empty), shells, and
+  `fonts/fonts.conf` (fontconfig's default file: it only includes the fonts
+  packages' `/pkg/share/fonts/fonts.conf`; the FONTS track,
+  [G2-PLAN](G2-PLAN.md#gp2-notes-continued-the-fonts-track)). There is no
   `host.name` setting yet (<settings.h>), so the name stays `jamos`.
 - **For poll (B5)**: each `fd_ops` table has a commented `.ready, .arm`
   line. Pipe ends are ready to read with a leftover or the channel's

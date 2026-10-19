@@ -9,6 +9,13 @@
  *   services     ssh, domain, http and ntp
  *   resolv.conf  empty: names are resolved through /svc/dns
  *   shells       the Jam OS shell
+ *   fonts/fonts.conf
+ *                fontconfig's default configuration file (the one it reads
+ *                with no FONTCONFIG_FILE: Chromium's own build looks in
+ *                /etc/fonts): it only includes the fonts packages' own,
+ *                /pkg/share/fonts/fonts.conf (fonts-jamos, which includes
+ *                fonts-noto-extra's), so a program that has `mount /pkg r`
+ *                finds the system fonts and one that hasn't finds none
  *
  * and two files of Linux's /sys that base's SysInfo::GetHardwareInfo reads
  * (the machine's maker and model, which Jam OS can't tell: /sys is no
@@ -29,8 +36,8 @@
  * are fixed text (the size's is made at the open), read only (opening one
  * to write, or creating one, is EROFS); a description's priv is the file's
  * entry in `files`, or a copy made for it (`dynamic`: freed at its close),
- * its offset the description's (under its lock, fd.h). /etc stats as a
- * directory; listing it is not built. */
+ * its offset the description's (under its lock, fd.h). /etc and /etc/fonts
+ * stat as directories; listing them is not built. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -69,6 +76,12 @@ static const struct etc_file files[] = {
                        "ntp\t\t123/udp\n" },
     { "/etc/resolv.conf", "" },
     { "/etc/shells", "/boot/bin/shell\n" },
+    { "/etc/fonts/fonts.conf",
+      "<?xml version=\"1.0\"?>\n"
+      "<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n"
+      "<fontconfig>\n"
+      "  <include ignore_missing=\"yes\">/pkg/share/fonts/fonts.conf</include>\n"
+      "</fontconfig>\n" },
     { "/sys/devices/virtual/dmi/id/sys_vendor", "JamOS\n" },
     { "/sys/devices/virtual/dmi/id/product_name", "JamOS machine\n" },
 };
@@ -298,7 +311,7 @@ static long etc_lookup(const char *abs, int flags, const struct etc_file **out)
     enum block_leaf leaf = BL_SIZE;
     const struct etc_file *f = file_at(abs);
     bool block = !f && block_parse(abs, &place, &leaf);
-    if (!f && !block && !strcmp(abs, "/etc"))
+    if (!f && !block && (!strcmp(abs, "/etc") || !strcmp(abs, "/etc/fonts")))
         return (flags & FD_ACCMODE) != O_RDONLY ? -EISDIR : -ENOTSUP;   /* no listing */
     if (!f && !block)
         return (flags & O_CREAT) ? -EROFS : -ENOENT;
@@ -348,7 +361,7 @@ long etc_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *
 long etc_stat(const char *abs, struct stat *st)
 {
     memset(st, 0, sizeof(*st));
-    if (!strcmp(abs, "/etc")) {
+    if (!strcmp(abs, "/etc") || !strcmp(abs, "/etc/fonts")) {
         st->st_mode = S_IFDIR | 0555;
         st->st_nlink = 2;
         st->st_blksize = 4096;
