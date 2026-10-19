@@ -28,7 +28,9 @@
  *                       bound (one IN_Q_OVERFLOW, the rest dropped, events
  *                       again after a take); 8 watcher channels for this
  *                       process and the ninth refused (fs.watch's writer
- *                       pid), a second process's still taken
+ *                       pid), a second process's still taken; (IR's 5)
+ *                       1,024 watches across this process's channels and
+ *                       the next refused, a second process's taken
  *   extfs_watch_hidden  (IE2) no event names what the watcher's view hides
  *                       from a listing (etc/ssh, the root's etc and an
  *                       "ETC"); adds on hidden places refused
@@ -55,6 +57,20 @@
  *                       channel with its bell rung
  *   extfs_restart_reach (IR's 1) extfs ended between a rename's commit and
  *                       its events: the successor runs its reach check
+ *   extfs_restart_giveup (IR's 7) extfs killed and given up: the keeper
+ *                       closes the watcher channel and rings its bell
+ *   extfs_watch_storm   (IR2) renames while extfs is killed every 200 ms:
+ *                       every rename answered, the watch carried on, only
+ *                       whole pairs and overflows read
+ *   extfs_watch_threads (IR2) 8 threads opening, writing, closing and
+ *                       renaming their files while another reads: each
+ *                       thread's records in its order (the close rule)
+ *   extfs_watch_abuse   (IR2) protocol abuse aimed at extfs: bad first
+ *                       messages, malformed and odd requests, floods of
+ *                       gives and of takes never read; extfs serves on and
+ *                       its handles come back
+ *   extfs_watch_unread  (IR2) a watcher that never reads: extfs's pages
+ *                       and handles flat once its queue is full
  *
  * Each disk is saved for Linux's e2fsck (tools/extfs-svc-test.sh). The
  * second process's mode is xwatch-<what>. */
@@ -286,6 +302,14 @@ static bool stop(const char *name)
 {
     CHECK(fat_stop(&r));
     CHECK(extfs_save(&xd, name));
+    return ramdisk_destroy(&xd);
+}
+
+/* stop, the disk not saved: a hostile run's, whose journal fills 4 MiB of
+ * extfs-svc-test's /data and checks nothing the others' don't. */
+static bool stop_unsaved(void)
+{
+    CHECK(fat_stop(&r));
     return ramdisk_destroy(&xd);
 }
 
@@ -535,6 +559,23 @@ static int cap_child(void)
     return st == OK ? 0 : st == ERR_NO_RESOURCES ? 2 : 3;
 }
 
+/* The second process (mode xwatch-add, the mount's channel as SR_USER): a
+ * watcher channel of its own and a watch on /c/128, while the first
+ * process holds its whole share of the volume's watches (IR's 5). */
+static int add_child(void)
+{
+    handle_t fs = startup_handle(SR_USER), give;
+    struct wat x;
+    uint32_t id = 0;
+    uint8_t existed = 0;
+    if (!fs || fs_watch_until(fs, dl(), &x.ch) != OK || jam_event_create(&x.bell) != OK ||
+        jam_handle_duplicate(x.bell, RIGHT_SIGNAL | RIGHT_TRANSFER, &give) != OK ||
+        fswatch_bell_give(x.ch, give) != OK)
+        return 1;
+    status_t st = fswatch_add_until(x.ch, dl(), "/c/128", 6, IN(CREATE), &id, &existed);
+    return st == OK && id ? 0 : st == ERR_NO_SPACE ? 2 : 3;
+}
+
 int extfs_watch_child(int argc, char **argv)
 {
     const char *m = argc >= 2 ? argv[1] : "";
@@ -542,6 +583,8 @@ int extfs_watch_child(int argc, char **argv)
         return change_child();
     if (!strcmp(m, "xwatch-cap"))
         return cap_child();
+    if (!strcmp(m, "xwatch-add"))
+        return add_child();
     return 127;
 }
 
@@ -773,6 +816,33 @@ bool t_extfs_watch_limits(void)
     CHECK(run("xwatch-cap", r.fs));
     unwatcher(&more[0]);
     CHECK(watcher(r.fs, &more[0]));
+
+    /* FSW_PROCESS_WATCHES on all of this process's channels (IR's 5: one
+     * process can't take the volume's): 128 directories on each of the 7
+     * more channels and 127 on a (with its /q), the next refused on any,
+     * a second process's taken; one removed makes room. */
+    _Static_assert(FSW_PROCESS_WATCHES == 1 + 128 * FSW_PER_PROCESS - 1, "the share filled");
+    CHECK_ST(t_mkdir(&r, "/c"), OK);
+    for (unsigned j = 0; j <= 128; j++) {
+        snprintf(path, sizeof(path), "/c/%u", j);
+        CHECK_ST(t_mkdir(&r, path), OK);
+    }
+    uint32_t first = 0;
+    for (unsigned i = 0; i < FSW_PER_PROCESS; i++) {
+        const struct wat *x = i + 1 < FSW_PER_PROCESS ? &more[i] : &a;
+        for (unsigned j = 0; j < (x == &a ? 127u : 128u); j++) {
+            snprintf(path, sizeof(path), "/c/%u", j);
+            uint32_t id = add(x, path, IN(CREATE));
+            CHECK(id);
+            first = first ? first : id;
+        }
+    }
+    uint32_t id = 0;
+    CHECK_ST(add_st(&a, "/c/127", IN(CREATE), &id, NULL), ERR_NO_SPACE);
+    CHECK_ST(add_st(&more[0], "/c/128", IN(CREATE), &id, NULL), ERR_NO_SPACE);
+    CHECK(run("xwatch-add", r.fs));
+    CHECK_ST(fswatch_remove_until(more[0].ch, dl(), first), OK);
+    CHECK_ST(add_st(&a, "/c/127", IN(CREATE), &id, NULL), OK);
     for (unsigned i = 0; i + 1 < FSW_PER_PROCESS; i++)
         unwatcher(&more[i]);
 
@@ -1126,4 +1196,684 @@ bool t_extfs_restart_reach(void)
     jam_handle_close(sub);
     CHECK(extfs_save(&xd, "restart-reach"));
     return ramdisk_destroy(&xd);
+}
+
+/* IR's 7: a dead extfs its supervisor gives up (as volumes does past its
+ * restart limit) has its kept channels closed by the keeper, which rings
+ * each kept bell (keepch.put's ring): a client waiting on its bell alone
+ * (poll, epoll) wakes to find its channel closed. */
+bool t_extfs_restart_giveup(void)
+{
+    struct wat a;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_sup_start(&xd, NULL, 0));
+    struct fatrun *f = extfs_sup_run();
+    CHECK_ST(t_mkdir(f, "/d"), OK);
+    CHECK(watcher(f->fs, &a));
+    uint32_t id = add(&a, "/d", ALL);
+    CHECK(id);
+    CHECK_ST(t_mkdir(f, "/d/x"), OK);
+    EXPECT(&a, "before", { id, IN(CREATE) | IN(ISDIR), "x" });
+    CHECK(!rung(&a));
+    CHECK(extfs_sup_give_up(dl()));
+    CHECK_ST(jam_object_wait_one(a.bell, FSWATCH_BELL, now() + 5 * NS_PER_S, NULL), OK);
+    CHECK(closed(&a));
+    CHECK(extfs_sup_stop());
+    unwatcher(&a);
+    return ramdisk_destroy(&xd);
+}
+
+/* ---- hostile runs (IR2: the plan's IR row) ------------------------------------- */
+
+/* A reader thread: takes what watcher x gets as it comes, until told to
+ * stop and nothing more came for 20 ms, handing each record to check
+ * (false: against the rules). */
+struct rd {
+    const struct wat *x;
+    bool    (*check)(void *ctx, const struct rec *e);
+    void     *ctx;
+    bool      stop;
+    bool      bad;          /* a take failed or a record broke the rules */
+    bool      closed;       /* the channel closed under it */
+    unsigned  records, overflows;
+    handle_t  thread;
+    struct rec e;
+    uint8_t   buf[FSWATCH_TAKE_BYTES];
+    _Alignas(16) uint8_t stack[32 << 10];
+};
+
+static bool rd_take(struct rd *d)
+{
+    uint8_t more = 1;
+    CHECK_ST(jam_event_signal(d->x->bell, FSWATCH_BELL, 0), OK);
+    while (more) {
+        uint32_t n = 0;
+        status_t st = fswatch_take_until(d->x->ch, dl(), FSWATCH_TAKE_BYTES, &more, d->buf, &n);
+        if (st == ERR_PEER_CLOSED) {
+            d->closed = true;
+            return false;
+        }
+        CHECK_ST(st, OK);
+        for (uint32_t o = 0; o < n;) {
+            struct rec *e = &d->e;
+            uint16_t len;
+            CHECK(n - o >= FSWATCH_RECORD_FIXED);
+            memcpy(&e->id, d->buf + o, 4);
+            memcpy(&e->mask, d->buf + o + 4, 4);
+            memcpy(&e->cookie, d->buf + o + 8, 4);
+            memcpy(&len, d->buf + o + 12, 2);
+            o += FSWATCH_RECORD_FIXED;
+            CHECK(len < sizeof(e->name) && n - o >= len);
+            e->len = len;
+            memcpy(e->name, d->buf + o, len);
+            e->name[len] = '\0';
+            o += len;
+            d->records++;
+            d->overflows += e->id == 0 && e->mask == IN(Q_OVERFLOW);
+            if (!d->check(d->ctx, e))
+                FAIL("record %u against the rules: id %u mask %#x cookie %u \"%s\"", d->records,
+                     e->id, e->mask, e->cookie, e->name);
+        }
+    }
+    return true;
+}
+
+static void reader(void *arg)
+{
+    struct rd *d = arg;
+    for (;;) {
+        bool stop = __atomic_load_n(&d->stop, __ATOMIC_ACQUIRE);
+        if (jam_object_wait_one(d->x->bell, FSWATCH_BELL, now() + 20 * NS_PER_MS, NULL) != OK) {
+            if (stop)
+                return;
+            continue;
+        }
+        if (!rd_take(d)) {
+            d->bad = !d->closed;
+            return;
+        }
+    }
+}
+
+static bool rd_start(struct rd *d, const struct wat *x, bool (*check)(void *, const struct rec *),
+                     void *ctx)
+{
+    d->x = x;
+    d->check = check;
+    d->ctx = ctx;
+    d->stop = d->bad = d->closed = false;
+    d->records = d->overflows = 0;
+    CHECK_ST(thread_spawn("watch reader", reader, d, d->stack, sizeof(d->stack), &d->thread), OK);
+    return true;
+}
+
+static bool rd_stop(struct rd *d)
+{
+    __atomic_store_n(&d->stop, true, __ATOMIC_RELEASE);
+    CHECK(wait_threads(&d->thread, 1));
+    CHECK(!d->closed);
+    CHECK(!d->bad);
+    return true;
+}
+
+/* The storm's rule: a and b in /s moved back and forth make pairs, each
+ * IN_MOVED_FROM followed at once by its IN_MOVED_TO (its cookie, the
+ * other name); a restart's IN_Q_OVERFLOW (the dead instance's queue lost)
+ * may come between two pairs or cut one after its IN_MOVED_FROM, nothing
+ * else. */
+struct pairs {
+    uint32_t id, cookie;
+    char     from;
+    unsigned pairs, cut;
+};
+
+static bool pair_check(void *ctx, const struct rec *e)
+{
+    struct pairs *p = ctx;
+    if (e->id == 0 && e->mask == IN(Q_OVERFLOW) && !e->len) {
+        p->cut += p->cookie != 0;
+        p->cookie = 0;
+        return true;
+    }
+    if (e->id != p->id || e->len != 1 || (e->name[0] != 'a' && e->name[0] != 'b') || !e->cookie)
+        return false;
+    if (e->mask == IN(MOVED_FROM) && !p->cookie) {
+        p->cookie = e->cookie;
+        p->from = e->name[0];
+        return true;
+    }
+    if (e->mask == IN(MOVED_TO) && e->cookie == p->cookie && e->name[0] != p->from) {
+        p->cookie = 0;
+        p->pairs++;
+        return true;
+    }
+    return false;
+}
+
+/* Is /s/a there (else /s/b is), asked again through a death or two. */
+static status_t where_a(const struct fatrun *f, bool *at_a)
+{
+    status_t st = ERR_IO;
+    for (int i = 0; i < 3 && st == ERR_IO; i++)
+        st = t_stat(f, "/s/a", NULL, NULL, NULL);
+    *at_a = st == OK;
+    return st == ERR_NOT_FOUND ? OK : st;
+}
+
+#define STORM_EVERY_MS 200u
+#define STORM_KILLS    15u
+#define STORM_MAX_NS   (60 * NS_PER_S)
+
+/* A rename storm while the supervisor kills extfs every 200 ms (as WR's
+ * whostile kills extfs-jam with initctl.kill), a reader taking as it goes:
+ * every rename answered (OK, or ERR_IO for one in progress at two deaths
+ * in a row: extfs_restart's R2), the watch carried across every restart
+ * (its channel never closed), its records only pairs and overflows; after
+ * the storm a rename makes exactly one pair. */
+bool t_extfs_watch_storm(void)
+{
+    static struct rd d;
+    static struct pairs p;
+    struct wat a;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_sup_start(&xd, NULL, 0));
+    struct fatrun *f = extfs_sup_run();
+    CHECK_ST(t_mkdir(f, "/s"), OK);
+    CHECK(put_file(f, "/s/a", "a"));
+    CHECK(watcher(f->fs, &a));
+    memset(&p, 0, sizeof(p));
+    CHECK((p.id = add(&a, "/s", IN(MOVED_FROM) | IN(MOVED_TO))));
+    CHECK(rd_start(&d, &a, pair_check, &p));
+    extfs_sup_storm(STORM_EVERY_MS * NS_PER_MS);
+    bool at_a = true;
+    unsigned done = 0, io = 0;
+    status_t st = OK;
+    uint64_t t0 = now();
+    while (st == OK && extfs_sup_crashes() < STORM_KILLS && now() - t0 < STORM_MAX_NS) {
+        st = t_rename(f, at_a ? "/s/a" : "/s/b", at_a ? "/s/b" : "/s/a");
+        if (st == OK) {
+            at_a = !at_a;
+            done++;
+        } else if (st == ERR_IO) {
+            io++;
+            st = where_a(f, &at_a);
+        }
+    }
+    extfs_sup_storm(0);
+    jam_sleep_until(now() + 100 * NS_PER_MS);   /* a kill the supervisor had timed already */
+    status_t up = t_stat(f, "/s", NULL, NULL, NULL);   /* an instance serves: its overflow queued */
+    unsigned kills = extfs_sup_crashes();
+    bool rd_ok = rd_stop(&d);
+    printf("utest: %s: %u renames (%u ERR_IO) in %lu ms, extfs killed %u times; %u records: "
+           "%u pairs, %u cut by an overflow, %u overflows\n", utest_cur, done, io,
+           (unsigned long)((now() - t0) / NS_PER_MS), kills, d.records, p.pairs, p.cut,
+           d.overflows);
+    CHECK_ST(st, OK);
+    CHECK_ST(up, OK);
+    CHECK(rd_ok);
+    CHECK(kills >= STORM_KILLS && done >= STORM_KILLS);
+    CHECK(p.pairs + p.cut <= done + io && p.pairs > 0);
+
+    /* After the storm: the watch carries on, one pair for one rename. */
+    CHECK_ST(where_a(f, &at_a), OK);
+    CHECK_ST(t_rename(f, at_a ? "/s/a" : "/s/b", at_a ? "/s/b" : "/s/a"), OK);
+    EXPECT(&a, "after the storm", { p.id, IN(MOVED_FROM), at_a ? "a" : "b" },
+           { p.id, IN(MOVED_TO), at_a ? "b" : "a" });
+    CHECK(paired(0, 1));
+    CHECK(extfs_sup_stop());
+    unwatcher(&a);
+    CHECK(extfs_save(&xd, "watch-storm"));
+    return ramdisk_destroy(&xd);
+}
+
+#define CR_THREADS 8u
+#define CR_ROUNDS  60u
+#define CR_CREATE  7     /* a thread's first record: its file's IN_CREATE */
+#define CR_LOST    (-1)  /* after an overflow: in step again at its next IN_OPEN */
+
+/* A round's records of one thread, in its order: the close's before the
+ * next request's (the close rule, 2.3), each pair whole. */
+static const struct {
+    uint32_t mask;
+    char     name;
+} cr_steps[] = {
+    { IN(OPEN), 'f' },       { IN(MODIFY), 'f' },   { IN(CLOSE_WRITE), 'f' },
+    { IN(MOVED_FROM), 'f' }, { IN(MOVED_TO), 'g' }, { IN(MOVED_FROM), 'g' },
+    { IN(MOVED_TO), 'f' },
+};
+
+struct crstate {
+    uint32_t id;
+    uint32_t cookie;            /* an IN_MOVED_FROM's, its IN_MOVED_TO next */
+    int      step[CR_THREADS];  /* each thread's next record: cr_steps[], CR_CREATE, CR_LOST */
+    unsigned rounds[CR_THREADS];
+};
+
+static bool cr_check(void *ctx, const struct rec *e)
+{
+    struct crstate *s = ctx;
+    if (e->id == 0 && e->mask == IN(Q_OVERFLOW) && !e->len) {
+        for (unsigned i = 0; i < CR_THREADS; i++)
+            s->step[i] = CR_LOST;
+        s->cookie = 0;
+        return true;
+    }
+    if (e->id != s->id || e->len != 2 || (e->name[0] != 'f' && e->name[0] != 'g') ||
+        e->name[1] < '0' || e->name[1] >= (char)('0' + CR_THREADS))
+        return false;
+    if (e->mask == IN(MOVED_TO)) {
+        if (!s->cookie || e->cookie != s->cookie)
+            return false;
+        s->cookie = 0;
+    } else if (s->cookie) {
+        return false;   /* a pair cut by another record */
+    } else if (e->mask == IN(MOVED_FROM)) {
+        if (!e->cookie)
+            return false;
+        s->cookie = e->cookie;
+    }
+    unsigned i = (unsigned)(e->name[1] - '0');
+    int k = s->step[i];
+    if (k == CR_LOST) {
+        if (e->mask == IN(OPEN) && e->name[0] == 'f')
+            s->step[i] = 1;
+        return true;
+    }
+    uint32_t mask = k == CR_CREATE ? IN(CREATE) : cr_steps[k].mask;
+    char name = k == CR_CREATE ? 'f' : cr_steps[k].name;
+    if (e->mask != mask || e->name[0] != name)
+        return false;
+    s->step[i] = k == CR_CREATE ? 0 : (k + 1) % 7;
+    s->rounds[i] += s->step[i] == 0 && k != CR_CREATE;
+    return true;
+}
+
+/* One of the 8: its file opened, written, closed, renamed away and back,
+ * CR_ROUNDS times. */
+struct crw {
+    unsigned i;
+    status_t st;
+    handle_t thread;
+    _Alignas(16) uint8_t stack[32 << 10];
+};
+
+static void cr_worker(void *arg)
+{
+    struct crw *w = arg;
+    char f[8], g[8];
+    snprintf(f, sizeof(f), "/w/f%u", w->i);
+    snprintf(g, sizeof(g), "/w/g%u", w->i);
+    for (unsigned round = 0; round < CR_ROUNDS && w->st == OK; round++) {
+        struct tfile t;
+        uint32_t done = 0;
+        w->st = t_open(&r, f, FS_WRITE | FS_CREATE, &t);
+        if (w->st != OK)
+            break;
+        w->st = t_write(&t, 0, "x", 1, &done);
+        t_close(&t);
+        if (w->st == OK)
+            w->st = t_rename(&r, f, g);
+        if (w->st == OK)
+            w->st = t_rename(&r, g, f);
+    }
+}
+
+/* 8 threads each opening, writing and closing its file, then renaming it
+ * away and back, while a reader takes as it goes: each thread's records
+ * in its order (an IN_CLOSE_WRITE before the IN_MOVED_FROM its thread's
+ * next request makes: the close rule under load), each pair whole, and
+ * with no overflow every record there. */
+bool t_extfs_watch_threads(void)
+{
+    static struct rd d;
+    static struct crstate s;
+    static struct crw w[CR_THREADS];
+    handle_t th[CR_THREADS];
+    struct wat a;
+    CHECK(start());
+    CHECK_ST(t_mkdir(&r, "/w"), OK);
+    CHECK(watcher(r.fs, &a));
+    memset(&s, 0, sizeof(s));
+    CHECK((s.id = add(&a, "/w", ALL)));
+    for (unsigned i = 0; i < CR_THREADS; i++)
+        s.step[i] = CR_CREATE;
+    CHECK(rd_start(&d, &a, cr_check, &s));
+    for (unsigned i = 0; i < CR_THREADS; i++) {
+        w[i].i = i;
+        w[i].st = OK;
+        CHECK_ST(thread_spawn("watch writer", cr_worker, &w[i], w[i].stack, sizeof(w[i].stack),
+                              &w[i].thread), OK);
+        th[i] = w[i].thread;
+    }
+    CHECK(wait_threads(th, CR_THREADS));
+    bool rd_ok = rd_stop(&d);
+    printf("utest: %s: %u threads x %u rounds: %u records, %u overflows\n", utest_cur,
+           CR_THREADS, CR_ROUNDS, d.records, d.overflows);
+    for (unsigned i = 0; i < CR_THREADS; i++)
+        CHECK_ST(w[i].st, OK);
+    CHECK(rd_ok);
+    if (!d.overflows) {
+        CHECK_EQ(d.records, CR_THREADS * (1 + 7 * CR_ROUNDS));
+        for (unsigned i = 0; i < CR_THREADS; i++)
+            CHECK(s.step[i] == 0 && s.rounds[i] == CR_ROUNDS);
+    }
+    unwatcher(&a);
+    return stop_unsaved();
+}
+
+/* What extfs did with an abusive message on ch: ended the channel (0),
+ * answered it (1, the reply's status in *st), neither within 2 s (2). */
+static int outcome(handle_t ch, int32_t *st)
+{
+    static uint8_t rep[FSWATCH_REP_MAX];
+    signals_t seen = 0;
+    if (jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, now() + 2 * NS_PER_S, &seen) != OK)
+        return 2;
+    if (!(seen & SIG_READABLE))
+        return 0;
+    uint32_t nb = 0, nh = 0;
+    handle_t hs[4];
+    struct channel_read_args a = {
+        .h = ch, .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+        .rd_handles = (uint64_t)(uintptr_t)hs, .rd_hcap = 4,
+        .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+    };
+    *st = ERR_IO;
+    if (jam_channel_read(&a) != OK)
+        return 0;   /* closed since */
+    for (uint32_t i = 0; i < nh; i++)
+        jam_handle_close(hs[i]);
+    if (nb >= 8)
+        memcpy(st, rep + 4, 4);
+    return 1;
+}
+
+static const char *said(int o, int32_t st)
+{
+    static char text[64];
+    if (o == 1)
+        snprintf(text, sizeof(text), "answered %s", status_str(st));
+    return o == 0 ? "ended" : o == 1 ? text : "neither ended nor answered";
+}
+
+/* A fresh watcher channel's first message, as a hostile client may send
+ * it (case c; false: no more cases). Anything but one give of one event
+ * with RIGHT_SIGNAL must end the channel (fswatch_bell's rule). */
+static bool first_abuse(unsigned c, handle_t ch, const char **what)
+{
+    struct fswatch_bell_give_msg g = { 0, FSWATCH_BELL_GIVE };
+    struct fswatch_take_req t = { 1, FSWATCH_TAKE, 64 };
+    handle_t h[2] = { HANDLE_INVALID, HANDLE_INVALID }, x = HANDLE_INVALID;
+    (void)jam_event_create(&h[0]);
+    switch (c) {
+    case 0:
+        *what = "a take before the bell";
+        jam_handle_close(h[0]);
+        (void)jam_channel_write(ch, &t, sizeof(t), NULL, 0);
+        return true;
+    case 1:
+        *what = "the give as a call (a txid)";
+        g.txid = 7;
+        (void)jam_channel_write(ch, &g, sizeof(g), h, 1);
+        return true;
+    case 2:
+        *what = "a channel for the bell";
+        jam_handle_close(h[0]);
+        (void)jam_channel_create(&h[0], &x);
+        jam_handle_close(x);
+        (void)jam_channel_write(ch, &g, sizeof(g), h, 1);
+        return true;
+    case 3:
+        *what = "a bell without RIGHT_SIGNAL";
+        (void)jam_handle_replace(h[0], RIGHT_TRANSFER | RIGHT_DUPLICATE | RIGHT_WAIT, &x);
+        (void)jam_channel_write(ch, &g, sizeof(g), &x, 1);
+        return true;
+    case 4:
+        *what = "a give of no handle";
+        jam_handle_close(h[0]);
+        (void)jam_channel_write(ch, &g, sizeof(g), NULL, 0);
+        return true;
+    case 5:
+        *what = "a give of two events";
+        (void)jam_event_create(&h[1]);
+        (void)jam_channel_write(ch, &g, sizeof(g), h, 2);
+        return true;
+    case 6:
+        *what = "a short give";
+        (void)jam_channel_write(ch, &g, 4, h, 1);
+        return true;
+    case 7:
+        *what = "an unknown ordinal, as an event";
+        g.ordinal = FSWATCH_BELL_GIVE + 9;
+        (void)jam_channel_write(ch, &g, sizeof(g), h, 1);
+        return true;
+    case 8:
+        /* A flood of gives: the first is the bell; each after it is a
+         * request of no fswatch ordinal, refused (ERR_INVALID_ARGS, its
+         * event closed), the channel kept. */
+        *what = "a flood of gives";
+        jam_handle_close(h[0]);
+        for (unsigned i = 0; i < 1000; i++)
+            if (jam_event_create(&x) != OK || jam_channel_write(ch, &g, sizeof(g), &x, 1) != OK)
+                break;
+        return true;
+    default:
+        jam_handle_close(h[0]);
+        return false;
+    }
+}
+
+/* A request on a belled channel, malformed as a hostile client may send
+ * it (case c; false: no more cases). */
+static bool request_abuse(unsigned c, handle_t ch, const char **what)
+{
+    static uint8_t big[FSWATCH_REQ_MAX + 8192];
+    struct fswatch_take_req t = { 3, FSWATCH_TAKE, 64 };
+    struct fswatch_bell_give_msg g = { 0, FSWATCH_BELL_GIVE };
+    handle_t h = HANDLE_INVALID;
+    switch (c) {
+    case 0:
+        *what = "an unknown ordinal";
+        t.ordinal = FSWATCH_TAKE + 9;
+        (void)jam_channel_write(ch, &t, sizeof(t), NULL, 0);
+        return true;
+    case 1:
+        *what = "a short take";
+        (void)jam_channel_write(ch, &t, 8, NULL, 0);
+        return true;
+    case 2:
+        *what = "a take 8 KiB too long";
+        memcpy(big, &t, sizeof(t));
+        (void)jam_channel_write(ch, big, sizeof(big), NULL, 0);
+        return true;
+    case 3:
+        *what = "a take carrying an event";
+        (void)jam_event_create(&h);
+        (void)jam_channel_write(ch, &t, sizeof(t), &h, 1);
+        return true;
+    case 4:
+        *what = "a take as an event (no txid)";
+        t.txid = 0;
+        (void)jam_channel_write(ch, &t, sizeof(t), NULL, 0);
+        return true;
+    case 5:
+        *what = "a second bell";
+        (void)jam_event_create(&h);
+        (void)jam_channel_write(ch, &g, sizeof(g), &h, 1);
+        return true;
+    case 6:
+        *what = "a take of another protocol's ordinal";
+        t.ordinal = FSWATCH_TAKE ^ (1u << 16);
+        (void)jam_channel_write(ch, &t, sizeof(t), NULL, 0);
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* The extfs job's handles, once every close made so far is handled (a
+ * request served after them: 2.3). */
+static bool job_handles(uint64_t *out)
+{
+    struct job_info ji;
+    CHECK_ST(t_stat(&r, "/", NULL, NULL, NULL), OK);
+    CHECK_ST(info_of(r.job, &ji), OK);
+    *out = ji.used[JOB_LIMIT_HANDLES];
+    return true;
+}
+
+#define ABUSE_PATH 4095u   /* fswatch.add's longest path */
+
+/* Protocol abuse aimed at extfs itself (the library's own cases are
+ * utest fswatch_*'s, over a fake): every first message but the bell ends
+ * its channel; malformed requests after the bell are answered with an
+ * error or end the channel (each said); odd but well-formed ones (a take
+ * of no room or of too much, removes of ids not the channel's, adds of no
+ * path, of the longest, with a NUL, of every mask bit) answered; a flood
+ * of takes never read. Through all of it extfs serves on, a second
+ * watcher's watch is whole, and the job's handles come back to what they
+ * were. */
+bool t_extfs_watch_abuse(void)
+{
+    static uint8_t out[FSWATCH_TAKE_BYTES];
+    static char longp[ABUSE_PATH];
+    struct wat good, y;
+    const char *what = "";
+    int32_t st = 0;
+    uint64_t h0 = 0, h1 = 0;
+    CHECK(start());
+    CHECK_ST(t_mkdir(&r, "/g"), OK);
+    CHECK(watcher(r.fs, &good));
+    uint32_t id = add(&good, "/g", IN(CREATE));
+    CHECK(id);
+    CHECK(job_handles(&h0));
+
+    for (unsigned c = 0;; c++) {
+        CHECK_ST(fs_watch_until(r.fs, dl(), &y.ch), OK);
+        if (!first_abuse(c, y.ch, &what)) {
+            jam_handle_close(y.ch);
+            break;
+        }
+        int o = outcome(y.ch, &st);
+        printf("utest: %s: first message %s: %s\n", utest_cur, what, said(o, st));
+        CHECK(o == 0 || (c == 8 && o == 1 && st == ERR_INVALID_ARGS));
+        jam_handle_close(y.ch);
+    }
+    for (unsigned c = 0;; c++) {
+        CHECK(watcher(r.fs, &y));
+        CHECK(add(&y, "/g", IN(CREATE)));
+        if (!request_abuse(c, y.ch, &what)) {
+            unwatcher(&y);
+            break;
+        }
+        int o = outcome(y.ch, &st);
+        printf("utest: %s: after the bell, %s: %s\n", utest_cur, what, said(o, st));
+        CHECK(o != 1 || st != OK || c == 4);   /* a take with no txid is served: its own loss */
+        unwatcher(&y);
+        CHECK_ST(t_stat(&r, "/g", NULL, NULL, NULL), OK);
+    }
+
+    /* Well-formed and odd: answered, nothing of the good watcher's touched. */
+    uint8_t more = 0, existed = 0;
+    uint32_t n = 0, got_id = 0;
+    CHECK(watcher(r.fs, &y));
+    CHECK_ST(fswatch_take_until(y.ch, dl(), 0, &more, out, &n), OK);
+    CHECK_ST(fswatch_take_until(y.ch, dl(), UINT32_MAX, &more, out, &n), OK);
+    CHECK_ST(fswatch_remove_until(y.ch, dl(), 0), OK);
+    CHECK_ST(fswatch_remove_until(y.ch, dl(), UINT32_MAX), OK);
+    CHECK_ST(fswatch_remove_until(y.ch, dl(), id), OK);   /* the good watcher's: not y's */
+    status_t s1 = fswatch_add_until(y.ch, dl(), "", 0, IN(CREATE), &got_id, &existed);
+    memset(longp, 'a', sizeof(longp));
+    longp[0] = '/';
+    status_t s2 = fswatch_add_until(y.ch, dl(), longp, ABUSE_PATH, IN(CREATE), &got_id, &existed);
+    status_t s3 = fswatch_add_until(y.ch, dl(), "/g\0x", 4, IN(CREATE), &got_id, &existed);
+    status_t s4 = fswatch_add_until(y.ch, dl(), "/g", 2, UINT32_MAX, &got_id, &existed);
+    status_t s5 = fswatch_add_until(y.ch, dl(), "/g", 2, UINT32_MAX & ~IN(MASK_CREATE), &got_id,
+                                    &existed);
+    printf("utest: %s: add of no path %s, of %u bytes %s, with a NUL %s, every bit %s, every bit "
+           "but IN_MASK_CREATE %s\n", utest_cur, status_str(s1), ABUSE_PATH, status_str(s2),
+           status_str(s3), status_str(s4), status_str(s5));
+    CHECK(s2 != OK && s3 != OK && s4 == ERR_INVALID_ARGS);
+    unwatcher(&y);
+
+    /* A flood of takes, their answers never read: the client's queue
+     * fills, its answers are lost; the good watcher served all the while. */
+    CHECK(watcher(r.fs, &y));
+    struct fswatch_take_req t = { 0, FSWATCH_TAKE, FSWATCH_TAKE_BYTES };
+    unsigned sent = 0;
+    for (; sent < 4000; sent++) {
+        t.txid = sent + 1;
+        if (jam_channel_write(y.ch, &t, sizeof(t), NULL, 0) != OK)
+            break;
+    }
+    CHECK_ST(t_mkdir(&r, "/g/after"), OK);
+    EXPECT(&good, "through the abuse", { id, IN(CREATE) | IN(ISDIR), "after" });
+    printf("utest: %s: %u takes sent, never read\n", utest_cur, sent);
+    unwatcher(&y);
+    /* Its queued takes are served (their answers lost) before extfs finds
+     * it closed: a few ms. */
+    uint64_t t0 = now();
+    do
+        CHECK(job_handles(&h1));
+    while (h1 != h0 && now() - t0 < 5 * NS_PER_S && jam_sleep_until(now() + NS_PER_MS) == OK);
+    printf("utest: %s: extfs's job: %lu handles before, %lu after (%lu ms)\n", utest_cur,
+           (unsigned long)h0, (unsigned long)h1, (unsigned long)((now() - t0) / NS_PER_MS));
+    CHECK_EQ(h1, h0);
+    unwatcher(&good);
+    return stop_unsaved();
+}
+
+#define MEM_ROUNDS 500u
+
+/* rounds of a directory named `name` made and removed in /m. */
+static bool churn(unsigned rounds, const char *name)
+{
+    char path[300];
+    snprintf(path, sizeof(path), "/m/%s", name);
+    for (unsigned i = 0; i < rounds; i++) {
+        CHECK_ST(t_mkdir(&r, path), OK);
+        CHECK_ST(t_unlink_flags(&r, path, FS_UNLINK_DIR), OK);
+    }
+    return true;
+}
+
+/* A watcher that never reads costs extfs its queue's bound and no more:
+ * the job's pages and handles after 2,000 more changes are what they were
+ * once its queue was full (1,000 changes after the watch), and what it
+ * reads at last is the bound's records and one IN_Q_OVERFLOW. */
+bool t_extfs_watch_unread(void)
+{
+    struct wat a;
+    struct job_info j0, j1, j2;
+    char name[201];
+    memset(name, 'm', 200);
+    name[200] = '\0';
+    CHECK(start());
+    CHECK_ST(t_mkdir(&r, "/m"), OK);
+    CHECK(churn(MEM_ROUNDS, name));   /* warm: the caches, the journal round once */
+    CHECK(watcher(r.fs, &a));
+    uint32_t id = add(&a, "/m", IN(CREATE) | IN(DELETE));
+    CHECK(id);
+    CHECK_ST(info_of(r.job, &j0), OK);
+    CHECK(churn(MEM_ROUNDS, name));
+    CHECK_ST(info_of(r.job, &j1), OK);
+    CHECK(churn(2 * MEM_ROUNDS, name));
+    CHECK_ST(info_of(r.job, &j2), OK);
+    printf("utest: %s: extfs's job, the watch made / its queue full / 2,000 changes on: pages "
+           "%lu / %lu / %lu, handles %lu / %lu / %lu, message bytes %lu / %lu / %lu\n", utest_cur,
+           (unsigned long)j0.used[JOB_LIMIT_PAGES], (unsigned long)j1.used[JOB_LIMIT_PAGES],
+           (unsigned long)j2.used[JOB_LIMIT_PAGES], (unsigned long)j0.used[JOB_LIMIT_HANDLES],
+           (unsigned long)j1.used[JOB_LIMIT_HANDLES], (unsigned long)j2.used[JOB_LIMIT_HANDLES],
+           (unsigned long)j0.used[JOB_LIMIT_MSG_BYTES], (unsigned long)j1.used[JOB_LIMIT_MSG_BYTES],
+           (unsigned long)j2.used[JOB_LIMIT_MSG_BYTES]);
+    CHECK(rung(&a));
+    CHECK(j2.used[JOB_LIMIT_PAGES] <= j1.used[JOB_LIMIT_PAGES] + 2);
+    CHECK_EQ(j2.used[JOB_LIMIT_HANDLES], j1.used[JOB_LIMIT_HANDLES]);
+    CHECK(j2.used[JOB_LIMIT_MSG_BYTES] <= j1.used[JOB_LIMIT_MSG_BYTES]);
+    CHECK(j1.used[JOB_LIMIT_PAGES] <= j0.used[JOB_LIMIT_PAGES] + 32);   /* 16 KiB of records */
+    CHECK(take_all(&a));
+    CHECK_EQ(ngot, (int)(FSWATCH_QUEUE_BYTES / (FSWATCH_RECORD_FIXED + 200) + 1));
+    CHECK(got[ngot - 1].id == 0 && got[ngot - 1].mask == IN(Q_OVERFLOW));
+    unwatcher(&a);
+    return stop_unsaved();
 }

@@ -22,6 +22,10 @@
 _Static_assert(XF_REQ_MSG <= XF_SLOT_DATA, "a request fits before its data");
 _Static_assert(XF_SLOT_DATA % PAGE_SIZE == 0, "a slot's data starts on a page");
 _Static_assert(XF_REQ_CAP <= SVCSTATE_REQ_MAX, "a slot svcstate takes");
+#define XF_PAGES(x) (((uint64_t)(x) + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE)
+_Static_assert(PAGE_SIZE + 2 * (XF_PAGES(XF_REQ_CAP) + XF_PAGES(XF_REP_CAP)) +
+               XF_PAGES(sizeof(struct xf_state)) <= EXTFS_STATE_SIZE,
+               "the state fits the VMO its spawner makes (svcstate_size's sum)");
 
 struct xf_state *kept;
 

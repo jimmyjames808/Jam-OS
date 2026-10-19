@@ -51,6 +51,9 @@ struct sup {
     bool            bad;
     bool            stop;
     bool            fresh;    /* the next start gets a new state: it starts fresh */
+    uint64_t        storm;    /* ns: the instance killed this often (0: never) */
+    bool            give_up;  /* the next end is the last: no start, the keeper released */
+    bool            given_up; /* ... and it came */
     handle_t        thread;
     _Alignas(16) uint8_t stack[32 << 10];
 };
@@ -128,18 +131,37 @@ static bool reap(struct sup *s, struct process_info *info)
 static void supervise(void *arg)
 {
     struct sup *s = arg;
+    uint64_t next_kill = 0;
     while (!__atomic_load_n(&s->stop, __ATOMIC_ACQUIRE)) {
         signals_t seen;
-        if (jam_object_wait_one(s->r.proc, SIG_TERMINATED, now() + SUP_POLL, &seen) != OK) {
+        uint64_t storm = __atomic_load_n(&s->storm, __ATOMIC_ACQUIRE), until = now() + SUP_POLL;
+        if (!storm)
+            next_kill = 0;
+        else if (!next_kill)
+            next_kill = now() + storm;
+        if (storm && next_kill < until)
+            until = next_kill;
+        if (jam_object_wait_one(s->r.proc, SIG_TERMINATED, until, &seen) != OK) {
             /* What the instance sends its keeper taken as it comes, as
              * volumes takes it: a drop then closes the keeper's copy (a
              * watcher channel a successor refused closes for its client). */
             (void)keeper_drain_upto(&s->keeper, 64);
+            if ((storm && now() >= next_kill) || __atomic_load_n(&s->give_up, __ATOMIC_ACQUIRE)) {
+                (void)jam_process_kill(s->r.proc);   /* the next wait sees it end */
+                next_kill = now() + storm;
+            }
             continue;
         }
         struct process_info info;
         if (!reap(s, &info)) {
             s->bad = true;
+            return;
+        }
+        if (__atomic_load_n(&s->give_up, __ATOMIC_ACQUIRE)) {
+            /* As volumes does past a service's restart limit: its clients'
+             * ends close (and the rings the instance asked for sound). */
+            keeper_release(&s->keeper);
+            __atomic_store_n(&s->given_up, true, __ATOMIC_RELEASE);
             return;
         }
         bool test = !info.killed && info.exit_code == EXTFS_EXIT_TEST;
@@ -190,6 +212,11 @@ static bool sup_stop(void)
     CHECK(wait_threads(&sv.thread, 1));
     CHECK(!sv.bad);
     CHECK_ST(jam_handle_close(sv.r.fs), OK);
+    if (__atomic_load_n(&sv.given_up, __ATOMIC_ACQUIRE)) {   /* reaped, the keeper released */
+        CHECK_ST(jam_handle_close(sv.serve), OK);
+        CHECK_ST(jam_handle_close(sv.state), OK);
+        return true;
+    }
     struct process_info info;
     CHECK_ST(spawn_wait(sv.r.proc, FAT_CALL_NS, &info), OK);
     CHECK(!info.killed);
@@ -227,6 +254,24 @@ unsigned extfs_sup_ended(void)
 void extfs_sup_fresh(void)
 {
     __atomic_store_n(&sv.fresh, true, __ATOMIC_RELEASE);
+}
+
+unsigned extfs_sup_crashes(void)
+{
+    return __atomic_load_n(&sv.crashes, __ATOMIC_ACQUIRE);
+}
+
+void extfs_sup_storm(uint64_t every_ns)
+{
+    __atomic_store_n(&sv.storm, every_ns, __ATOMIC_RELEASE);
+}
+
+bool extfs_sup_give_up(uint64_t deadline)
+{
+    __atomic_store_n(&sv.give_up, true, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&sv.given_up, __ATOMIC_ACQUIRE) && now() < deadline)
+        jam_sleep_until(now() + 10 * NS_PER_MS);
+    return __atomic_load_n(&sv.given_up, __ATOMIC_ACQUIRE);
 }
 
 /* ---- the script ---------------------------------------------------------------------- */

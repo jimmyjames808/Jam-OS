@@ -421,9 +421,9 @@ static void check_inotify_files(void)
     errno = 0;
     CHECK(stat("/proc/sys/fs/inotify/nosuch", &st) == -1 && errno == ENOENT);
     /* What the services allow (user/include/fswatch.h, fswatch.idl): a
-     * descriptor's watches on a channel, a process's channels on a volume,
-     * and a queue of 16 KiB of records of an 18-byte name. */
-    CHECK(ino_limit("max_user_watches") == FSW_PER_CHANNEL);
+     * process's watches on a volume, its channels there, and a queue of
+     * 16 KiB of records of an 18-byte name. */
+    CHECK(ino_limit("max_user_watches") == FSW_PROCESS_WATCHES);
     CHECK(ino_limit("max_user_instances") == FSW_PER_PROCESS);
     CHECK(ino_limit("max_queued_events") == FSWATCH_QUEUE_BYTES / (FSWATCH_RECORD_FIXED + 18));
 }
@@ -477,15 +477,18 @@ static void lim_add(const char *dir, const char *name)
         lim_n++;
 }
 
-/* A descriptor's watches past max_user_watches are ENOSPC, and a removed
- * one makes room. Quiet watches (nothing changes under them) of distinct
+/* A process's watches past max_user_watches are ENOSPC, all its
+ * descriptors together (Linux's is a user's: IR's 5), and a removed one
+ * makes room. Quiet watches (nothing changes under them) of distinct
  * paths: libc's trees, the boot image's programs and one /proc/self/fd/N
- * for each of as many descriptors as the table has room for. */
+ * for each of as many descriptors as the table has room for; the first
+ * half through one descriptor, the rest through a second. */
 static void check_inotify_watches(long limit)
 {
     int in = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    int in2 = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     int null = open("/dev/null", O_RDONLY | O_CLOEXEC);
-    CHECK(in >= 0 && null >= 0);
+    CHECK(in >= 0 && in2 >= 0 && null >= 0);
     static const char *const fixed[] = { "/", "/etc", "/dev", "/boot", "/boot/bin", "/proc",
                                          "/proc/self", "/proc/self/fd", "/proc/self/task",
                                          "/proc/sys", "/proc/sys/kernel", "/proc/sys/fs",
@@ -508,8 +511,9 @@ static void check_inotify_watches(long limit)
     }
     unsigned ok = 0;
     int err = 0, first = -1;
-    for (; ok < lim_n && in >= 0; ok++) {
-        int wd = inotify_add_watch(in, lim_path[ok], IN_ATTRIB | IN_DONT_FOLLOW);
+    for (; ok < lim_n && in >= 0 && in2 >= 0; ok++) {
+        int wd = inotify_add_watch(ok < (unsigned)limit / 2 ? in : in2, lim_path[ok],
+                                   IN_ATTRIB | IN_DONT_FOLLOW);
         if (wd < 0) {
             err = errno;
             break;
@@ -530,7 +534,7 @@ static void check_inotify_watches(long limit)
         CHECK(inotify_rm_watch(in, first) == 0);
         while (read(in, buf, sizeof(buf)) > 0)
             ;
-        CHECK(inotify_add_watch(in, lim_path[ok], IN_ATTRIB | IN_DONT_FOLLOW) > 0);
+        CHECK(inotify_add_watch(in2, lim_path[ok], IN_ATTRIB | IN_DONT_FOLLOW) > 0);
         errno = 0;
         CHECK(ok + 1 >= lim_n ||
               (inotify_add_watch(in, lim_path[ok + 1], IN_ATTRIB | IN_DONT_FOLLOW) == -1 &&
@@ -541,6 +545,8 @@ static void check_inotify_watches(long limit)
     close(null);
     if (in >= 0)
         close(in);
+    if (in2 >= 0)
+        close(in2);
 }
 
 static void check_inotify_limits(void)

@@ -6,7 +6,8 @@
  * knows. Also: restores come in batches of whole slots of at most 64
  * handles, the keeper refuses what it must not hold (kinds, counts, caps,
  * malformed messages), holds and restores what extfs needs (past 1,024
- * handles), and a successor refuses a malformed restore. Every
+ * handles), a successor refuses a malformed restore, and a slot's ring
+ * sounds when the keeper closes it itself, not at a drop. Every
  * test ends with this job holding exactly the handles it started with. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
@@ -361,7 +362,7 @@ static bool keep_kinds(handle_t svc)
     CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &x), OK);
     CHECK_ST(jam_handle_replace(x, RIGHT_READ | RIGHT_TRANSFER, &h), OK);
     CHECK_ST(keep_put(svc, 1, &h, 1), ERR_ACCESS_DENIED);
-    struct keepch_put_msg m = { 0, KEEPCH_PUT, 1 };
+    struct keepch_put_msg m = { 0, KEEPCH_PUT, 1, 0 };
     CHECK_ST(raw(svc, &m, sizeof(m), &h, 1), OK);
     return refused_one();
 }
@@ -370,7 +371,7 @@ static bool keep_kinds(handle_t svc)
  * keeper counts), its handles closed, the queue clear. */
 static bool keep_malformed(handle_t svc)
 {
-    struct keepch_put_msg m = { 0, KEEPCH_PUT, 1 };
+    struct keepch_put_msg m = { 0, KEEPCH_PUT, 1, 0 };
     CHECK_ST(raw(svc, &m, 11, NULL, 1), OK);   /* short */
     CHECK(refused_one());
     m.txid = 5;
@@ -389,7 +390,7 @@ static bool keep_malformed(handle_t svc)
     struct keepch_done_msg wrong = { 0, KEEPCH_DONE, 1, 1 };
     CHECK_ST(raw(svc, &wrong, sizeof(wrong), NULL, 0), OK);   /* an event of the other way */
     CHECK(refused_one());
-    struct keepch_put_msg other = { 0, (KEEPCH_PROTOCOL_ID << 16) | 9, 1 };
+    struct keepch_put_msg other = { 0, (KEEPCH_PROTOCOL_ID << 16) | 9, 1, 0 };
     CHECK_ST(raw(svc, &other, sizeof(other), NULL, 1), OK);   /* an unknown ordinal */
     CHECK(refused_one());
     other.ordinal = KEEPCH_PUT ^ (1u << 16);                  /* another protocol's put */
@@ -646,7 +647,7 @@ bool t_keep_restore_refusals(void)
      * restore cut short, a done with a txid), one too big, a reply. */
     CHECK_ST(jam_channel_create(&kp, &sp), OK);
     CHECK_ST(jam_event_create(&e), OK);
-    CHECK_ST(keepch_put(kp, 1, &e, 1), OK);
+    CHECK_ST(keepch_put(kp, 1, 0, &e, 1), OK);
     CHECK_ST(run_restore(kp, sp, SOON), ERR_INVALID_ARGS);
     CHECK_ST(jam_channel_create(&kp, &sp), OK);
     struct keepch_restore_msg h = { 0, KEEPCH_RESTORE };
@@ -670,6 +671,109 @@ bool t_keep_restore_refusals(void)
     CHECK_ST(jam_channel_create(&kp, &sp), OK);
     CHECK_ST(send_restore(kp, three, 1, one, 1, 1), OK);
     CHECK_ST(run_restore(kp, sp, 0), ERR_PEER_CLOSED);
+    CHECK_EQ(handles_used(), before);
+    return true;
+}
+
+/* ---- rings (INOTIFY-REVIEW's 7) ------------------------------------------------- */
+
+#define RING (1u << 24)   /* a watcher's bell: FSWATCH_BELL */
+
+/* A slot as extfs keeps a watcher: its channel and the client's bell
+ * (RIGHT_SIGNAL, TRANSFER and DUPLICATE), with a ring; the service's own
+ * handles closed after (as if it died). The client's ends in *cli, *bell. */
+static bool ring_slot(handle_t svc, uint32_t id, handle_t *cli, handle_t *bell)
+{
+    handle_t srv, give;
+    CHECK_ST(jam_channel_create(&srv, cli), OK);
+    CHECK_ST(jam_event_create(bell), OK);
+    CHECK_ST(jam_handle_duplicate(*bell, RIGHT_SIGNAL | RIGHT_TRANSFER | RIGHT_DUPLICATE, &give),
+             OK);
+    status_t st = keep_put_ring(svc, id, RING, (handle_t[]){ srv, give }, 2);
+    jam_handle_close(srv);
+    jam_handle_close(give);
+    CHECK_ST(st, OK);
+    CHECK_ST(keeper_take(&k), OK);
+    CHECK(kept(id));
+    return true;
+}
+
+static bool rung_bell(handle_t bell)
+{
+    return jam_object_wait_one(bell, RING, 0, NULL) == OK;
+}
+
+/* keep_put_ring: the keeper sets the ring on a slot's second handle when
+ * it closes the slot itself (keeper_release: the service given up; a slot
+ * the restore can't hand over), after the slot's channel is closed; a
+ * drop, or a put replacing the slot, rings nothing. A ring it can't sound
+ * (one handle, bits not the user's, a second handle not an event it may
+ * signal) is refused, by keep_put_ring and by the keeper. */
+bool t_keep_ring(void)
+{
+    uint64_t before = handles_used();
+    keeper_init(&k);
+    handle_t svc, svc2, cli[4], bell[4], ev, a, b, x;
+    CHECK_ST(keeper_attach(&k, &svc), OK);
+
+    CHECK_ST(jam_event_create(&ev), OK);
+    CHECK_ST(keep_put_ring(svc, 1, RING, &ev, 1), ERR_INVALID_ARGS);
+    CHECK_ST(keep_put_ring(svc, 1, SIG_SIGNALED, (handle_t[]){ ev, ev }, 2), ERR_INVALID_ARGS);
+    struct keepch_put_msg m = { 0, KEEPCH_PUT, 1, RING };
+    CHECK_ST(raw(svc, &m, sizeof(m), NULL, 1), OK);   /* one handle */
+    CHECK(refused_one());
+    m.ring = SIG_SIGNALED;
+    CHECK_ST(raw(svc, &m, sizeof(m), NULL, 2), OK);   /* not a user bit */
+    CHECK(refused_one());
+    m.ring = RING;
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    jam_handle_close(b);
+    CHECK_ST(jam_event_create(&x), OK);
+    CHECK_ST(raw(svc, &m, sizeof(m), (handle_t[]){ x, a }, 2), OK);   /* a channel to ring */
+    CHECK(refused_one());
+    CHECK_ST(jam_event_create(&x), OK);
+    CHECK_ST(jam_event_create(&a), OK);
+    CHECK_ST(jam_handle_replace(a, RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_WAIT, &b), OK);
+    CHECK_ST(raw(svc, &m, sizeof(m), (handle_t[]){ x, b }, 2), OK);   /* no RIGHT_SIGNAL */
+    CHECK(refused_one());
+
+    /* Kept: slot 3 rings at the end; slot 4 dropped and slot 5 replaced
+     * before it ring nothing. */
+    CHECK(ring_slot(svc, 3, &cli[0], &bell[0]));
+    CHECK(ring_slot(svc, 4, &cli[1], &bell[1]));
+    CHECK(ring_slot(svc, 5, &cli[2], &bell[2]));
+    CHECK_ST(keep_drop(svc, 4), OK);
+    CHECK_ST(keeper_take(&k), OK);
+    CHECK(peer_gone(cli[1]) && !rung_bell(bell[1]));
+    CHECK(put_event(svc, 5, 1));
+    CHECK(peer_gone(cli[2]) && !rung_bell(bell[2]));
+    CHECK_EQ(k.rung, 0u);
+
+    /* Slot 6 can't be handed over (a channel end rides in its channel's
+     * queue: the kernel won't send that end on): lost at the restore, its
+     * bell rung once its channel is closed. */
+    CHECK(ring_slot(svc, 6, &cli[3], &bell[3]));
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(jam_channel_write(cli[3], "x", 1, &a, 1), OK);
+    jam_handle_close(b);
+    jam_handle_close(svc);   /* the service died */
+    CHECK_ST(keeper_attach(&k, &svc2), OK);
+    uint32_t lost = k.lost;
+    CHECK_ST(keeper_restore(&k), OK);
+    CHECK(k.lost == lost + 1 && !kept(6) && k.rung == 1);
+    CHECK(peer_gone(cli[3]) && rung_bell(bell[3]));
+    CHECK(!peer_gone(cli[0]) && !rung_bell(bell[0]));
+
+    /* The successor dies too and is given up: slot 3 rings. */
+    jam_handle_close(svc2);
+    keeper_release(&k);
+    CHECK_EQ(k.rung, 2u);
+    CHECK(peer_gone(cli[0]) && rung_bell(bell[0]));
+    for (unsigned i = 0; i < 4; i++) {
+        jam_handle_close(cli[i]);
+        jam_handle_close(bell[i]);
+    }
+    jam_handle_close(ev);
     CHECK_EQ(handles_used(), before);
     return true;
 }

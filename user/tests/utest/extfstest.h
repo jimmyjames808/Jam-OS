@@ -34,5 +34,14 @@ bool           extfs_sup_stop(void);
 struct fatrun *extfs_sup_run(void);
 unsigned       extfs_sup_ended(void);
 void           extfs_sup_fresh(void);
+/* Instances killed (a crash or extfs_sup_storm's kill). */
+unsigned       extfs_sup_crashes(void);
+/* Kill the instance every every_ns from now (0: stop), as WR's whostile
+ * kills extfs-jam with initctl.kill; each is started again. */
+void           extfs_sup_storm(uint64_t every_ns);
+/* Kill the instance and give it up, as volumes does past a service's
+ * restart limit: no next start, the keeper released (its clients' ends
+ * closed). False if that didn't come by deadline. extfs_sup_stop after. */
+bool           extfs_sup_give_up(uint64_t deadline);
 /* fs.getattr's mode and link count (flags: FS_NOFOLLOW or 0). */
 status_t xmode(handle_t fs, const char *path, uint32_t flags, uint32_t *mode, uint32_t *nlink);

@@ -506,8 +506,8 @@ bool t_fswatch_ids(void)
     return true;
 }
 
-/* The limits: channels per volume and per process, watches per channel
- * and per volume. */
+/* The limits: channels per volume and per process, watches per process,
+ * per channel and per volume. */
 bool t_fswatch_caps(void)
 {
     static handle_t clients[FSW_CHANNELS], bells[FSW_CHANNELS];
@@ -528,30 +528,56 @@ bool t_fswatch_caps(void)
     CHECK_ST(fsw_chan_new(&w, 99, 0, &K_ROOT, srv, &c), ERR_NO_RESOURCES);
     jam_handle_close(client);
 
-    /* Watches: FSW_PER_CHANNEL on a channel, FSW_WATCHES on the volume. */
-    uint32_t full = FSW_WATCHES / FSW_PER_CHANNEL;
-    for (uint32_t i = 0; i < full; i++) {
-        for (uint32_t j = 0; j < FSW_PER_CHANNEL; j++) {
-            struct fsw_key k = { 5000 + i * FSW_PER_CHANNEL + j, 1 };
-            CHECK_ST(fsw_add(&w, cs[i], &k, false, IN(MODIFY), &id, &existed), OK);
-        }
-        struct fsw_key k = { 1, 1 };
-        CHECK_ST(fsw_add(&w, cs[i], &k, false, IN(MODIFY), &id, &existed), ERR_NO_SPACE);
-    }
+    /* A process with its share closed one: room for another. */
+    unwatcher(&w, cs[0], clients[0], bells[0]);
+    CHECK(watcher(&w, 5, 0, &clients[0], &bells[0], &cs[0]));
+    for (uint32_t i = 0; i < FSW_CHANNELS; i++)
+        unwatcher(&w, cs[i], clients[i], bells[i]);
+
+    /* Watches: FSW_PROCESS_WATCHES on all of a process's channels (IR's 5:
+     * the first two of pid 5 share it), FSW_PER_CHANNEL on one, FSW_WATCHES
+     * on the volume (a channel of each of 8 more processes fills it). */
+    const uint32_t share = FSW_WATCHES / FSW_PROCESS_WATCHES;
+    _Static_assert(FSW_WATCHES / FSW_PROCESS_WATCHES + 3 <= FSW_CHANNELS, "channels for each");
+    for (uint32_t i = 0; i < share + 3; i++)
+        CHECK(watcher(&w, i < 2 ? 5 : i < 3 ? 0 : 200 + i, 0, &clients[i], &bells[i], &cs[i]));
     struct fsw_key k = { 1, 1 };
-    CHECK_ST(fsw_add(&w, cs[full], &k, false, IN(MODIFY), &id, &existed), ERR_NO_SPACE);
-    CHECK_EQ(tab.watches, FSW_WATCHES);
+    uint32_t id1 = 0;
+    for (uint32_t j = 0; j < FSW_PROCESS_WATCHES; j++) {
+        struct fsw_key kj = { 5000 + j, 1 };
+        CHECK_ST(fsw_add(&w, cs[j & 1], &kj, false, IN(MODIFY), &id, &existed), OK);
+        if (j == 1)
+            id1 = id;
+    }
+    CHECK_ST(fsw_add(&w, cs[0], &k, false, IN(MODIFY), &id, &existed), ERR_NO_SPACE);
+    CHECK_ST(fsw_add(&w, cs[1], &k, false, IN(MODIFY), &id, &existed), ERR_NO_SPACE);
     /* An existing watch's mask may still change. */
     struct fsw_key first = { 5000, 1 };
     CHECK_ST(fsw_add(&w, cs[0], &first, false, IN(ATTRIB), &id, &existed), OK);
     CHECK(existed);
-    unwatcher(&w, cs[0], clients[0], bells[0]);
-    CHECK_EQ(tab.watches, FSW_WATCHES - FSW_PER_CHANNEL);
-    CHECK_ST(fsw_add(&w, cs[full], &k, false, IN(MODIFY), &id, &existed), OK);
-    /* A process with its share closed one: room for another. */
-    CHECK(watcher(&w, 5, 0, &clients[0], &bells[0], &cs[0]));
-    for (uint32_t i = 0; i < FSW_CHANNELS; i++)
-        unwatcher(&w, cs[i], clients[i], bells[i]);
+    /* pid 0 (not known): its channel's FSW_PER_CHANNEL alone. */
+    for (uint32_t j = 0; j < FSW_PER_CHANNEL; j++) {
+        struct fsw_key kj = { 5000 + j, 1 };
+        CHECK_ST(fsw_add(&w, cs[2], &kj, false, IN(MODIFY), &id, &existed), OK);
+    }
+    CHECK_ST(fsw_add(&w, cs[2], &k, false, IN(MODIFY), &id, &existed), ERR_NO_SPACE);
+    unwatcher(&w, cs[2], clients[2], bells[2]);
+    for (uint32_t i = 3; i < share + 2; i++) {
+        for (uint32_t j = 0; j < FSW_PROCESS_WATCHES; j++) {
+            struct fsw_key kj = { 5000 + i * FSW_PROCESS_WATCHES + j, 1 };
+            CHECK_ST(fsw_add(&w, cs[i], &kj, false, IN(MODIFY), &id, &existed), OK);
+        }
+    }
+    CHECK_EQ(tab.watches, FSW_WATCHES);
+    CHECK_ST(fsw_add(&w, cs[share + 2], &k, false, IN(MODIFY), &id, &existed), ERR_NO_SPACE);
+    /* A watch removed: room for one on the volume, and in pid 5's share. */
+    CHECK_ST(fsw_remove(&w, cs[1], id1), OK);
+    CHECK_ST(fsw_add(&w, cs[0], &k, false, IN(MODIFY), &id, &existed), OK);
+    CHECK(!existed);
+    CHECK_EQ(tab.watches, FSW_WATCHES);
+    for (uint32_t i = 0; i < share + 3; i++)
+        if (i != 2)
+            unwatcher(&w, cs[i], clients[i], bells[i]);
     CHECK_EQ(tab.watches, 0);
 
     /* pid 0 (not known) is no process's share. */

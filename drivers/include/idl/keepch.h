@@ -73,6 +73,7 @@ struct keepch_put_msg {   /* an event: txid 0 */
     uint32_t txid;
     uint32_t ordinal;
     uint32_t slot;
+    uint32_t ring;
 } __attribute__((packed));
 struct keepch_drop_msg {   /* an event: txid 0 */
     uint32_t txid;
@@ -90,7 +91,7 @@ struct keepch_done_msg {   /* an event: txid 0 */
     uint32_t handles;
 } __attribute__((packed));
 
-#define KEEPCH_REQ_MAX 12u   /* bytes: the biggest message to the server */
+#define KEEPCH_REQ_MAX 16u   /* bytes: the biggest message to the server */
 #define KEEPCH_REP_MAX 334u   /* bytes: the biggest message to the client */
 #define KEEPCH_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define KEEPCH_REP_HANDLES 64   /* handles: room in a dispatch's rhs */
@@ -105,20 +106,28 @@ struct keepch_done_msg {   /* an event: txid 0 */
 
 /* To the keeper: the service made duplicates of the handles in hs (same
  * rights; its own stay its own) and gives them as slot `slot`, replacing
- * what the keeper held there. 1 to SLOT_HANDLES of them. */
+ * what the keeper held there. 1 to SLOT_HANDLES of them. `ring`: 0, or
+ * bits of SIG_USER_ALL the keeper sets on hs[1] (an event with
+ * RIGHT_SIGNAL: a put that says otherwise is refused) when it closes the
+ * slot without being told to: it gave the service up (keeper_release, a
+ * restore that failed) or couldn't hand the slot over. A client waiting
+ * on that event alone (a watcher channel's bell: an inotify descriptor's
+ * poll) wakes to find the slot's channel closed (INOTIFY-REVIEW's 7). A
+ * drop, or a put replacing the slot, rings nothing. */
 /* The event keepch.put, to the server: written on ch, never answered.
  * ERR_SHOULD_WAIT: the peer's queue is full (its flow control).
  * The handles are gone in every case: sent, closed, or lost with a
  * write that failed (the caller never closes them after this). */
-static inline status_t keepch_put(handle_t ch, uint32_t slot, const handle_t *hs, uint32_t hs_len)
+static inline status_t keepch_put(handle_t ch, uint32_t slot, uint32_t ring, const handle_t *hs, uint32_t hs_len)
 {
-    _Alignas(8) uint8_t idl_b0[12];
+    _Alignas(8) uint8_t idl_b0[16];
     struct keepch_put_msg *idl_q = (struct keepch_put_msg *)idl_b0;
     uint32_t idl_qn = sizeof(*idl_q);
     status_t idl_st = OK;
     idl_q->txid = 0;   /* an event */
     idl_q->ordinal = KEEPCH_PUT;
     idl_q->slot = slot;
+    idl_q->ring = ring;
     if (idl_st == OK && (hs_len > 4 || (hs_len && !hs)))
         idl_st = ERR_INVALID_ARGS;
     handle_t idl_hs[4];
@@ -305,7 +314,7 @@ static inline status_t keepch_read_event(handle_t ch, const struct keepch_events
  * handler returns nothing (nothing is answered; a NULL one drops it),
  * owns the handles it is given, and its arrays point into the message. */
 struct keepch_ops {
-    void (*put)(void *ctx, uint32_t slot, const handle_t *hs, uint32_t hs_len);
+    void (*put)(void *ctx, uint32_t slot, uint32_t ring, const handle_t *hs, uint32_t hs_len);
     void (*drop)(void *ctx, uint32_t slot);
 };
 
@@ -330,7 +339,7 @@ static inline status_t keepch_event_in(const struct keepch_ops *idl_tab, void *c
             idl_close_all(idl_hs, idl_nh);
             return idl_st;
         }
-        idl_tab->put(ctx, idl_e->slot, idl_hs, idl_nh);
+        idl_tab->put(ctx, idl_e->slot, idl_e->ring, idl_hs, idl_nh);
         return OK;
     }
     case KEEPCH_DROP: {

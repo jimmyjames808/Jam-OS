@@ -19,7 +19,12 @@ _Static_assert(XF_MAX_FILES * 2 + XF_VIEWS + XF_MAX_MAPS + FSW_CHANNELS * 2 + XF
 
 status_t kept_put(uint32_t slot, const handle_t *hs, unsigned n)
 {
-    return vol.keep ? keep_put(vol.keep, slot, hs, n) : OK;
+    return kept_put_ring(slot, 0, hs, n);
+}
+
+status_t kept_put_ring(uint32_t slot, signals_t ring, const handle_t *hs, unsigned n)
+{
+    return vol.keep ? keep_put_ring(vol.keep, slot, ring, hs, n) : OK;
 }
 
 void kept_drop(uint32_t slot)

@@ -29,7 +29,8 @@
  * ERR_PEER_CLOSED: the mount went (fs.idl says when), or the successor
  * couldn't carry on from the dead one's state and started fresh: every
  * watch on the channel is gone (libc reads IN_UNMOUNT, then IN_IGNORED for
- * each).
+ * each). The bell is rung when the channel closes, also when the service
+ * died and its keeper gave it up (keepch.put's ring).
  *
  * Protocols `fswatch` (id 49) and `fswatch_bell` (id 52): one for each
  * kind of channel, so a message of one protocol sent on a channel of
@@ -174,11 +175,12 @@ static inline status_t fswatch_add_call(handle_t ch, bool idl_within, uint64_t i
  * events from an unlinked file still open). `id`: the watch, never 0, the
  * same for the same inode on this channel (`existed` 1: its mask was
  * replaced, or added to). An id carries a count, so an ended watch's id
- * comes back only after a million more watches in its place: a client
+ * comes back only after half a million more watches in its place: a client
  * that still holds an id an add answers with `existed` 0 forgets the old
  * watch.
  * ERR_ACCESS_DENIED: no read permission (Linux's rule); ERR_NO_SPACE: a
- * limit of watches (the volume's or the channel's); ERR_INVALID_ARGS: no
+ * limit of watches (the volume's, the channel's, or the one for all the
+ * channels of the process that asked fs.watch); ERR_INVALID_ARGS: no
  * IN_* bit at all in `mask` (other bits are ignored), or IN_MASK_ADD with
  * IN_MASK_CREATE (Linux's EINVAL). */
 static inline status_t fswatch_add_until(handle_t ch, uint64_t deadline_ns, const char *path, uint32_t path_len, uint32_t mask, uint32_t *out_id, uint8_t *out_existed)

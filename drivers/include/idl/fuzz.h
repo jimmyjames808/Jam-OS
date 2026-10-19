@@ -2918,10 +2918,11 @@ static const struct idl_fuzz_msg idl_fz_jamcover_msgs[] = {
 };
 
 /* ---- keepch ---- */
-static void idl_fz_keepch_put(void *ctx, uint32_t slot, const handle_t *hs, uint32_t hs_len)
+static void idl_fz_keepch_put(void *ctx, uint32_t slot, uint32_t ring, const handle_t *hs, uint32_t hs_len)
 {
     (void)ctx;
     (void)slot;
+    (void)ring;
     (void)hs;
     (void)hs_len;
     if (hs)
@@ -2968,7 +2969,7 @@ static status_t idl_fz_keepch_event(const void *m, struct idl_msg *msg)
     return keepch_event_dispatch(&idl_fz_keepch_events, NULL, m, msg);
 }
 static const struct idl_fuzz_msg idl_fz_keepch_msgs[] = {
-    { 0x00500001u, 12u, 1, 0, 4, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x00500001u, 16u, 1, 0, 4, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00500002u, 12u, 1, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00500003u, 8u, 2, 0, 64, 0, { 0 }, 2, { { 4, 0, 64 }, { 1, 0, 64 } } },
     { 0x00500004u, 16u, 2, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },

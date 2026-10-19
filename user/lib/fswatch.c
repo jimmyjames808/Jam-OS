@@ -354,6 +354,19 @@ status_t fsw_mask_check(uint32_t mask)
     return OK;
 }
 
+/* The watches of channel c's process on the volume, all its channels (pid
+ * 0, not known: c's alone). */
+static uint32_t process_watches(const struct fsw_table *t, uint32_t c)
+{
+    uint32_t pid = t->chans[c].pid, n = 0;
+    if (!pid)
+        return t->chans[c].watches;
+    for (uint32_t i = 0; i < FSW_CHANNELS; i++)
+        if (t->chans[i].live && t->chans[i].pid == pid)
+            n += t->chans[i].watches;
+    return n;
+}
+
 status_t fsw_add(struct fsw *w, uint32_t c, const struct fsw_key *key, bool dir, uint32_t mask,
                  uint32_t *out_id, uint8_t *out_existed)
 {
@@ -378,7 +391,8 @@ status_t fsw_add(struct fsw *w, uint32_t c, const struct fsw_key *key, bool dir,
         *out_existed = 1;
         return OK;
     }
-    if (t->watches >= FSW_WATCHES || t->chans[c].watches >= FSW_PER_CHANNEL)
+    if (t->watches >= FSW_WATCHES || t->chans[c].watches >= FSW_PER_CHANNEL ||
+        process_watches(t, c) >= FSW_PROCESS_WATCHES)
         return ERR_NO_SPACE;
     uint32_t slot = t->next;
     while (t->w[slot].chan)

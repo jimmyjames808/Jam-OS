@@ -39,14 +39,15 @@ extern const struct fd_ops inotify_ops;   /* inotify_init1 */
 
 /* inotify's limits (docs/INOTIFY-PLAN.md 3.5): what inotify.c enforces and
  * /proc/sys/fs/inotify says. The services' own are the bounds
- * (user/include/fswatch.h): 1,024 watches on one watcher channel
- * (FSW_PER_CHANNEL) and 8 channels from one process on a volume
- * (FSW_PER_PROCESS), so a descriptor holds no more watches than that and
- * a process no more descriptors. A service queues 16 KiB of records
+ * (user/include/fswatch.h): 1,024 watches from one process on a volume,
+ * all its channels (FSW_PROCESS_WATCHES), and 8 channels from one process
+ * on a volume (FSW_PER_PROCESS), so a process holds no more watches than
+ * that, all its descriptors (Linux's max_user_watches is a user's, all
+ * theirs), and no more descriptors. A service queues 16 KiB of records
  * (FSWATCH_QUEUE_BYTES: 14 bytes and the name each) for a descriptor
  * on its mount before an IN_Q_OVERFLOW: 512 events whose names are 18
  * bytes (shorter ones fit more, 255-byte ones 60). */
-#define INOTIFY_MAX_WATCHES    1024u   /* most watches one descriptor holds */
+#define INOTIFY_MAX_WATCHES    1024u   /* most watches one process holds, all descriptors */
 #define INOTIFY_MAX_INSTANCES  8u      /* most descriptors a process holds */
 #define INOTIFY_MAX_QUEUED     512u    /* events queued for a mount, with that name */
 extern const struct fd_ops etc_ops;       /* a file of libc's /etc */

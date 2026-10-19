@@ -151,7 +151,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 8u            /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 9u            /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied
@@ -708,6 +708,10 @@ unsigned locks_adopt(void);
 #define XF_KEEP_SLOTS   (XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS + FSW_CHANNELS + XF_LOCK_OWNERS)
 
 status_t kept_put(uint32_t slot, const handle_t *hs, unsigned n);
+/* ... with a ring the keeper sounds on hs[1] when it closes the slot
+ * itself (<keep.h>: a watcher's bell, so a dead extfs given up wakes its
+ * pollers, IR's 7). */
+status_t kept_put_ring(uint32_t slot, signals_t ring, const handle_t *hs, unsigned n);
 void     kept_drop(uint32_t slot);
 
 /* ---- adopt.c ----------------------------------------------------------------- */
