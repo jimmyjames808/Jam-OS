@@ -230,8 +230,9 @@ type \x03
 wait 10 run: bin/ramfs was killed
 wait {prompt}
 
-# ---- /tmp, always there (M13.6's U7b): on a stick boot with no ext volume, in memory ------
-seen 30 init: /tmp: in memory
+# ---- /tmp, always there (M13.6's U7b): in memory on a stick boot with a FAT /data; on an ext
+# /data a view of /data/tmp, which init's /tmp thread says instead when /data mounts before it looks ----
+seen 30 re:init: /tmp: (in memory|a view of /data/tmp)
 send mount | grep ^/tmp | grep -c read-write | grep ^1$ && echo ok-$T-tmp
 wait ok-x-tmp
 send mkdir /tmp/d-$T; write /tmp/d-$T/f.txt in-tmp-$T && cat /tmp/d-x/f.txt
