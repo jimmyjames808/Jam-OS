@@ -6,6 +6,9 @@
 # QEMU_INPUT=this file, command line "shell", QEMU_TIMEOUT=600.
 wait 120 Jam OS shell
 wait {prompt}
+# The shell's prompt can come before init has mounted /data (the volumes
+# service finds the stick after it): files-many needs the mount.
+seen 60 init: /data mounted
 send posixtest files-many
 wait 500 posixtest: files-many: ok
 wait 10 posixtest: PASS
