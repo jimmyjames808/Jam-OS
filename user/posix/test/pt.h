@@ -48,7 +48,8 @@
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
  * start.c, mem.c, memres.c (the job's counts), clock.c, fds.c, poll.c,
  * proc.c, tty.c, fileskid.c, wayland.c, jit.c, procfs.c, unix.c, peer.c,
- * fork.c, fault.c (a VMO shrunk under its mapping) and inotify.c are
+ * fork.c, fault.c (a VMO shrunk under its mapping), inotify.c and dirfd.c (a fake
+ * service's directory channels) are
  * the ones that include libjam (<jamos/libjam.h>: children started with a hand-over, a mapping libc
  * didn't make, the calls the clocks are checked against; fileskid.c
  * through the layer's fd.h); mem.c, rawcalls.c, rawfutex.c and rawlog.c include Linux's call
