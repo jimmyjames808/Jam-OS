@@ -115,11 +115,12 @@ mapping, extfs numbers errors per slot), and WQ closed a window where an
 
 Still open (design questions the review left to the main session): a store's
 deadline counts from its first wait, so a healthy writer behind a busy pager
-can be killed (recommended: from the pager's last progress); an orderly
-stop writes back for about 3 s at most (recommended: bounded by progress);
-and a freeze that starves behind a waiting writer (FR1's option (b), before
-the sandbox's renderers). None blocks Chromium. FAT stays read-only for
-mappings.
+can be killed (recommended: from the pager's last progress), and an orderly
+stop writes back for about 3 s at most (recommended: bounded by progress).
+Both are now tracks of [RUNWELL-PLAN](RUNWELL-PLAN.md#3-wr2s-two-questions):
+the deadline is RW7 and the orderly stop RW8. A third, a freeze that starves
+behind a waiting writer (FR1's option (b)), stays for before the sandbox's
+renderers. None blocks Chromium. FAT stays read-only for mappings.
 
 ## File watching (inotify)
 
