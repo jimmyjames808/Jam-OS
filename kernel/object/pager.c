@@ -143,6 +143,8 @@ struct pager_vmo {
     struct list_node knode;      /* in its key bucket while LINKED or GONE; pager lock */
     struct list_node work;       /* the pager's close: its private list */
     struct pager    *pg;         /* a reference; fixed */
+    struct job      *job;        /* its maker's (a reference, or NULL): pays a handle unit for
+                                    the link and one for its VMO's struct while it lives */
     struct vmo      *v;          /* LINKED: its VMO, no reference (lookups tryref it) */
     uint64_t         key;        /* fixed */
     enum pv_state    state;      /* pager lock */
@@ -161,6 +163,7 @@ struct pager {
     struct list_node delivered;  /* struct pager_req, delivered, not answered */
     struct pager_req *bg;        /* the background write-back request, unanswered, or NULL */
     struct list_node keys[KEY_BUCKETS];   /* struct pager_vmo, LINKED or GONE */
+    uint64_t         nkeys;      /* links in keys: PAGER_KEYS_MAX at most */
 };
 
 static uint64_t plock(struct pager *pg)
@@ -702,6 +705,19 @@ static struct list_node *bucket(struct pager *pg, uint64_t key)
 }
 _Static_assert(KEY_BUCKETS == 64, "bucket() takes 6 bits");
 
+/* Pager lock held: pv goes in its key's bucket (LINKED), or out of it. */
+static void key_add_locked(struct pager *pg, struct pager_vmo *pv)
+{
+    list_add_tail(bucket(pg, pv->key), &pv->knode);
+    pg->nkeys++;
+}
+
+static void key_del_locked(struct pager *pg, struct pager_vmo *pv)
+{
+    list_del(&pv->knode);
+    pg->nkeys--;
+}
+
 /* Pager lock held: key's link (LINKED or GONE), or NULL. */
 static struct pager_vmo *find_locked(struct pager *pg, uint64_t key)
 {
@@ -725,11 +741,13 @@ static struct vmo *lookup_vmo(struct pager *pg, uint64_t key)
     return v;
 }
 
-/* A link nothing else refers to any more. */
+/* A link nothing else refers to any more (its VMO's struct gone, or never
+ * made: its handle unit given back already). */
 static void pv_free(struct pager_vmo *pv)
 {
     struct pager *pg = pv->pg;
-    job_uncharge(pg->job, JOB_LIMIT_HANDLES, 1);
+    job_uncharge(pv->job, JOB_LIMIT_HANDLES, 1);
+    job_unref(pv->job);
     kfree(pv);
     kobject_unref(pager_kobject(pg));
 }
@@ -740,7 +758,7 @@ static void pv_free(struct pager_vmo *pv)
  * destruction frees pv). */
 static struct vmo *detach_locked(struct pager_vmo *pv, struct list_node *dead)
 {
-    list_del(&pv->knode);
+    key_del_locked(pv->pg, pv);
     pv->state = PV_DETACHED;
     fail_all_locked(pv, ERR_PEER_CLOSED, dead);
     return kobject_tryref(vmo_kobject(pv->v)) ? pv->v : NULL;
@@ -759,6 +777,7 @@ void pager_vmo_gone(struct pager_vmo *pv)
     struct pager *pg = pv->pg;
     struct list_node dead;
     list_init(&dead);
+    job_uncharge(pv->job, JOB_LIMIT_HANDLES, 1);   /* the VMO's struct, freed now */
     uint64_t f = plock(pg);
     bool linked = pv->state == PV_LINKED;
     if (linked) {
@@ -782,37 +801,57 @@ uint64_t pager_vmo_pager_koid(const struct pager_vmo *pv)
 
 /* ---- the object ------------------------------------------------------------ */
 
-/* The last handle is gone: every VMO is detached, every GONE answered. */
+uint64_t pager_close_links_most;
+
+static void note_most(uint64_t *most, uint64_t x)
+{
+    uint64_t old = __atomic_load_n(most, __ATOMIC_RELAXED);
+    while (x > old &&
+           !__atomic_compare_exchange_n(most, &old, x, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        ;
+}
+
+/* The last handle is gone: every VMO is detached, every GONE answered.
+ * PAGER_CLOSE_BATCH links at most a hold of the pager lock (interrupts off), so
+ * a pager with thousands of keys (PAGER_KEYS_MAX) keeps no CPU from its
+ * interrupts for long; `closed` keeps new keys out meanwhile, and a VMO
+ * that dies between two holds leaves a GONE link the next one takes. */
 static void pager_closed(struct kobject *obj)
 {
     struct pager *pg = (struct pager *)obj;
-    struct list_node dead, work;
-    list_init(&dead);
-    list_init(&work);
     uint64_t f = plock(pg);
     pg->closed = true;
-    for (unsigned b = 0; b < KEY_BUCKETS; b++) {
-        while (!list_empty(&pg->keys[b])) {
+    punlock(pg, f);
+    for (unsigned b = 0; b < KEY_BUCKETS;) {
+        struct list_node dead, work;
+        list_init(&dead);
+        list_init(&work);
+        uint64_t n = 0;
+        f = plock(pg);
+        for (; n < PAGER_CLOSE_BATCH && !list_empty(&pg->keys[b]); n++) {
             struct pager_vmo *pv = list_first(&pg->keys[b], struct pager_vmo, knode);
             if (pv->state == PV_GONE) {
-                list_del(&pv->knode);
+                key_del_locked(pg, pv);
                 unqueue_locked(&pv->gone);
                 list_add_tail(&work, &pv->work);
             } else if (detach_locked(pv, &dead)) {
                 list_add_tail(&work, &pv->work);
             }
         }
-    }
-    sync_readable_locked(pg);
-    punlock(pg, f);
-    reap(&dead);
-    while (!list_empty(&work)) {
-        struct pager_vmo *pv = list_first(&work, struct pager_vmo, work);
-        list_del(&pv->work);
-        if (pv->state == PV_GONE)
-            pv_free(pv);
-        else
-            drop_vmo(pv->v);   /* (pv may be freed by it) */
+        if (list_empty(&pg->keys[b]))
+            b++;
+        sync_readable_locked(pg);
+        punlock(pg, f);
+        note_most(&pager_close_links_most, n);
+        reap(&dead);
+        while (!list_empty(&work)) {
+            struct pager_vmo *pv = list_first(&work, struct pager_vmo, work);
+            list_del(&pv->work);
+            if (pv->state == PV_GONE)
+                pv_free(pv);
+            else
+                drop_vmo(pv->v);   /* (pv may be freed by it) */
+        }
     }
 }
 
@@ -862,18 +901,21 @@ status_t pager_create(struct job *job, uint64_t max_pages, uint64_t answer_ns,
     return OK;
 }
 
-/* A NEW link for key, charged to pg's job. */
-static status_t pv_new(struct pager *pg, uint64_t key, struct pager_vmo **out)
+/* A NEW link for key, charged to job with its VMO's struct (two handle
+ * units). */
+static status_t pv_new(struct pager *pg, struct job *job, uint64_t key, struct pager_vmo **out)
 {
-    status_t st = job_charge(pg->job, JOB_LIMIT_HANDLES, 1);
+    status_t st = job_charge(job, JOB_LIMIT_HANDLES, 2);
     if (st != OK)
         return st;
     struct pager_vmo *pv = kzalloc(sizeof(*pv));
     if (!pv) {
-        job_uncharge(pg->job, JOB_LIMIT_HANDLES, 1);
+        job_uncharge(job, JOB_LIMIT_HANDLES, 2);
         return ERR_NO_MEMORY;
     }
     kobject_ref(pager_kobject(pg));
+    job_ref(job);
+    pv->job = job;
     pv->pg = pg;
     pv->key = key;
     pv->state = PV_NEW;
@@ -886,11 +928,17 @@ static status_t pv_new(struct pager *pg, uint64_t key, struct pager_vmo **out)
 
 status_t pager_create_vmo(struct pager *pg, uint64_t key, uint64_t size, struct vmo **out)
 {
-    return pager_create_vmo_flags(pg, key, size, 0, out);
+    return pager_create_vmo_for(pg->job, pg, key, size, 0, out);
 }
 
 status_t pager_create_vmo_flags(struct pager *pg, uint64_t key, uint64_t size, uint32_t flags,
                                 struct vmo **out)
+{
+    return pager_create_vmo_for(pg->job, pg, key, size, flags, out);
+}
+
+status_t pager_create_vmo_for(struct job *job, struct pager *pg, uint64_t key, uint64_t size,
+                              uint32_t flags, struct vmo **out)
 {
     if (flags & PAGER_VMO_FIND) {
         if (flags != PAGER_VMO_FIND || size)
@@ -905,11 +953,12 @@ status_t pager_create_vmo_flags(struct pager *pg, uint64_t key, uint64_t size, u
     if (size > VMO_SMALL_MAX_SIZE)
         return ERR_OUT_OF_RANGE;
     struct pager_vmo *pv;
-    status_t st = pv_new(pg, key, &pv);
+    status_t st = pv_new(pg, job, key, &pv);
     if (st != OK)
         return st;
     struct vmo *v;
     if ((st = vmo_create_pager(pg->job, size, pv, writable, &v)) != OK) {
+        job_uncharge(job, JOB_LIMIT_HANDLES, 1);   /* (no struct: no pager_vmo_gone) */
         pv_free(pv);
         return st;
     }
@@ -930,9 +979,12 @@ status_t pager_create_vmo_flags(struct pager *pg, uint64_t key, uint64_t size, u
         else
             dying = true;
     }
-    st = pg->closed ? ERR_BAD_STATE : alive ? ERR_ALREADY_EXISTS : OK;
+    st = pg->closed                             ? ERR_BAD_STATE
+         : alive                                ? ERR_ALREADY_EXISTS
+         : !old && pg->nkeys >= PAGER_KEYS_MAX  ? ERR_NO_RESOURCES
+                                                : OK;
     if (st == OK && old) {   /* GONE, not answered yet, or dying: taken over, so a map never waits */
-        list_del(&old->knode);
+        key_del_locked(pg, old);
         if (dying) {
             old->state = PV_DETACHED;
             fail_all_locked(old, ERR_PEER_CLOSED, &dead);   /* (none has a waiter: each holds the VMO) */
@@ -944,7 +996,7 @@ status_t pager_create_vmo_flags(struct pager *pg, uint64_t key, uint64_t size, u
     if (st == OK) {
         pv->v = v;
         pv->state = PV_LINKED;
-        list_add_tail(bucket(pg, key), &pv->knode);
+        key_add_locked(pg, pv);
     }
     punlock(pg, f);
     reap(&dead);
@@ -1364,7 +1416,7 @@ static status_t detach_key(struct pager *pg, uint64_t key)
     struct pager_vmo *freed = NULL;
     struct vmo *v = NULL;
     if (pv && pv->state == PV_GONE) {
-        list_del(&pv->knode);
+        key_del_locked(pg, pv);
         unqueue_locked(&pv->gone);
         freed = pv;
     } else if (pv) {

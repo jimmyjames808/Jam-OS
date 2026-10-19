@@ -1181,7 +1181,9 @@ static void vmo_destroy(struct kobject *obj)
         if (v->job)
             job_uncharge(v->job, JOB_LIMIT_PAGES, v->committed);
     }
-    job_uncharge(v->job, JOB_LIMIT_HANDLES, 1);   /* the struct (see vmo_set_job) */
+    /* The struct (see vmo_set_job): a pager VMO's is its link's maker's,
+     * given back by pager_vmo_gone above. */
+    job_uncharge(v->job, JOB_LIMIT_HANDLES, v->pv ? 0 : 1);
     job_unref(v->job);
     kfree(v);
 }
@@ -1308,7 +1310,9 @@ uint64_t vmo_size(struct vmo *v)
     return __atomic_load_n(&v->size, __ATOMIC_RELAXED);
 }
 
-status_t vmo_set_job(struct vmo *v, struct job *job)
+/* vmo_set_job, the struct's handle unit charged to job if `handle` (a
+ * pager VMO's is its link's maker's: pager.c). */
+static status_t set_job(struct vmo *v, struct job *job, uint64_t handle)
 {
     uint64_t f = vlock(v);
     status_t st = OK;
@@ -1318,9 +1322,9 @@ status_t vmo_set_job(struct vmo *v, struct job *job)
         /* The struct itself is one handle unit (a mapping or a message can
          * keep it alive after its last handle closes); its pages: all of a
          * contiguous one, what a paged one has so far, tables too. */
-        st = job_charge(job, JOB_LIMIT_HANDLES, 1);
+        st = job_charge(job, JOB_LIMIT_HANDLES, handle);
         if (st == OK && (st = job_charge(job, JOB_LIMIT_PAGES, v->committed + v->tables)) != OK)
-            job_uncharge(job, JOB_LIMIT_HANDLES, 1);
+            job_uncharge(job, JOB_LIMIT_HANDLES, handle);
         if (st == OK) {
             job_ref(job);
             v->job = job;
@@ -1328,6 +1332,11 @@ status_t vmo_set_job(struct vmo *v, struct job *job)
     }
     vunlock(v, f);
     return st;
+}
+
+status_t vmo_set_job(struct vmo *v, struct job *job)
+{
+    return set_job(v, job, 1);
 }
 
 uint64_t vmo_committed(struct vmo *v)
@@ -2501,7 +2510,7 @@ status_t vmo_create_pager(struct job *job, uint64_t size, struct pager_vmo *pv, 
     status_t st = vmo_new(size, 0, &v);
     if (st != OK)
         return st;
-    if (job && (st = vmo_set_job(v, job)) != OK) {
+    if (job && (st = set_job(v, job, 0)) != OK) {   /* (the struct: the link's maker's) */
         kobject_unref(&v->base);   /* (no link yet: pv stays the caller's) */
         return st;
     }

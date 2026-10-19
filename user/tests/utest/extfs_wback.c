@@ -546,6 +546,15 @@ static bool lost(void)
     return on_disk(&fl) && on_disk(&ft) && on_disk(&fx);
 }
 
+/* Stop an instance that had the pager: the VMOs it made that are still
+ * mapped here keep their links and structs on its job (2 handle units
+ * each) until they go. */
+static bool stop_kept(void)
+{
+    r.kept = 2 * (sizeof(all) / sizeof(all[0]));
+    return fat_stop(&r);
+}
+
 bool t_extfs_wback(void)
 {
     static const char *const unwritten[] = { "unwritten-grow" };
@@ -560,18 +569,18 @@ bool t_extfs_wback(void)
         return true;
     }
     bool ok = ramdisk_create(&rd, EXT_DISK_SECTORS) &&
-              extfs_start_pager_words(&r, &rd, pager, unwritten, 1) && synced() && fat_stop(&r);
+              extfs_start_pager_words(&r, &rd, pager, unwritten, 1) && synced() && stop_kept();
     /* 2: the disk read by an instance with no pager; the setting made. */
     ok = ok && extfs_start(&r, &rd, false, NULL, 0) && on_disk(&fm) && on_disk(&ff) &&
          on_disk(&fh) && on_disk(&fu) && on_disk(&fo) && t_mkdir(&r, "/etc") == OK &&
          put_file(&r, "/etc/settings", "# utest's\nfiles.writeback = 1\n") && fat_stop(&r);
-    ok = ok && extfs_start_pager(&r, &rd, pager) && aged_and_fresh() && fat_stop(&r);
+    ok = ok && extfs_start_pager(&r, &rd, pager) && aged_and_fresh() && stop_kept();
     ok = ok && extfs_start(&r, &rd, false, NULL, 0) && on_disk(&fm) &&
          t_stat(&r, fy.path, NULL, NULL, NULL) == ERR_NOT_FOUND && fat_stop(&r);
-    ok = ok && extfs_start_pager(&r, &rd, pager) && full() && fat_stop(&r);
+    ok = ok && extfs_start_pager(&r, &rd, pager) && full() && stop_kept();
     ok = ok && extfs_start(&r, &rd, false, NULL, 0) && on_disk(&fn) &&
          put_file(&r, "/etc/settings", "# utest's\nfiles.writeback = 600\n") && fat_stop(&r);
-    ok = ok && extfs_start_pager(&r, &rd, pager) && lost() && fat_stop(&r) &&
+    ok = ok && extfs_start_pager(&r, &rd, pager) && lost() && stop_kept() &&
          extfs_save(&rd, "wback");
     handle_t self = startup_handle(SR_SELF_VMAR);
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) {

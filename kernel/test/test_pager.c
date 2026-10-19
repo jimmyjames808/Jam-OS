@@ -2071,6 +2071,154 @@ KTEST(pager_cache_tables_in_budget)
     job_unref(j);
 }
 
+/* ---- links and keys (M12.5-REVIEW finding 2) ----------------------------------- */
+
+/* A pager whose handle is in table t (charged to job mk), made in job j:
+ * the pager stays the test's to read, the handle's to close. */
+static struct pager *pg_in(struct handle_table *t, struct job *j, struct job *mk, handle_t *h)
+{
+    struct pager *pg;
+    KT_EQ(pager_create(j, 64, ANSWER, &pg), OK);
+    handle_table_init(t);
+    t->job = mk;
+    struct khandle kh = khandle_from_new(pager_kobject(pg), PAGER_RIGHTS);
+    KT_EQ(handle_insert(t, &kh, h), OK);
+    return pg;
+}
+
+/* Make and drop VMOs through t's pager handle under keys from `key` on,
+ * never answering their GONEs, until a make fails or `tries` succeeded:
+ * how many did (*st: why it stopped). */
+static uint64_t make_and_drop(struct handle_table *t, handle_t pgh, uint64_t key, uint64_t tries,
+                              status_t *st)
+{
+    uint64_t made = 0;
+    handle_t vh;
+    *st = OK;
+    while (made < tries && (*st = sys_pager_create_vmo(t, pgh, key + made, PG, 0, &vh)) == OK) {
+        KT_EQ(handle_close(t, vh), OK);   /* the VMO dies: its GONE is queued */
+        made++;
+    }
+    return made;
+}
+
+/* Answer every GONE queued: how many there were. */
+static uint64_t answer_gones(struct pager *pg)
+{
+    uint64_t n = 0;
+    struct pager_request q;
+    while (pager_next(pg, 0, &q) == OK) {
+        KT_EQ(q.kind, PAGER_REQ_GONE);
+        KT_EQ(pager_op(pg, q.key, PAGER_OP_DETACH, 0, 0, 0), OK);
+        n++;
+    }
+    return n;
+}
+
+/* A hostile pager (a compromised fat) in a job of its own with fat's kind
+ * of limit, making VMOs of a pager held by an unlimited job (volumes')
+ * and dropping them, never answering a GONE: each link it leaves, and
+ * each VMO's struct while it lives, is its own job's handle unit, so it
+ * stops at its limit (before: every link was the pager's job's, and it
+ * made as many as it liked, a few hundred bytes of kernel heap each).
+ * Answered, the GONEs give the units back. */
+KTEST(pager_links_charged_to_maker)
+{
+    enum { LIMIT = 64, TRIES = 1000 };
+    struct job *j = kt_fresh_job(), *mk = kt_fresh_job();
+    KT_EQ(job_set_limit(mk, JOB_LIMIT_HANDLES, LIMIT), OK);
+    struct handle_table t;
+    handle_t pgh;
+    struct pager *pg = pg_in(&t, j, mk, &pgh);
+    status_t st;
+    uint64_t made = make_and_drop(&t, pgh, 1000, TRIES, &st);
+    kprintf("pager_links_charged_to_maker: %lu made and dropped (%s)\n", made, status_str(st));
+    KT_EQ(st, ERR_NO_RESOURCES);
+    KT_ASSERT(made > LIMIT / 2 && made < LIMIT);
+    KT_ASSERT(job_used(mk, JOB_LIMIT_HANDLES) > made);   /* the links, the pager's handle */
+    KT_EQ(job_used(j, JOB_LIMIT_HANDLES), 1);   /* the pager only */
+
+    KT_ASSERT(answer_gones(pg) >= made);   /* (and the last try's, if its handle was refused) */
+    KT_EQ(job_used(mk, JOB_LIMIT_HANDLES), 1);
+    KT_EQ(make_and_drop(&t, pgh, 1000 + made, 1, &st), 1);
+    handle_table_destroy(&t);   /* the pager's close answers the last GONE */
+    kt_job_is_empty(mk);
+    kt_job_is_empty(j);
+    job_unref(mk);
+    job_unref(j);
+}
+
+/* The same in a job with no limit (as /tmp's extfs had): the pager holds
+ * PAGER_KEYS_MAX keys at most, live VMOs and unanswered GONEs together,
+ * so the next make is refused (before: all of them made). A key taken
+ * over (its GONE unanswered) is no new key: still made at the limit. */
+KTEST(pager_keys_bounded)
+{
+    struct job *j = kt_fresh_job(), *mk = kt_fresh_job();
+    struct handle_table t;
+    handle_t pgh, vh;
+    struct pager *pg = pg_in(&t, j, mk, &pgh);
+    status_t st;
+    uint64_t made = make_and_drop(&t, pgh, 1, 2 * PAGER_KEYS_MAX, &st);
+    kprintf("pager_keys_bounded: %lu made and dropped (%s)\n", made, status_str(st));
+    KT_EQ(made, PAGER_KEYS_MAX);
+    KT_EQ(st, ERR_NO_RESOURCES);
+    KT_EQ(sys_pager_create_vmo(&t, pgh, 1, PG, 0, &vh), OK);   /* GONE key 1, taken over */
+    KT_EQ(handle_close(&t, vh), OK);
+    KT_EQ(answer_gones(pg), PAGER_KEYS_MAX);
+    KT_EQ(make_and_drop(&t, pgh, 2 * PAGER_KEYS_MAX, 1, &st), 1);
+    handle_table_destroy(&t);
+    kt_job_is_empty(mk);
+    kt_job_is_empty(j);
+    job_unref(mk);
+    job_unref(j);
+}
+
+/* A close with thousands of links (unanswered GONEs and live VMOs, every
+ * key in one bucket): at most PAGER_CLOSE_BATCH of them a hold of the
+ * pager lock, interrupts off (before: all of them in one); the live VMOs
+ * are detached and the GONEs gone all the same. */
+KTEST(pager_close_in_batches)
+{
+    enum { LIVE = 512 };
+    struct job *j = kt_fresh_job();
+    struct handle_table t;
+    handle_t pgh;
+    struct pager *pg = pg_in(&t, j, NULL, &pgh);
+    /* Keys k << 58 differ only in their top bits, which bucket() takes
+     * after a multiplication: pick the ones that land with key 0's. */
+    static uint64_t keys[PAGER_KEYS_MAX];
+    uint64_t n = 0;
+    for (uint64_t k = 0; n < PAGER_KEYS_MAX && k < (1u << 22); k++)
+        if (((k * 0x9e3779b97f4a7c15ull) >> 58) == 0)
+            keys[n++] = k;
+    KT_EQ(n, PAGER_KEYS_MAX);
+    static struct vmo *live[LIVE];
+    for (uint64_t i = 0; i < n; i++) {
+        struct vmo *v;
+        KT_EQ(pager_create_vmo(pg, keys[i], PG, &v), OK);
+        if (i < LIVE)
+            live[i] = v;
+        else
+            put(v);   /* a GONE nobody answers */
+    }
+    __atomic_store_n(&pager_close_links_most, 0, __ATOMIC_RELAXED);
+    uint64_t t0 = uptime_ns();
+    handle_table_destroy(&t);
+    uint64_t ns = uptime_ns() - t0;
+    uint64_t most = __atomic_load_n(&pager_close_links_most, __ATOMIC_RELAXED);
+    kprintf("pager_close_in_batches: %lu links closed in %lu us, at most %lu a hold\n", n,
+            ns / 1000, most);
+    KT_ASSERT(most <= PAGER_CLOSE_BATCH);
+    uint64_t w;
+    for (unsigned i = 0; i < LIVE; i++) {
+        KT_EQ(vmo_read(live[i], 0, &w, 8), ERR_IO);   /* detached */
+        put(live[i]);
+    }
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
 /* ---- verified pages (PK4) ----------------------------------------------------- */
 
 /* A program from /data: a pager VMO sealed with its pages' hashes

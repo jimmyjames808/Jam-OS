@@ -56,7 +56,7 @@ status_t sys_pager_create_vmo(struct handle_table *t, handle_t pager, uint64_t k
     if (st != OK)
         return st;
     struct vmo *v;
-    st = pager_create_vmo_flags(pg, key, size, flags, &v);
+    st = pager_create_vmo_for(t->job, pg, key, size, flags, &v);   /* the maker pays the link */
     kobject_unref(pager_kobject(pg));
     if (st != OK)
         return st;

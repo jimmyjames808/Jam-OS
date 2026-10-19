@@ -94,10 +94,16 @@
  * pager side never takes a VMO lock under its own. The cache's lock,
  * "pager cache", also nests under "vmo" only (never with "pager").
  *
- * Charges: the pager is one JOB_LIMIT_HANDLES unit of its creator's job,
- * and so is each of its VMOs' links; the VMOs (struct, tables, pages) are
- * charged to that job as any VMO, and so is each resident page's record
- * in the cache (24 message bytes); a request is charged to the job of the
+ * Charges: the pager is one JOB_LIMIT_HANDLES unit of its creator's job;
+ * its VMOs' pages and tables are charged to that job as any VMO's, inside
+ * the budget (the cache holds both), and so is each resident page's
+ * record in the cache (24 message bytes). Each VMO's link and the VMO's
+ * struct are a JOB_LIMIT_HANDLES unit each of the job of the thread that
+ * made it (pager_create_vmo_for: a filesystem service's, which has
+ * limits, not the job holding the pager), the struct's until it is
+ * destroyed, the link's until it goes (a GONE left unanswered keeps it);
+ * and a pager has PAGER_KEYS_MAX keys at most (live VMOs and unanswered
+ * GONEs), whatever its makers' limits. A request is charged to the job of the
  * thread that made it, as message bytes, until it is answered (a
  * write-back request a little more: two bits a page, and its error; the
  * background one is charged to the pager's job, the throttle's and
@@ -168,7 +174,9 @@ status_t pager_create(struct job *job, uint64_t max_pages, uint64_t answer_ns,
  * is gone but whose PAGER_REQ_GONE has no answer yet is taken over (the
  * GONE withdrawn, delivered or not), and so is one whose VMO is being
  * destroyed (no reference left: no GONE comes for it). ERR_BAD_STATE once the pager's last
- * handle is gone. Thread context. */
+ * handle is gone; ERR_NO_RESOURCES if pg has PAGER_KEYS_MAX keys taken
+ * (and key isn't one of them), or the job refuses the link. The link and
+ * the VMO's struct are charged to pg's job. Thread context. */
 status_t pager_create_vmo(struct pager *pg, uint64_t key, uint64_t size, struct vmo **out);
 /* pager_create_vmo with flags: PAGER_VMO_WRITABLE, a writable one
  * (ERR_INVALID_ARGS if the budget is under PAGER_WRITABLE_MIN_PAGES);
@@ -177,6 +185,23 @@ status_t pager_create_vmo(struct pager *pg, uint64_t key, uint64_t size, struct 
  * dying); any other flag ERR_INVALID_ARGS. */
 status_t pager_create_vmo_flags(struct pager *pg, uint64_t key, uint64_t size, uint32_t flags,
                                 struct vmo **out);
+/* pager_create_vmo_flags with the link and the VMO's struct charged to
+ * job (NULL: nothing), the maker's (sys_pager_create_vmo's caller's). */
+status_t pager_create_vmo_for(struct job *job, struct pager *pg, uint64_t key, uint64_t size,
+                              uint32_t flags, struct vmo **out);
+/* The most keys a pager has at once: its live VMOs and the GONEs it hasn't
+ * answered (pager_create_vmo is ERR_NO_RESOURCES past it), so a pager that
+ * never answers keeps a bounded number of links (a few hundred bytes
+ * each) whatever its makers' jobs allow, and a key lookup (interrupts off)
+ * walks a bounded bucket. Far above what a filesystem service keeps:
+ * extfs maps 256 files at once, fat 32. */
+#define PAGER_KEYS_MAX 4096u
+/* A pager's close takes at most PAGER_CLOSE_BATCH links off its key table
+ * in one hold of its lock (interrupts off); pager_close_links_most is the
+ * most any close has taken so far (atomic, relaxed: a test zeroes it,
+ * closes a pager, reads it). */
+#define PAGER_CLOSE_BATCH 64u
+extern uint64_t pager_close_links_most;
 /* The oldest undelivered request into *out (zeroed first), marked
  * delivered; ERR_SHOULD_WAIT if none. PAGER_NEXT_AGAIN first makes every
  * writing page of the pager's VMOs dirty again and puts every delivered
@@ -300,9 +325,10 @@ bool pager_req_answered(struct pager_req *r);
 
 /* ---- the VMO side (kernel/object/vmo.c) ------------------------------------- */
 
-/* A pager VMO of size bytes linked to pv, charged to job, writable if
+/* A pager VMO of size bytes linked to pv, its pages and tables charged to
+ * job (its struct is pv's maker's: pager.c charged it), writable if
  * `writable`. pv is the VMO's from then on: its destruction hands pv back
- * (pager_vmo_gone). */
+ * (pager_vmo_gone, which gives the struct's unit back). */
 status_t vmo_create_pager(struct job *job, uint64_t size, struct pager_vmo *pv, bool writable,
                           struct vmo **out);
 /* Made from a pager (fixed at creation: no lock needed). */
@@ -539,8 +565,9 @@ uint64_t pager_vmo_key(const struct pager_vmo *pv);
  * one that wasn't used. */
 status_t pager_req_alloc(struct pager_vmo *pv, struct pager_req **out);
 void pager_req_free(struct pager_req *r);
-/* pv's VMO is being destroyed (no reference left): if linked, its key
- * stays taken and the pager gets a PAGER_REQ_GONE; else pv goes. */
+/* pv's VMO is being destroyed (no reference left): its struct's handle
+ * unit goes back to pv's maker; if linked, its key stays taken and the
+ * pager gets a PAGER_REQ_GONE; else pv goes. */
 void pager_vmo_gone(struct pager_vmo *pv);
 /* The koid of pv's pager. */
 uint64_t pager_vmo_pager_koid(const struct pager_vmo *pv);
