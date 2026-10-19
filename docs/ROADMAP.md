@@ -90,7 +90,9 @@ work):**
    alone; a kernel flag keeps the no-writable-and-executable rule across
    `/svc/exec`. After it, SwiftShader may become the default and a bad
    shader is contained. It starts with a planning track: SANDBOX-PLAN.md is
-   being written.
+   being written. The review of the layers it stands on lists what it
+   must close ([CR-REVIEW-LAYERS.md](CR-REVIEW-LAYERS.md): 0 High, 3 Medium,
+   5 Low, none fixed yet).
 3. **The iGPU and "run well", together.** Rendering offloaded to the Intel
    iGPU with the monitor staying on the RTX (GPU-PLAN.md is being
    written), and the measured work of making the browser fast and steady:

@@ -37,7 +37,9 @@ limit and not a new bug:
 - **Chromium has no sandbox of Jam OS's own yet** (CR-f is not built; its
   plan is being written). It runs `--no-sandbox`, so a bug in a renderer
   gives an attacker what the browser's list allows: the network, `/data`
-  and the desktop. Use it for ordinary sites only.
+  and the desktop. Use it for ordinary sites only. The review of the layers
+  the sandbox will stand on lists what it must close
+  ([docs/CR-REVIEW-LAYERS.md](docs/CR-REVIEW-LAYERS.md)).
 - **WebGL in software (SwiftShader) is opt-in**: the browser starts it only
   with `--enable-unsafe-swiftshader`, which a page can't turn on, and it
   gives the JIT power to the GPU process only then.
