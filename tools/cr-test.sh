@@ -146,7 +146,7 @@
 #           pattern's frames exactly, in order and none twice, the tones'
 #           frequency, level and length, the oscillator heard within
 #           600 ms, the back end's streams in a process that isn't the
-#           browser's and the mixer's underruns (CR_SOUND_GAPS,
+#           browser's and the mixer's underruns (CR_SOUND_GAPS, CR_SOUND_LATE,
 #           CR_SOUND_UNDERRUNS); about 2 minutes
 #   bench   content_shell as jit, running parts of JetStream 2.2 and
 #           Speedometer 3.1 (tools/cr/toolchain.sh fetches them, pinned;

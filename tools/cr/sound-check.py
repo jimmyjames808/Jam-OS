@@ -12,8 +12,12 @@ the file holds exactly what the mixer wrote), and the run's log.
   and the last must be there, and between them the only break allowed is
   one jump forward (the context's suspend: Chromium stops the stream and
   what was queued is dropped) besides QEMU's own drops (hda_audio_overrun
-  in QEMU's output: 2048 frames gone with no silence, a busy host's) and
-  CR_SOUND_GAPS (0) runs of silence inside it (the mixer ran short).
+  in QEMU's output: 2048 frames gone with no silence, a busy host's),
+  CR_SOUND_LATE (20) buffers of silence in place of the same number of the
+  pattern's frames (the audio service's sync reader waits 95 % of a buffer
+  for the renderer and plays silence for a late one, Chromium's way: on a
+  busy host the renderer's thread is sometimes late) and CR_SOUND_GAPS (0)
+  runs of silence inside it (the mixer ran short).
 - The tones (the capture's other sounds, cut at 50 ms of silence): one at
   440 Hz (the OscillatorNode) of exactly 1.5 s at a quarter of full scale
   (within 3 %), and the <audio> file's 1000 Hz at a quarter of full scale
@@ -88,6 +92,7 @@ def main():
     wav, log, qout = sys.argv[1:4]
     gaps_ok = int(os.environ.get("CR_SOUND_GAPS", "0"))
     under_ok = int(os.environ.get("CR_SOUND_UNDERRUNS", "2"))
+    late_ok = int(os.environ.get("CR_SOUND_LATE", "20"))
     ok = True
 
     def bad(why):
@@ -135,11 +140,13 @@ def main():
         # before it) is followed by `quiet` zeros and then frame k + 1 +
         # `skipped`.
         di, dk = np.diff(ci), np.diff(kk)
-        skips, gaps, dropped = [], [], 0
+        skips, gaps, late, dropped = [], [], [], 0
         for j in np.flatnonzero((di != 1) | (dk != 1)):
             k, skipped, quiet = int(kk[j]) + 1, int(dk[j]) - 2, int(di[j]) - 2
             if skipped == 2048 and quiet == 0 and dropped < drops:
                 dropped += 1
+            elif 0 < skipped == quiet <= 1024:
+                late.append((k, quiet))
             elif skipped > 0:
                 skips.append((k, skipped, quiet))
             elif quiet > 0:
@@ -149,6 +156,11 @@ def main():
                   % (k, skipped, skipped * 1000 / RATE, quiet))
         if dropped:
             print("sound-check: pattern: %d of QEMU's drops (2048 frames each) inside it" % dropped)
+        for k, quiet in late:
+            print("sound-check: pattern: after frame %d, a buffer of silence (%d frames) in place of "
+                  "the renderer's (it was late)" % (k, quiet))
+        if len(late) > late_ok:
+            bad("the renderer was late %d times (CR_SOUND_LATE: %d)" % (len(late), late_ok))
         if len(skips) > 1:
             bad("%d jumps in the pattern (one is the suspend's)" % len(skips))
         for k, quiet in gaps:

@@ -4765,7 +4765,12 @@ the first run; the calls made on the way:
   Chromium's buffer; no frame twice, none out of order, no silence inside
   it), the oscillator exactly 72,000 frames of 440 Hz at 8192, the
   `<audio>` file's 1000 Hz in two pieces of exactly 3.000 s in all, no
-  underrun in any stream. An `<audio>` pause doesn't stop the output
+  underrun in any stream. In a batch beside six other QEMUs the pattern
+  had three 10 ms buffers of silence, each in place of one of its buffers:
+  the audio service's sync reader waits 95 % of a buffer for the renderer
+  and plays silence for a late one (Chromium's own glitch, counted by its
+  glitch info; the mixer saw no underrun), so the check allows a few
+  (`CR_SOUND_LATE`). An `<audio>` pause doesn't stop the output
   stream: the renderer's mixer plays silence until it closes its sink a
   while later; an AudioContext's `suspend()` does (the back end's stop and
   start lines).
