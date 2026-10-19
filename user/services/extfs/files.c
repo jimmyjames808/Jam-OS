@@ -504,6 +504,12 @@ status_t files_open(const struct ext_inode *in, uint32_t flags, bool nochange,
     };
     fh[i].ch = fh[i].vmo = HANDLE_INVALID;
     fh[i].armed = false;
+    /* The slot named as this request's before it is taken: a death from
+     * here on, the request not committed, has it forgotten (adopt.c's
+     * unmake). Taken first, a death before the mark left it used, and a
+     * new file's inode, never committed, made the successor give its whole
+     * state up (files_check: "an open file that isn't on the volume"). */
+    op_made(XF_MADE_FILE, i);
     f->used = true;
     test_die(XF_DIE_SLOT);
     status_t st = attach(f, out_ch, out_vmo);
@@ -511,7 +517,6 @@ status_t files_open(const struct ext_inode *in, uint32_t flags, bool nochange,
         files_release(i);
         return st;
     }
-    op_made(XF_MADE_FILE, i);
     at[i].unlinked = false;
     at[i].dir = (struct fsw_key){ 0 };
     if (w->has_name) {

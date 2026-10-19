@@ -214,6 +214,7 @@ status_t dirs_open(const struct xf_ctx *c, const struct xf_walk *w, handle_t *ou
     }
     dir_at[i] = walk_place_of(w);   /* found by the walk that reached it */
     root_at[i] = c->root_at ? *c->root_at : (struct xf_place){ 0 };
+    op_made(XF_MADE_DIR, (uint32_t)i);   /* before it is taken, as files.c's */
     d->used = true;
     test_die(XF_DIE_SLOT);
     dir_ch[i] = mine;
@@ -225,7 +226,6 @@ status_t dirs_open(const struct xf_ctx *c, const struct xf_walk *w, handle_t *ou
         jam_handle_close(theirs);
         return st;
     }
-    op_made(XF_MADE_DIR, (uint32_t)i);
     *out = theirs;
     return OK;
 }
