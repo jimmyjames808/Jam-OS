@@ -427,7 +427,7 @@ wants real sites exactly because they vary.
 
 [WRITEMAP-REVIEW](WRITEMAP-REVIEW.md#design-questions) left four design
 questions; WR2 built question 2 (errseq: each mapper hears of a
-write-back error once, [WRITEMAP-PLAN](WRITEMAP-PLAN.md#wr2-notes)) and
+write-back error once, [HISTORY](HISTORY.md#writable-file-mappings-on-ext)) and
 WQ closed its replay window. Questions 1 and 3 are the owner's "run
 well" pieces; question 4 is FR1's, with FZ.
 
@@ -476,7 +476,9 @@ has per writer is a later addition if the ceiling is ever met.
 **Files**: `kernel/mm/aspace.c`, `kernel/object/pager.c`,
 `kernel/include/jam/pager.h` (the throttle's signature and the
 counter), `kernel/object/vmo.c` (the thin wrapper), and the text of
-WRITEMAP-PLAN's 1.4 (it says "at most the answer time in all").
+WRITEMAP-PLAN's 1.4 (it says "at most the answer time in all"; that plan
+was joined into HISTORY and deleted on 2026-10-20, so the sentence now
+lives in the code's comments and in git history).
 **Tests**: ktest cases beside `pager_dirty_store_waits`
 (`kernel/test/test_pager_dirty.c`) with a short answer time: a pager
 that answers one `WRITTEN` every 0.6 answer times for four answer
@@ -805,7 +807,7 @@ queue on the PC's budget like any other.
 | **RW10. Linux-named counters and a real Pss** | 4.2 item 4 | `kernel/` (accounting, a Pss query), `kernel/include/jam/abi.h`, `user/posix/sys/procfs.c`, `user/posix/sys/procinfo.c`, posixtest's procfs | RW9 not touching the same kernel files at once | ktest; posixtest `procfs`; utest; a program with a known shared mapping reports the right Pss | 3 | Opus |
 | **RW11. The init run's time and tests out of the boot image** | section 5, in two commits: the measurement, the shorter waits and the budget lines; then the second boot module | `Makefile`, `tools/mkbootfs.py`, `boot/limine.conf`, `boot/init.cfg`, `tools/init-test.sh`, `kernel/main.c`, init's start, `tools/qemu-test.sh`, utest cases that wait on timers | none; goes between waves | 5.2's list | 4.5 | Sonnet 5.5 for the measurement and waits, Opus for the module |
 | **RWR. Independent review and fix** | RW7, RW8, RW9, RW10 and RW11's module, findings first (a new docs/RUNWELL-REVIEW.md), High and Medium fixed with a test each: can the sampler leak another process's memory to an unprivileged reader, can a deadline change starve a waiter or hide a hung pager, can an orderly stop lose a store it used to keep, does a missing test image fail loudly | the above | RW7 to RW11 merged | hostile runs per finding | 2 | Opus |
-| **RWJ. The join** | ARCHITECTURE, TESTING's rows, BENCH, CR-PLAN, WRITEMAP-PLAN, ROADMAP, HISTORY; this plan folded into HISTORY when it is done | the docs | RWR | `make check` | 0.5 | Sonnet 5.5 |
+| **RWJ. The join** | ARCHITECTURE, TESTING's rows, BENCH, CR-PLAN, HISTORY's writable-mappings section (WRITEMAP-PLAN is joined and gone; its "still open" paragraph names RW7 and RW8), ROADMAP, HISTORY; this plan folded into HISTORY when it is done | the docs | RWR | `make check` | 0.5 | Sonnet 5.5 |
 
 **Order.**
 

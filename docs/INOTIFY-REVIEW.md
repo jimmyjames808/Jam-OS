@@ -1,6 +1,6 @@
 # IR: the review of file watching (IP to IC)
 
-Track IR of [INOTIFY-PLAN.md](INOTIFY-PLAN.md) ("5. Tracks"): everything
+Track IR of the inotify plan ([HISTORY](HISTORY.md#file-watching-inotify); the plan file is deleted, see git history) ("5. Tracks"): everything
 IP, IE1, IE2, IL1, IL2 and IC built, read in full at main 243156b4 by an
 agent that wrote none of it, ahead of CB6 (Chromium's profiles watch their
 files).
@@ -177,7 +177,7 @@ the library's fake) were not written here: IR2 wrote them (below).
 ## IR2: the follow-ups
 
 The main session decided both design questions as recommended above
-([INOTIFY-PLAN's IR2 notes](INOTIFY-PLAN.md#ir2-notes)) and asked for the
+([the IR2 notes, now in HISTORY](HISTORY.md#file-watching-inotify)) and asked for the
 hostile runs.
 
 | # | The fix | Its test | Without the fix |
