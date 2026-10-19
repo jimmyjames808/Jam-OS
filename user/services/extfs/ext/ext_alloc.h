@@ -96,6 +96,10 @@ status_t ext_inode_new(struct ext_fs *fs, const struct ext_inode_spec *spec,
  * released (freed when no other inode shares it), its bitmap bit cleared,
  * the counts raised; links_count 0. */
 status_t ext_inode_free(struct ext_fs *fs, struct ext_inode *in, uint32_t dtime);
+/* Is inode `ino` in use (its bit in its group's inode bitmap)? ext_iget
+ * can't tell: a freed inode keeps its mode and generation, its link count
+ * 0, as an orphan's (removed and still open) is. ERR_OUT_OF_RANGE; ERR_IO. */
+status_t ext_inode_used(struct ext_fs *fs, uint32_t ino, bool *used);
 
 /* ---- extent trees (extwrite.c) --------------------------------------------------------- */
 

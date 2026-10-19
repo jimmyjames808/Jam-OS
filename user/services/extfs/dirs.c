@@ -83,13 +83,15 @@ static void close_channel(unsigned i)
 
 /* Directory ino's last channel went: removed, it goes now, or after the
  * running request's answer (serve_slot's defer_run). The state forgot the
- * slot first, so a death between leaves an orphan the next mount drops. */
+ * slot first, so a death between leaves an orphan the next mount drops.
+ * Never one freed already (its bitmap asked: ext_iget reads it as an
+ * orphan), which ext would call damage if it were dropped again. */
 static void let_go(uint32_t ino)
 {
     struct ext_inode in;
     if (!vol.mounted || files_held(ino) ||
         ext_iget(&vol.fs, ino, EXT_IGET_UNLINKED, &in) != OK || in.d.links_count ||
-        (in.d.mode & EXT_S_IFMT) != EXT_S_IFDIR)
+        (in.d.mode & EXT_S_IFMT) != EXT_S_IFDIR || !inode_used(ino))
         return;
     defer_drop(ino);
     if (!op_running())
