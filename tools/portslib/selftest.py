@@ -429,6 +429,11 @@ def test_bad_builds(tmp, real_ports):
 
 
 KEPT_BUILD = """# big's build in a kept tree: its output in out/, inside the source.
+plan() {
+    mkdir -p out
+    echo plan >> out/plans
+}
+
 build() {
     mkdir -p out
     echo run >> out/runs
@@ -474,12 +479,12 @@ def test_kept(tmp, real_ports):
     kdir = os.path.join(tmp, "kept-tree")
     src = os.path.join(kdir, "src", "big-1.0")
 
-    def build(clean=False):
+    def build(clean=False, plan=False):
         t, problems = treemod.load(root)
         problems += treemod.lint(t, ["big"])
         expect(not problems, "the kept fixture doesn't load: %s" % problems)
-        b = buildmod.Builder(t, os.getcwd(), os.path.join(tmp, "kept-out"), 4, (), False,
-                             lambda s: None, kept=kdir, clean=["big"] if clean else ())
+        b = buildmod.Builder(t, os.getcwd(), os.path.join(tmp, "kept-out"), 4, ["big"] if plan else (), False,
+                             lambda s: None, kept=kdir, clean=["big"] if clean else (), plan=plan)
         try:
             b.build(["big"])
         except buildmod.BuildError as e:
@@ -490,6 +495,13 @@ def test_kept(tmp, real_ports):
     def runs():
         try:
             with open(os.path.join(src, "out", "runs")) as f:
+                return len(f.read().split())
+        except OSError:
+            return 0
+
+    def plans():
+        try:
+            with open(os.path.join(src, "out", "plans")) as f:
                 return len(f.read().split())
         except OSError:
             return 0
@@ -539,6 +551,28 @@ def test_kept(tmp, real_ports):
            "kept: a patch that didn't apply cost the tree (runs: %d)" % runs())
     build(clean=True)
     expect(runs() == 1, "kept: --clean kept the build's output (runs: %d)" % runs())
+    # --plan: the kept tree brought up to date (the new patch applied) and the recipe's
+    # plan() run, nothing built or staged: the last build's stamp and stage stay.
+    stamp = os.path.join(tmp, "kept-out", "big", "stamp")
+    stage = os.path.join(tmp, "kept-out", "big", "stage")
+    with open(stamp) as f:
+        stamp0 = f.read()
+    stage0 = sorted(os.listdir(stage))
+    with open(os.path.join(d, "patches", "0001-three.patch"), "w") as f:
+        f.write(KEPT_PATCH)
+    expect(plans() == 0, "kept: plan() ran in a build")
+    build(plan=True)
+    expect(plans() == 1 and runs() == 1, "kept: --plan ran plan() %d times and build() %d times" % (plans(), runs()))
+    expect("return 3" in text("y.c"), "kept: --plan did not bring the tree up to date")
+    with open(stamp) as f:
+        stamp1 = f.read()
+    expect(stamp1 == stamp0 and sorted(os.listdir(stage)) == stage0, "kept: --plan touched the stamp or the stage")
+    expect(os.path.exists(os.path.join(tmp, "kept-out", "big", "plan.log")), "kept: no plan.log")
+    build()
+    expect(runs() == 2 and "return 3" in text("y.c"), "kept: the build after a plan (runs: %d)" % runs())
+    os.remove(os.path.join(d, "patches", "0001-three.patch"))
+    build()
+    expect(runs() == 3 and text("y.c") == files["y.c"], "kept: the build after that (runs: %d)" % runs())
     files["x.c"] = files["x.c"].replace("return y();", "return y() + 1;")
     write_recipe(["category test"])
     build()

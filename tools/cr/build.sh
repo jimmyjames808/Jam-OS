@@ -6,8 +6,9 @@
 # (tools/remote-slots.py) for the CPUs and memory it uses for as long as it
 # runs, so the QEMU tests shrink rather than overcommit the machine.
 #
-#   tools/cr/build.sh start [--clean] [--gen] [--keep=N] [<ninja target>...]
+#   tools/cr/build.sh start [--clean] [--gen] [--dry] [--keep=N] [<ninja target>...]
 #   tools/cr/build.sh status | wait [<seconds>] | stop | scan <outdir> | fetch <outdir>
+#   tools/cr/build.sh size <ninja -n output file>      (the claim for a plan, no build)
 #   JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh \
 #       tools/cr/build.sh start
 #   JAMOS_REMOTE_LIGHT_CPUS=1 JAMOS_REMOTE_LIGHT_MEM_MB=64 ... tools/remote-test.sh \
@@ -15,12 +16,14 @@
 #
 # start   fetches Chromium's pinned tools (tools/cr/toolchain.sh), copies
 #         this checkout to ~/cr/runs/<run> (a run never sees a later copy
-#         of the checkout), then claims CR_JOBS CPUs (10) and CR_MEM_MB of
-#         memory (12288) in the budget and starts the build in the background
-#         (remote-slots.py --detach), and returns: `ports.py build -f -j
-#         CR_JOBS --kept ~/cr/<version> chromium` under nice 19 and ionice's
-#         idle class, the ports' output in ~/cr/ports. --clean removes the
-#         kept tree first (a clean build); --gen stops after GN; --keep=N
+#         of the checkout), counts what ninja would do (below), then claims
+#         the CPUs and memory that work needs in the budget and starts the
+#         build in the background (remote-slots.py --detach), and returns:
+#         `ports.py build -f -j <CPUs> --kept ~/cr/<version> chromium` under
+#         nice 19 and ionice's idle class, the ports' output in ~/cr/ports.
+#         --clean removes the
+#         kept tree first (a clean build); --gen stops after GN; --dry counts and says the
+#         claim, then stops (nothing claimed or started; a plan changes no program and not the stage); --keep=N
 #         lets ninja go on past N failures (to see many at once); targets
 #         replace base_unittests, test_child_process, headless_shell and content_shell
 #         (ports/chromium/build.sh reads them from ~/cr/<version>/build.conf).
@@ -31,6 +34,32 @@
 #         lines say each program's build id and whether it is linked against
 #         this run's libc (the stage's file times are the port's fixed
 #         epoch, not the link's: they never tell).
+#
+# The claim is sized to the work (track BC, 2026-10-20: a claim of the whole
+# 20 GB budget waits until every test on the machine has ended, and the
+# tests of all the agents stand still behind it; a relink needs a few GB,
+# not a compile's). start runs the port's `plan` (`ports.py build --plan`,
+# which brings the kept tree up to date, runs GN if args.gn changed, and
+# asks the builder's own ninja, ~/.cache/jamos/tools/bin/ninja, what `-n`
+# would do: ports/chromium/build.sh, ~/cr/<version>/plan.txt) under the
+# light claim of the remote-test.sh call that runs start (2 CPUs, 4 GB:
+# remote-test.sh's cost_of), and counts the steps by kind: compiles (CXX,
+# CC, ASM, Rust), links (LINK, SOLINK), the rest (archives, scripts,
+# copies; STAMPs are free). Then:
+#   nothing to do, or no compile and no link and at most 100 others,
+#     or --gen (GN only)     2 CPUs, 4 GB
+#   up to CR_LINK_BELOW (100) compiles and any links (a link of
+#     content_shell takes about 10 GB, one at a time)   6 CPUs, 12 GB
+#   more compiles (a header everyone includes, a changed GN argument,
+#     --clean, no kept tree yet)    CR_JOBS CPUs (10), CR_MEM_MB (12288)
+# CR_JOBS and CR_MEM_MB, each one given, win over the sizing (both given:
+# nothing is counted, a hand-made claim). The step count and the claim are
+# the first line start prints, the first line of the build's log and a line
+# of `status` (~/cr/runs/<run>/claim). A count that fails (a patch that
+# doesn't apply, a missing tool) ends start there, as the build would fail
+# after waiting for its claim; a count GN leaves unsettled claims the full
+# default. `size <file>` prints the claim for a saved `ninja -n` count
+# (tools/cr/build-test.sh).
 # status  whether a build runs, its run, its time so far, ninja's last
 #         progress line, the peak memory so far; at the end its result,
 #         time, peak memory and disk
@@ -53,8 +82,18 @@
 # are summary.txt's. Never kills or renices anything but its own build.
 set -u
 cr=${CR_DIR:-$HOME/cr}
-jobs=${CR_JOBS:-10}
-mem=${CR_MEM_MB:-12288}
+# What the claim asks for: the variables when given, else (start) sized to the
+# work, else (the build itself, which start gave them in its environment) the
+# full default.
+jobs=${CR_JOBS:-}
+mem=${CR_MEM_MB:-}
+full_jobs=10
+full_mem=12288
+tiny_jobs=2
+tiny_mem=4096
+link_jobs=6
+link_mem=12288
+link_below=${CR_LINK_BELOW:-100}   # compile steps up to this many are "link-mostly"
 here=$(cd "$(dirname "$0")/../.." && pwd)
 version=$(awk '$1 == "version" { print $2 }' "$here/ports/chromium/recipe")
 kept=$cr/$version
@@ -64,6 +103,60 @@ mkdir -p "$cr/runs"
 running() { ! flock -n "$cr/.lock" true 2> /dev/null; }
 latest() { ls -1d "$cr"/runs/[0-9]* 2> /dev/null | tail -1; }
 
+# count_value <counts file> <key>: a number from a plan's counts
+# (tools/cr/ninja-count.awk's lines, or `unknown 1`); empty if not there.
+count_value() { awk -v k="$2" '$1 == k { print $2 }' "$1" 2> /dev/null; }
+
+# size_claim <counts file>: the claim for what ninja would do. Sets tier
+# (tiny, link or full), counts (what ninja would do, in words) and why, and
+# jobs and mem unless the caller gave them (CR_JOBS, CR_MEM_MB).
+size_claim() {
+    local f=$1 steps compile link stamp other j m
+    steps=$(count_value "$f" steps)
+    compile=$(count_value "$f" compile)
+    link=$(count_value "$f" link)
+    stamp=$(count_value "$f" stamp)
+    other=$(count_value "$f" other)
+    if [ -z "$steps" ]; then
+        tier=full counts="ninja's steps could not be counted"
+        why="the full default"
+    else
+        counts="ninja would run $steps steps ($compile compiles, $link links, $other others, $stamp stamps)"
+        if [ "$steps" -eq 0 ]; then
+            tier=tiny why="nothing to build: only the install"
+        elif [ "$compile" -eq 0 ] && [ "$link" -eq 0 ] && [ "$other" -le 100 ]; then
+            tier=tiny why="no compile and no link: generated files"
+        elif [ "$compile" -le "$link_below" ]; then
+            tier=link why="mostly links: a link's share"
+        else
+            tier=full why="a big compile: the full default"
+        fi
+    fi
+    case $tier in
+    tiny) j=$tiny_jobs m=$tiny_mem ;;
+    link) j=$link_jobs m=$link_mem ;;
+    *) j=$full_jobs m=$full_mem ;;
+    esac
+    [ -n "$jobs" ] || jobs=$j
+    [ -n "$mem" ] || mem=$m
+}
+
+# plan_counts <run>: the port's plan (ports/chromium/build.sh: the kept tree
+# brought up to date, GN if args.gn changed, ninja -n counted) into
+# $kept/plan.txt, with the ~/cr/.lock held so that no build and no other
+# plan changes the tree meanwhile. Its output is in <run>/plan.out.
+plan_counts() {
+    local r=$1 io=()
+    command -v ionice > /dev/null && io=(ionice -c 3)
+    rm -f "$kept/plan.txt"
+    (
+        flock -n 8 || { echo "cr-build: another build holds $cr/.lock"; exit 1; }
+        cd "$r/checkout" || exit 2
+        nice -n 19 ${io[@]+"${io[@]}"} python3 -u tools/ports.py --out "$ports" build --plan -f -j 1 \
+            --kept "$kept" chromium
+    ) 8> "$cr/.lock" > "$r/plan.out" 2>&1
+}
+
 status() {
     local run=${1:-$(latest)} now line
     [ -n "$run" ] || { echo "cr-build: no build has run here"; return; }
@@ -72,9 +165,14 @@ status() {
         echo "cr-build: running: run $(basename "$run"), $(( (now - $(cat "$run/started")) / 60 )) min so far"
     elif running; then
         echo "cr-build: run $(basename "$run") is waiting for its CPUs and memory, or another build runs"
+    elif [ -f "$run/claim" ] && [ ! -f "$run/started" ] && ! grep -q '^started ' "$run/start.log" 2> /dev/null; then
+        # start handed the claim to the keeper, which waits for its turn in the budget
+        echo "cr-build: run $(basename "$run") is waiting for its claim in the budget (start.log: $run/start.log)"
+        grep -a 'waiting:' "$run/start.log" 2> /dev/null | tail -1 | sed 's/^remote-test: //; s/^/cr-build: /'
     else
         echo "cr-build: not running; the last run: $(basename "$run")"
     fi
+    [ -f "$run/claim" ] && echo "cr-build: $(cat "$run/claim")"
     line=$(grep -a '^\[[0-9]*/[0-9]*\]' "$ports/chromium/log" 2> /dev/null | tail -1 | cut -c1-160)
     [ -n "$line" ] && echo "cr-build: ninja: $line"
     [ -f "$run/peak" ] && echo "cr-build: peak memory so far: $(cat "$run/peak")"
@@ -87,6 +185,8 @@ status() {
 # The detached build itself (start's command): runs from the run's copy.
 run() {
     local run=$1 t0 t1 rc
+    jobs=${jobs:-$full_jobs}
+    [ -f "$run/claim" ] && echo "cr-build: $(cat "$run/claim")"   # the first line of the build's log
     exec 9> "$cr/.lock"
     flock -n 9 || { echo "cr-build: another build holds $cr/.lock"; exit 1; }
     t0=$(date +%s)
@@ -95,13 +195,13 @@ run() {
     trap 'echo "result: stopped by a signal at $(date +%H:%M:%S)" > "$run/summary.txt"; exit 143' TERM HUP INT
     sample "$run" &
     local sampler=$!
-    cd "$run/checkout" || exit 2
+    cd "$run/checkout" || { kill "$sampler" 2> /dev/null; exit 2; }
     local io=()
     command -v ionice > /dev/null && io=(ionice -c 3)
     local clean=()
     [ -f "$run/clean" ] && clean=(--clean)
-    nice -n 19 "${io[@]}" python3 -u tools/ports.py --out "$ports" build -f -j "$jobs" \
-        --kept "$kept" "${clean[@]}" chromium
+    nice -n 19 ${io[@]+"${io[@]}"} python3 -u tools/ports.py --out "$ports" build -f -j "$jobs" \
+        --kept "$kept" ${clean[@]+"${clean[@]}"} chromium
     rc=$?
     t1=$(date +%s)
     kill "$sampler" 2> /dev/null
@@ -177,11 +277,12 @@ cmd=${1:-}
 shift || true
 case $cmd in
 start)
-    clean=0 gen=0 keep= targets=()
+    clean=0 gen=0 dry=0 keep= targets=()
     for a in "$@"; do
         case $a in
         --clean) clean=1 ;;
         --gen) gen=1 ;;
+        --dry) dry=1 ;;
         --keep=*) keep=${a#--keep=} ;;
         *) targets+=("$a") ;;
         esac
@@ -206,7 +307,35 @@ start)
     } > "$kept/build.conf"
     # Older runs' copies go (their logs and figures stay).
     ls -1d "$cr"/runs/[0-9]*/checkout 2> /dev/null | head -n -3 | xargs -r rm -rf
-    echo "cr-build: run $(basename "$r"): claiming $jobs CPUs and $((mem / 1024)) GB, log $r/build.log"
+    # The claim: what the caller gave, else what the work needs.
+    name=$(basename "$r")
+    tier= counts= why=
+    if [ -n "$jobs" ] && [ -n "$mem" ]; then
+        counts="a claim made by hand" why="CR_JOBS and CR_MEM_MB"
+    elif [ $gen = 1 ]; then
+        counts="GN only" why="no compile, no link"
+        [ -n "$jobs" ] || jobs=$tiny_jobs
+        [ -n "$mem" ] || mem=$tiny_mem
+    elif [ $clean = 1 ] || ! ls -d "$kept"/src/*/ > /dev/null 2>&1; then
+        counts="a clean build: everything compiles" why="the full default"
+        [ -n "$jobs" ] || jobs=$full_jobs
+        [ -n "$mem" ] || mem=$full_mem
+    else
+        echo "cr-build: run $name: counting what ninja would do (the kept tree up to date, GN if args.gn changed, ninja -n)..."
+        if ! plan_counts "$r"; then
+            echo "cr-build: the count failed, so the build would fail the same way (not started); the end of $r/plan.out:"
+            tail -n 15 "$r/plan.out" | sed 's/^/  /'
+            exit 2
+        fi
+        size_claim "$kept/plan.txt"
+    fi
+    echo "run $name: $counts: claiming $jobs CPUs and $((mem / 1024)) GB ($why), log $r/build.log" > "$r/claim"
+    echo "cr-build: $(cat "$r/claim")"
+    if [ $dry = 1 ]; then
+        echo "cr-build: --dry: nothing claimed, nothing started"
+        rm -rf "$r"
+        exit 0
+    fi
     # Through the keeper (tools/pc-keeper.sh) when it runs, so the build
     # outlives this session; tools/pc-detach.sh falls back to a plain start.
     JAMOS_REMOTE_LABEL="Chromium build" "$here/tools/pc-detach.sh" "$r/start.log" \
@@ -215,6 +344,23 @@ start)
         "$r/checkout/tools/cr/build.sh" run "$r" || exit 2
     ;;
 run) run "$1" ;;
+size)
+    # The claim for a count with no build and no machine: a saved `ninja -n`
+    # output (or tools/cr/ninja-count.awk's counts, as ~/cr/<version>/plan.txt
+    # has them). tools/cr/build-test.sh runs it on faked outputs.
+    f=${1:-}
+    [ -f "$f" ] || { echo "usage: tools/cr/build.sh size <ninja -n output or counts file>" >&2; exit 2; }
+    if ! grep -q -e '^steps ' -e '^unknown ' "$f"; then
+        t=$(mktemp)
+        awk -f "$here/tools/cr/ninja-count.awk" "$f" > "$t"
+        f=$t
+    fi
+    tier=
+    size_claim "$f"
+    echo "jobs=$jobs mem=$mem tier=$tier"
+    echo "$counts: claiming $jobs CPUs and $((mem / 1024)) GB ($why)"
+    [ -z "${t:-}" ] || rm -f "$t"
+    ;;
 status) status ;;
 pkgs)
     # Every system library (pkg-config package) GN asks for with the kept
@@ -271,6 +417,6 @@ fetch)
         "$out/chromium/" && echo "cr-build: $(du -sh "$out/chromium" | cut -f1) in $out/chromium"
     ;;
 *)
-    echo "usage: tools/cr/build.sh start [--clean] [--gen] [--keep=N] [<target>...] | status | wait [<s>] | stop | pkgs | scan|fetch <outdir>" >&2
+    echo "usage: tools/cr/build.sh start [--clean] [--gen] [--dry] [--keep=N] [<target>...] | status | wait [<s>] | stop | size <file> | pkgs | scan|fetch <outdir>" >&2
     exit 2 ;;
 esac

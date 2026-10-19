@@ -41,7 +41,15 @@ CPUs are used), but once the older one has waited JAMOS_REMOTE_AGE (60) seconds
 nothing starts ahead of it, so a big run is not starved by a stream of small
 ones. (Only when starting first would delay it: an older run that would still
 fit after this one started is not waited for, so a waiter stuck on something
-other than the budget holds no one up.) Except one that cannot fit however long the others take: a long claim
+other than the budget holds no one up.) So a command's wait has a bound: it
+starts when what runs and what is older than it have ended (at the latest;
+anything younger that starts meanwhile started within the first
+JAMOS_REMOTE_AGE seconds or leaves it room), never behind a stream of small
+runs however long that goes on (tools/remote-slots-test.sh: a whole-budget
+claim behind a stream of arrivals). What it waits for is what runs: a claim
+of the whole memory budget waits for every command to end, so a long
+command's end is its wait; that is why tools/cr/build.sh sizes its claim to
+the work. Except one that cannot fit however long the others take: a long claim
 (below) holds part of the budget for hours, and a run whose cost plus the long
 claims' is over the budget (or the slots) would block everything behind it for
 as long, so it is told so at once ("needs 12 CPUs, but at most 10 can be free
@@ -104,6 +112,15 @@ def limits(base):
     except (OSError, ValueError):
         pass
     return max(cpus, 1), max(gb, 1) * 1024, max(slots, 1)
+
+
+def age_limit():
+    """JAMOS_REMOTE_AGE (60) seconds: how long a waiting command waits before
+    nothing younger starts ahead of it."""
+    try:
+        return float(os.environ.get("JAMOS_REMOTE_AGE") or 60)
+    except ValueError:
+        return 60.0
 
 
 class Claim:
@@ -287,12 +304,21 @@ def status(d):
             "running" if alive else "GONE   ", c, m / 1024, since, pid, "long" if long else "run ", cmd[:90]))
         if not alive:
             print("    its governor is gone: the next caller kills what it left and removes the claim")
+    longs = [parse(t) for _, t in live if parse(t)[3]]
+    long_cpus, long_mem = sum(h[0] for h in longs), sum(h[1] for h in longs)
+    aged = age_limit()
     for name, t, alive in waits:
         if not alive:
             continue
         c, m, pid, long, cmd = parse(t)
-        print("  waiting %2d CPUs %5.1f GB %7s  pid %d  %s: %s" % (
-            c, m / 1024, age(now - int(name.split(".")[0]) / 1e9), pid, "long" if long else "run ", cmd[:90]))
+        waited = now - int(name.split(".")[0]) / 1e9
+        note = ""
+        if longs and (long_cpus + c > cpus or long_mem + m > mem or len(longs) >= slots):
+            note = "  (can't fit beside the long claim%s: it starts when that ends)" % ("s" if len(longs) > 1 else "")
+        elif waited > aged:
+            note = "  (waited past %g s: nothing younger starts ahead of it)" % aged
+        print("  waiting %2d CPUs %5.1f GB %7s  pid %d  %s: %s%s" % (
+            c, m / 1024, age(waited), pid, "long" if long else "run ", cmd[:90], note))
 
 
 def admit(d, ticket, claim, runs_dir, wait_dir, wfd):
@@ -328,7 +354,7 @@ def admit(d, ticket, claim, runs_dir, wait_dir, wfd):
                          "(%d CPUs, %.1f GB) so that it fits"
                          % (long_cpus, cpus_max, long_mem / 1024, var, fit, claim.cpus, claim.mem / 1024))
     cant = hopeless(claim.cpus, claim.mem)
-    aged = int(os.environ.get("JAMOS_REMOTE_AGE", "60")) * 10**9
+    aged = int(age_limit() * 10**9)
     now = time.time_ns()
     # Older waiting runs that have waited long enough to go first. Not those that
     # cannot start until a long claim ends (they hold no one up), and not those
@@ -362,11 +388,13 @@ def admit(d, ticket, claim, runs_dir, wait_dir, wfd):
     else:
         why = "%d of %d CPUs in use by %d run(s)" % (used, cpus_max, len(runs))
         if ahead:
-            why += ", an older run has waited long enough to go first"
+            why += ", %d older run(s) have waited long enough to go first" % len(ahead)
         elif used_mem + claim.mem > mem_max:
             why += ", %.1f of %d GB memory" % (used_mem / 1024, mem_max // 1024)
         elif len(runs) >= slots:
             why += ", all %d slots" % slots
+        if now - int(ticket.split(".")[0]) > aged:
+            why += "; it has waited past %g s, so nothing younger starts ahead of it" % (aged / 10**9)
     return None, wfd, why, used, cpus_max, cant, notes
 
 

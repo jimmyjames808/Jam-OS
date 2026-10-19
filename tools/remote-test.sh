@@ -94,6 +94,12 @@ cost_of() {
     fi
     case ${args[i]:-} in sh | bash | python3) i=$((i + 1)) ;; esac
     script=${args[i]:-}
+    if [ "${script##*/}" = build.sh ] && [ "${args[i + 1]:-}" = start ]; then
+        # tools/cr/build.sh start brings the Chromium tree up to date and counts what
+        # ninja would do (GN, ninja -n) before it claims the build's share: a few GB
+        echo "${JAMOS_REMOTE_LIGHT_CPUS:-2} ${JAMOS_REMOTE_LIGHT_MEM_MB:-4096}"
+        return
+    fi
     after=$(($# - i - 2))   # arguments after the script and its output directory
     [ "$after" -ge 0 ] || after=0
     smp=${smp%%[!0-9]*}

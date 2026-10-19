@@ -537,7 +537,18 @@ ninja ran `-j 10`).
   budget (`--detach`: it waits for its turn, starts the build in the
   background and returns; the claim lasts as long as the build) of
   `CR_JOBS` CPUs (ninja's `-j`) and `CR_MEM_MB` of memory, at nice 19 and
-  ionice idle, links one at a time (`concurrent_links = 1`). The build
+  ionice idle, links one at a time (`concurrent_links = 1`). **The claim is
+  sized to the work** (track BC, 2026-10-20; tools/cr/build.sh's header):
+  `start` runs the port's `plan` (`ports.py build --plan`: the kept tree up to
+  date, GN if `args.gn` changed, `ninja -n`) and counts the steps by kind. A
+  claim of the whole 20 GB budget (20 CPUs and 20 GB, set by hand) waits
+  until every test on the machine has ended, and the tests of every agent
+  stand still behind it (waits of 2 to 6 minutes, two builds never started);
+  a relink needs a few GB, not a compile's. Nothing to do or GN only: 2 CPUs,
+  4 GB; up to 100 compiles and any links: 6 CPUs, 12 GB (a link of
+  content_shell takes about 10 GB); more compiles (the `chrome` target's
+  17,700 steps, a header change, a changed GN argument): `CR_JOBS` (10)
+  and `CR_MEM_MB` (12288), each of them winning when set. The build
   holds `~/cr/.lock`. While a big claim runs, a `tools/remote-test.sh`
   call's own build step (8 CPUs by default) waits for room: status calls
   give `JAMOS_REMOTE_BUILD_CPUS=1` and a light claim. A claim whose memory
