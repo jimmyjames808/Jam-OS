@@ -74,8 +74,9 @@ should run now, ahead of CR-f.
   renderer (site isolation is Chromium's); Jam OS gives every renderer the
   same row. A site that may not JIT is the browser's `--js-flags=--jitless`,
   which patch 0914 already honours (CJR2 finding 1).
-- **Not the GPU itself.** The iGPU's render service is GP0's plan; this
-  plan says what the GPU process's row needs from it (section 6).
+- **Not the GPU itself.** The iGPU's render service is
+  [GPU-PLAN](GPU-PLAN.md)'s; this plan gives the GPU process rows that take
+  it with one grant (section 6).
 - **Not memory accounting inside services.** What the browser, netstack or
   the mixer hold on a child's behalf stays theirs (section 4).
 - **For our own Chromium build only.** No BSD runs Google's branded
@@ -106,7 +107,7 @@ should run now, ahead of CR-f.
 | System | The model | What it suggests here |
 |---|---|---|
 | **Fuchsia** (read in Chromium 155: `sandbox/policy/fuchsia/sandbox_policy_fuchsia.cc`) | The browser's launcher builds each child's namespace at launch from a per-type config: a filtered `/svc` (a minimal list plus the type's: fonts, the VMEX resource, sysmem for renderers; Flatland, sysmem, the Vulkan loader for the GPU; sockets and name lookup for the network), `/pkg` read-only for every sandboxed child, `/config/ssl` for the network service, the GPU's device paths, a clean environment, and a new job for each child | The shape: an explicit capability list per type at launch, nothing ambient, `/pkg` read-only to all. Note that Fuchsia's browser holds the VMEX resource it hands renderers: CJR2's L2 exists there too |
-| **Linux** (155: `sandbox/policy/linux/sandbox_linux.cc`) | Each child applies its own sandbox: the zygote's namespaces, then seccomp-bpf in `SandboxLinux::InitializeSandbox`, which renderers (`renderer_main_platform_delegate_linux.cc`), utilities (`utility_main.cc`) and the GPU process (`gpu_main.cc`) call after their start-up files are open; `--no-zygote` needs `--no-sandbox` | The place a hook (option (b)) would go, and the two phases a hook allows: open the files, then drop |
+| **Linux** (155: `sandbox/policy/linux/sandbox_linux.cc`) | Each child applies its own sandbox: the zygote's namespaces, then seccomp-bpf in `SandboxLinux::InitializeSandbox`, which renderers (`renderer_main_platform_delegate_linux.cc`), utilities (`utility_main.cc`) and the GPU process (`gpu_main.cc`) call after their start-up files are open; with `--no-zygote`, as Jam OS runs it, the launcher is a plain fork and exec (`child_process_launcher_helper_linux.cc`) | The place a hook (option (b)) would go, and the two phases a hook allows: open the files, then drop |
 | **Capsicum** (Watson, Anderson, Laurie and Kennaway, "Capsicum: practical capabilities for UNIX", USENIX Security 2010; *from memory, not checked here*) | A process calls `cap_enter()` and keeps only the descriptors it holds: no global namespaces (paths, pids, sysctls) after it. The paper rebuilt Chromium's renderer sandbox on FreeBSD in about 100 lines, far fewer than the other platforms' sandboxes, because Chromium already brokers a renderer's needs through the browser and passes shared memory and sockets as descriptors | Capsicum's capability mode is close to Jam OS's handles. The lesson for (a): a renderer needs almost nothing but the descriptors Chromium already passes, so its row can be nearly empty; the start-up files are the one thing a launch-time policy must still grant, where Capsicum's after-start `cap_enter` needed nothing |
 | **OpenBSD's port** (*from memory, not checked here*) | `pledge(2)` promises and `unveil(2)` paths per process type, applied by the port's patches where Linux would start its sandbox, the path lists kept as files under `/etc/chromium` | The precedent for (b): a hook patch carried every release, with the policy as data |
 
@@ -155,7 +156,7 @@ renderer may read), as on Linux.
 
 | | (a) A layer: libc applies a per-type table at the exec | (b) A hook patch where Linux starts seccomp |
 |---|---|---|
-| Where | libc's `execve` of `/proc/self/exe` in the forked child (still the browser's code), before `process_replace` | one call, `jam_sandbox_enter(type)`, in content's child start after `PreSandboxStartup` (patch 0914's place), or in `SandboxLinux::InitializeSandbox` (not reached by every type under `--no-sandbox`) |
+| Where | libc's `execve` of `/proc/self/exe` in the forked child (still the browser's code), before `process_replace` | one call, `jam_sandbox_enter(type)`, in content's child start after `PreSandboxStartup` (patch 0914's place), or in `SandboxLinux::InitializeSandbox` (whether every type reaches it under `--no-sandbox` is unchecked) |
 | What the child holds before it | nothing it isn't given: the new image starts narrowed | everything the browser holds, until the call; a bug or a crash before it leaves an unsandboxed process |
 | Two phases (open start-up files, then drop) | no: the row keeps the program's own files read-only for the child's life (Fuchsia's `/pkg`) | yes |
 | Job limits | the child asks its parent once, before its exec notice (CR3's Q5) | the same: a process can't set its own job's limits |
@@ -226,7 +227,9 @@ any power but `jit`.
 
 **Matching the command line** exactly as base's `CommandLine` reads it on
 POSIX: switches start with `--` or `-`, the value after the first `=`, the
-last of a repeated switch wins, a bare `--` ends the switches. A mismatch
+last of a repeated switch wins, a bare `--` ends the switches. The
+sub-type strings are the services' interface names as `UtilityProcessHost`
+writes them; SB10 takes the exact ones from crmulti's log. A mismatch
 fails closed: a type libc doesn't know gets the default row, and its child
 dies at its start (no ICU), visibly. `--renderer-cmd-prefix` and its kind
 (the owner's debugging flags) exec another program, which the table
@@ -303,7 +306,7 @@ protect that would give a JIT mapping write and execute together, refuse a
 `NOJIT` caller whatever handles it holds (so a JIT root received later
 helps nothing); `process_get_info` reports it; `process_replace` installs
 the new image's (the unstarted process's) flag. `/svc/exec` reads its
-caller's flag (CBF2a's writer pid; init holds `RIGHT_ROOT_SYSINFO`) and sets
+caller's flag (CBF2a's writer pid, looked up with init's root) and sets
 it on the child before the start. That is Linux's MDWE across every
 `execve`. It also gives init something to check about a caller that DC's
 notes asked for (`base_unittests`' launching tests): a follow-up, not CR-f.
@@ -360,27 +363,42 @@ everything else (the browser keeps the power, CJR2's (a)): Q2.
 
 ## 6. The GPU process
 
-**Now.** Software output (`--disable-gpu`, or no GPU): `mount self r` and
-nothing else; its frames reach the compositor through the browser over
-Mojo. CR3's Q6 is a check in SB10: run `multi` and `webgl` with the GPU row
-lacking `svc wayland`; if both pass, the row keeps none. **SwiftShader**
-(opt-in, `--enable-unsafe-swiftshader`): the same row plus `right jit`,
-chosen by `--use-angle=swiftshader*`, which only the browser writes (CJR2,
-SwiftShader section); its restart after a crash is a fresh exec, so the
-row is chosen again. The GPU row's limits are a renderer's or more (its
+The GPU process has two rows from the start, told apart by the ANGLE back
+end the browser writes on its command line (`--use-angle`), so that the
+iGPU is a table edit, not a redesign:
+
+```
+when --type=gpu-process --use-angle=swiftshader*   mount self r; right jit; limits gpu
+when --type=gpu-process                            mount self r; limits gpu
+```
+
+**Now.** The second row is the software GPU process (`--disable-gpu`, or
+no GPU found): `mount self r` and nothing else; its frames reach the
+compositor through the browser over Mojo. CR3's Q6 is a check in SB10: run
+`multi` and `webgl` with the GPU rows lacking `svc wayland`; if both pass,
+they keep none. The first row is **SwiftShader** (opt-in,
+`--enable-unsafe-swiftshader`): the same plus `right jit`, chosen by
+`--use-angle=swiftshader*`, which only the browser writes (CJR2,
+SwiftShader section); a restart after a crash is a fresh exec, so the row
+is chosen again. The GPU rows' limits are a renderer's or more (its
 textures).
 
-**When the iGPU lands** (G3, G4; GP0's plan), the row gains the GPU's
-render service and SB's pass is a track of its own (SBG). What it needs
-from that design: a render-only channel per client, separate from mode
-setting (the GPU process never drives the display); each client's buffers
-and contexts charged to its job and freed with it; a hang or a bad command
-stream that resets only that client's context; buffers to the compositor
-through the browser (linux-dmabuf over Wayland), as now; Mesa's needs, if
-Mesa (its driver data from `/pkg`, its shader cache off or in a path grant
-of the profile's cache, never a shared writable directory: CR3's M3 again).
-No JIT power for a hardware GPU process; a SwiftShader fallback keeps its
-own row by `--use-angle`.
+**When the iGPU lands** ([GPU-PLAN section
+6](GPU-PLAN.md#6-what-the-sandbox-must-allow-the-gpu-process)), the edit is
+one grant on the second row, `svc gpu` (a client channel to drv/igpu, its
+own address space and contexts: Linux's render node), and checkwants
+learning the name; nothing else changes. That row already has no JIT
+power, which ANV needs none of; the SwiftShader row keeps the power as now,
+for a fallback. What the table relies on from GPU-PLAN: only the GPU
+process's row names `svc gpu` (renderers reach the GPU through it, as on
+Linux); its buffers are its own VMOs, charged to its job and its limits,
+and the driver caps each client's page-table pages; a shader that never
+ends costs only its context (the hang check, the reset, a ban after a few);
+Mesa's own shader cache is off (Chromium keeps its own, the browser's), so
+the row needs nothing on disk; buffers reach the compositor through the
+browser, as now. SBG then adds sbtest's case (a renderer-type child that
+opens `svc gpu` fails) and checks the outside listing (the GPU process
+alone reaches drv/igpu).
 
 ## 7. SwiftShader by default, after CR-f
 
@@ -511,7 +529,8 @@ WebGL page with SwiftShader).
 
 **Later, not CR-f's:** **SBS** SwiftShader on by default in `chrome`'s
 command line after SBR, if the owner says so (Q5; Sonnet 5.5, 0.5).
-**SBG** the GPU row for the iGPU, with GP0's tracks (Sonnet 5.5, 0.5).
+**SBG** `svc gpu` on the hardware GPU row, its sbtest case and the outside
+check, with GPU-PLAN's stage 4 (G4c) (Sonnet 5.5, 0.5).
 **SBN** netstack's rings as client VMOs charged to the opener's job, read
 with `vmo_read` as the mixer reads (CR3's Q1; Opus, about 2).
 
