@@ -264,7 +264,8 @@ int  focus_top_tty(void);
  * the first. */
 void focus_key(const struct input_key_event *ev);
 /* focus_key, but false (the key NOT taken, to be tried again) when the
- * focus's key channel is full: the client isn't reading yet. */
+ * focus's key channel is full (the client isn't reading yet), or when
+ * there is no focus and PENDING_KEYS already wait for the first. */
 bool focus_key_try(const struct input_key_event *ev);
 /* ev to the newest key channel below focus `below` that a SHELL or ADMIN
  * client opened: false if there is none (or it can't take it). */

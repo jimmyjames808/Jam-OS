@@ -229,7 +229,10 @@ def typed_ahead(s):
     shell kept 128 typed-ahead keys and dropped the rest, so a script was
     cut after ~140 bytes; the console dropped the keys its key channel
     couldn't take). The last line is `exit 3`, so the session ending with
-    3 shows the whole input got to the shell."""
+    3 shows the whole input got to the shell. On a loaded machine the input
+    often comes before the session's shell has opened its keys (SF2: the
+    console kept 256 for it and dropped the rest, a stop after line 9);
+    utest's con_conn_typeahead checks that path on every run."""
     n = 80
     lines = ["echo ahead-%03d-%s" % (i, "x" * 9) for i in range(n)]
     text = "\n".join(lines) + "\nexit 3\n"

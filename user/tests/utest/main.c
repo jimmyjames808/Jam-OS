@@ -1298,6 +1298,7 @@ static const struct {
     { "con_conn_log", t_con_conn_log },
     { "con_conn_hostile", t_con_conn_hostile },
     { "con_conn_backpressure", t_con_conn_backpressure },
+    { "con_conn_typeahead", t_con_conn_typeahead },
     { "con_tty_canonical", t_con_tty_canonical },
     { "con_tty_raw", t_con_tty_raw },
     { "con_tty_focus", t_con_tty_focus },

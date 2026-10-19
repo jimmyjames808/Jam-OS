@@ -17,15 +17,20 @@
  *     what follows it. A terminal sends the sequence of a key in one
  *     write, so an ESC that has waited ESC_GAP_NS alone is the Escape key.
  *
- * A key the focus can't take (its channel is full: the client isn't
- * reading yet) is not dropped: the connection waits. The keys it refused
- * are kept (retry), the rest of the message is left unread in inbuf, and
- * the master isn't read again until the focus has taken them (tried every
- * RETRY_NS: a timer, as the output side's), so the remote terminal's
- * writes back up behind a client that is busy and nothing typed ahead is
- * lost (a script piped into `ssh -tt`: sshd's write to the master waits,
- * and so does the ssh client). The window's keys are dropped when the
- * channel is full, as before.
+ * A key the focus can't take is not dropped: the connection waits. That is
+ * a focus whose channel is full (the client isn't reading yet), or no
+ * focus at all with PENDING_KEYS already waiting for the first (a
+ * session's start: the remote terminal typed before its shell opened its
+ * keys, which a loaded machine makes likely). The keys refused are kept
+ * (retry), the rest of the message is left unread in inbuf, and the
+ * master isn't read again until the focus has taken them, so the remote
+ * terminal's writes back up behind a client that is busy (or not there
+ * yet) and nothing typed ahead is lost (a script piped into `ssh -tt`:
+ * sshd's write to the master waits, and so does the ssh client). They are
+ * tried again every RETRY_NS, a timer as the output side's, not the key
+ * channel's SIG_WRITABLE: what is awaited may be a focus not opened yet,
+ * or a different one by then, and a timer covers each the same way. The
+ * window's keys are dropped when the channel is full, as before.
  *
  * While a tty client (console.open_tty) has the focus the bytes are not
  * keys: they go to its line discipline as they came (tty.c), paste

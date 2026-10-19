@@ -824,6 +824,7 @@ bool t_con_conn_shell(void);
 bool t_con_conn_log(void);
 bool t_con_conn_hostile(void);
 bool t_con_conn_backpressure(void);
+bool t_con_conn_typeahead(void);
 bool t_con_conn_stop(void);
 /* contty.c: the terminal's POSIX side in the console (open_tty, `tty`). */
 bool t_con_tty_canonical(void);
