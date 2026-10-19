@@ -109,6 +109,17 @@ handle_t startup_handle(uint32_t role)
     return HANDLE_INVALID;
 }
 
+static void drop_entry(unsigned i);
+
+void startup_handle_drop(uint32_t role)
+{
+    for (unsigned i = 0; i < msg_nhandles; i++)
+        if (msg_roles[i] == role) {
+            drop_entry(i);
+            return;
+        }
+}
+
 unsigned startup_handle_count(void)
 {
     return msg_nhandles;
@@ -148,6 +159,7 @@ const char *startup_role_name(uint32_t role)
     case SR_SIGNALS:      return "signals";
     case SR_SELF_IMAGE:   return "self-image";
     case SR_ARGS:         return "args";
+    case SR_JIT:          return "jit";
     }
     return role >= SR_USER ? "user" : "?";
 }
