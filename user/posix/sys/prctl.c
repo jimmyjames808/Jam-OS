@@ -24,9 +24,14 @@
  *     docs/CR-PLAN.md section 12), and then only in JIT memory. So
  *     PR_MDWE_REFUSE_EXEC_GAIN is in force exactly when the process holds
  *     no power (PR_GET_MDWE), and PR_SET_MDWE with it gives the power up
- *     for good: SR_JIT closed, no new JIT memory (MAP_JIT is EPERM), and
- *     none for a child forked or a program exec'd after (Linux's rule:
- *     inherited, never undone). The JIT memory already mapped stays as it
+ *     for good: every SR_JIT handle closed, no new JIT memory (MAP_JIT is
+ *     EPERM), and none for a child forked or a program exec'd or spawned
+ *     after (Linux's rule: inherited, never undone). One exception Linux
+ *     doesn't have: a program on a file system started through /svc/exec
+ *     (a list with `svc exec`) gets its own approval whatever its caller
+ *     holds (docs/CR-PLAN.md, "CE1 notes"), so one whose list says
+ *     `right jit` gets the power from init (docs/CR-REVIEW-JIT.md, CJR2
+ *     finding 3). The JIT memory already mapped stays as it
  *     is (Linux would refuse execute added to it; a program sets this at
  *     its start, before it has any: Chromium's processes that aren't
  *     renderers). PR_MDWE_NO_INHERIT (a child free of it) can't be given
