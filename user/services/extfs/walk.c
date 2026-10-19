@@ -151,6 +151,23 @@ static status_t name_of(uint32_t parent, uint32_t child, char *name, uint32_t *l
     return st == OK || st == ERR_NOT_FOUND ? ERR_IO : st;
 }
 
+status_t walk_parent(const struct ext_inode *in, struct ext_inode *parent, char *name,
+                     uint32_t *len)
+{
+    struct ext_inode dir = *in;
+    if (!is_dir(&dir) || dir.ino == EXT_ROOT_INO || !dir.d.links_count)
+        return ERR_NOT_FOUND;   /* the root, or removed: in no directory */
+    uint32_t up = parent_of(&dir);
+    if (!up)
+        return ERR_IO;
+    status_t st = ext_iget(&vol.fs, up, 0, parent);
+    if (st == OK && !is_dir(parent))
+        st = ERR_IO;
+    if (st == OK)
+        st = name_of(up, dir.ino, name, len);
+    return st == ERR_NOT_FOUND ? ERR_IO : st;
+}
+
 status_t walk_place(struct xf_place *p, uint32_t ino, uint32_t gen, uint32_t stop,
                     uint32_t stop_gen)
 {
@@ -230,12 +247,19 @@ static status_t start_of(const struct xf_ctx *c, bool from_dir, struct fs_region
 static status_t link_out(struct xf_walk *w, uint8_t kind, uint32_t used, const char *head,
                          uint32_t hlen, const char *r, uint32_t rlen);
 
+bool inode_used(uint32_t ino)
+{
+    bool used = false;
+    return ext_inode_used(&vol.fs, ino, &used) == OK && used;
+}
+
 /* Removed, and held: directory ino of generation gen with no name left,
- * which a directory channel keeps on the orphan list (dirs.c); into *in. */
+ * which a directory channel keeps on the orphan list (dirs.c); into *in.
+ * A freed inode reads the same to ext_iget, so its bitmap is asked too. */
 static bool gone_dir(uint32_t ino, uint32_t gen, struct ext_inode *in)
 {
     return ext_iget(&vol.fs, ino, EXT_IGET_UNLINKED, in) == OK && in->d.generation == gen &&
-           is_dir(in) && !in->d.links_count;
+           is_dir(in) && !in->d.links_count && inode_used(ino);
 }
 
 /* A path from removed directory *in (docs/DIRHANDLE-PLAN.md 3.3): "" and
@@ -282,7 +306,7 @@ static status_t walk_gone(const struct xf_ctx *c, const char *path, uint32_t len
         if (st != OK)
             return st;
         *in = p;
-        if (!p.d.links_count && !dirs_has(p.ino))
+        if (!p.d.links_count && (!dirs_has(p.ino) || !inode_used(p.ino)))
             return ERR_NOT_FOUND;   /* freed (ext_iget reads a free inode as it was left) */
         if (!p.d.links_count)
             continue;               /* removed too, and held */

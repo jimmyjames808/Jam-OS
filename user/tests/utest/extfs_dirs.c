@@ -44,7 +44,16 @@
  * slot's, the answer; an rmdir and a rename over one): each kept across the
  * restarts, its channel and ".." as before; then a fresh start: every
  * channel closed (ERR_PEER_CLOSED, the request in progress's too) and the
- * removed directories dropped by its mount. */
+ * removed directories dropped by its mount.
+ *
+ * The review's hostile runs (docs/DIRHANDLE-REVIEW.md):
+ * extfs_dirs_storm: 8 threads move directories in and out of a subview
+ * while 4 walk through channels held on them: never anything outside.
+ * extfs_dirs_killed: a process holding its 64 channels killed after half
+ * their directories were removed: the removed dropped, every slot back.
+ * extfs_restart_deep: DeleteDeep's tree made and removed through channels
+ * while extfs is killed every 200 ms: every call answered, every channel
+ * carried on. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -149,6 +158,14 @@ static bool stop(struct fatrun *r, const char *name)
 {
     CHECK(fat_stop(r));
     CHECK(extfs_save(&dd, name));
+    return ramdisk_destroy(&dd);
+}
+
+/* stop, the disk not saved: extfs-svc-test's /data is nearly full of the
+ * other cases' disks, and a hostile run's checks are its own. */
+static bool stop_unsaved(struct fatrun *r)
+{
+    CHECK(fat_stop(r));
     return ramdisk_destroy(&dd);
 }
 
@@ -500,7 +517,8 @@ static status_t read_msg(handle_t ch, handle_t *hs, uint32_t hcap, uint32_t *nh)
  * SR_USER, on which the mount's channel comes first): share: SHARE
  * directory channels of the root and the next refused (its share), the
  * SHARE sent back to us; full: one, and the next refused (the volume's
- * full). */
+ * full); hold (DR): SHARE channels on /h/k00 to /h/k63, "r" sent back,
+ * then held until it is killed. */
 int extfs_dirs_child(int argc, char **argv)
 {
     const char *m = argc >= 2 ? argv[1] : "";
@@ -509,6 +527,18 @@ int extfs_dirs_child(int argc, char **argv)
     uint32_t nh = 0;
     if (!back || read_msg(back, &fs, 1, &nh) != OK || nh != 1)
         return 1;
+    if (!strcmp(m, "xdirs-hold")) {
+        char p[16];
+        for (unsigned i = 0; i < SHARE; i++) {
+            snprintf(p, sizeof(p), "/h/k%02u", i);
+            if (od(fs, p, FS_READ, &hs[i], NULL) != OK)
+                return 5;
+        }
+        if (jam_channel_write(back, "r", 1, NULL, 0) != OK)
+            return 6;
+        (void)jam_object_wait_one(back, SIG_PEER_CLOSED, DEADLINE_NEVER, NULL);
+        return 7;   /* never: the test kills it */
+    }
     bool share = !strcmp(m, "xdirs-share");
     unsigned want = share ? SHARE : 1;
     for (unsigned i = 0; i < want; i++)
@@ -888,5 +918,415 @@ bool t_extfs_restart_gone(void)
     close_all((handle_t[]){ ga, g[0], g[1], g[2], g[3], s }, 6);
     CHECK(extfs_sup_stop());
     CHECK(extfs_save(&dd, "restart-gone"));
+    return ramdisk_destroy(&dd);
+}
+
+/* ---- hostile runs (DR) ---------------------------------------------------------------- */
+
+#define ST_MOVERS  8u
+#define ST_WALKERS 4u
+#define ST_NS      (3 * NS_PER_S)
+#define ST_PROBES  16u   /* requests on each channel while it is held */
+
+struct st_thread {
+    handle_t    thread;
+    unsigned    i;
+    status_t    st;        /* an answer it mustn't get (its first) ... */
+    const char *what;      /* ... and to what */
+    unsigned    ok, cut, moves;
+    unsigned    escapes;   /* reached outside the subview */
+    char        out[FS_PATH_LEN + 1];
+    _Alignas(16) uint8_t stack[32 << 10];
+};
+static struct st_thread st_mv[ST_MOVERS], st_wk[ST_WALKERS];
+static handle_t st_fs, st_sub[ST_WALKERS];
+static uint64_t st_end, st_out_id;
+
+static void st_bad(struct st_thread *t, status_t st, const char *what)
+{
+    if (t->st == OK) {
+        t->st = st == OK ? ERR_BAD_STATE : st;
+        t->what = what;
+    }
+}
+
+static void st_escape(struct st_thread *t, const char *what)
+{
+    t->escapes++;
+    st_bad(t, ERR_BAD_STATE, what);
+}
+
+/* Directory d<i> moved between /v/in and /out until the storm's end, and
+ * left in /v/in. */
+static void st_mover(void *arg)
+{
+    struct st_thread *t = arg;
+    char in[16], out[16];
+    snprintf(in, sizeof(in), "/v/in/d%u", t->i);
+    snprintf(out, sizeof(out), "/out/d%u", t->i);
+    struct fatrun r = on(st_fs);
+    bool inside = true;
+    while (t->st == OK && now() < st_end) {
+        status_t st = t_rename(&r, inside ? in : out, inside ? out : in);
+        if (st != OK)
+            st_bad(t, st, "a move");
+        inside = !inside;
+        t->moves++;
+    }
+    if (!inside && t->st == OK) {
+        status_t st = t_rename(&r, out, in);
+        if (st != OK)
+            st_bad(t, st, "the move back");
+    }
+}
+
+/* Probe j of channel ch (the subview's in/d<k>): counted inside (OK and
+ * the answer from inside) or cut off (ERR_NOT_FOUND); anything from
+ * outside the subview is an escape. */
+static void st_probe(struct st_thread *t, handle_t ch, unsigned k, unsigned j)
+{
+    struct fatrun c = on(ch);
+    char got[FS_NAME_MAX], want[16];
+    uint8_t kind = 0;
+    unsigned n = 0;
+    status_t st;
+    switch (j % 5) {
+    case 0:   /* its own subdirectory */
+        st = t_stat(&c, "s", NULL, NULL, NULL);
+        break;
+    case 1:   /* /v/in/secret is no name; /out/secret is outside */
+        st = t_stat(&c, "../secret", NULL, NULL, NULL);
+        if (st == OK)
+            st_escape(t, "../secret reached");
+        if (st == ERR_NOT_FOUND)
+            st = OK;   /* (the answer from inside too: not counted as cut off) */
+        break;
+    case 2:   /* its place: in/d<k>, nothing else */
+        snprintf(want, sizeof(want), "in/d%u", k);
+        st = rs(ch, "", &kind, t->out);
+        if (st == OK && (kind != FS_RESOLVE_INSIDE || strcmp(t->out, want)))
+            st_escape(t, "a place outside");
+        break;
+    case 3:   /* "..": /v/in's listing, never /out's */
+        while ((st = t_readdir(&c, "..", n, got, NULL)) == OK && n < 64) {
+            if (!strcmp(got, "secret"))
+                st_escape(t, "/out listed");
+            n++;
+        }
+        if (st == ERR_NOT_FOUND && n)
+            st = OK;   /* the listing's end */
+        break;
+    default:  /* above the subview's root: out of the mount, never /out */
+        st = t_stat(&c, "../../../out/secret", NULL, NULL, NULL);
+        if (st == OK)
+            st_escape(t, "../../../out/secret reached");
+        if (st == ERR_LINK_OUT)
+            st = OK;   /* the caller's to follow in its own namespace */
+        break;
+    }
+    if (st == OK)
+        t->ok++;
+    else if (st == ERR_NOT_FOUND)
+        t->cut++;
+    else
+        st_bad(t, st, "a probe");
+}
+
+/* Channels on the moving directories, opened in the subview and held
+ * across their moves; a rename_at into /out by its id. */
+static void st_walker(void *arg)
+{
+    struct st_thread *t = arg;
+    handle_t sub = st_sub[t->i];
+    char p[16], w[8];
+    snprintf(w, sizeof(w), "w%u", t->i);
+    for (unsigned n = 0; t->st == OK && now() < st_end; n++) {
+        unsigned k = (t->i * 3 + n) % ST_MOVERS;
+        snprintf(p, sizeof(p), "in/d%u", k);
+        handle_t ch;
+        status_t st = od(sub, p, FS_READ, &ch, NULL);
+        if (st == ERR_NOT_FOUND)
+            continue;   /* outside now */
+        if (st != OK) {
+            st_bad(t, st, "an opendir");
+            break;
+        }
+        for (unsigned j = 0; j < ST_PROBES && t->st == OK; j++)
+            st_probe(t, ch, k, j + n);
+        jam_handle_close(ch);
+        st = fs_rename_at_until(sub, dl(), w, L(w), st_out_id, w, L(w), 0);
+        if (st == OK)
+            st_escape(t, "rename_at into /out");
+        else if (st != ERR_NOT_FOUND)
+            st_bad(t, st, "rename_at into /out");
+    }
+}
+
+/* (DR) 8 threads move directories in and out of a subview (/v/in/d<k>
+ * and /out/d<k>, through the volume's whole channel) while 4 others walk
+ * through channels on them, opened in the subview and held across the
+ * moves: each answer is from inside while the directory lies there, and
+ * ERR_NOT_FOUND while it lies outside (the cut-off); nothing outside the
+ * subview is ever reached (/out/secret through the channel's own "..",
+ * /out's listing, a place but in/d<k>, a rename_at into /out by its id). */
+bool t_extfs_dirs_storm(void)
+{
+    struct fatrun r;
+    handle_t th[ST_MOVERS + ST_WALKERS];
+    char p[24];
+    CHECK(start(&r));
+    CHECK_ST(t_mkdir(&r, "/v"), OK);
+    CHECK_ST(t_mkdir(&r, "/v/in"), OK);
+    CHECK_ST(t_mkdir(&r, "/out"), OK);
+    CHECK(put_file(&r, "/out/secret", "s"));
+    CHECK_ST(t_stat_id(&r, "/out", &st_out_id), OK);
+    for (unsigned k = 0; k < ST_MOVERS; k++) {
+        snprintf(p, sizeof(p), "/v/in/d%u", k);
+        CHECK_ST(t_mkdir(&r, p), OK);
+        snprintf(p, sizeof(p), "/v/in/d%u/s", k);
+        CHECK_ST(t_mkdir(&r, p), OK);
+    }
+    for (unsigned i = 0; i < ST_WALKERS; i++) {
+        snprintf(p, sizeof(p), "/v/w%u", i);
+        CHECK(put_file(&r, p, "w"));
+        CHECK_ST(fs_subview_until(r.fs, dl(), "/v", 2, 0, &st_sub[i]), OK);
+    }
+    st_fs = r.fs;
+    st_end = now() + ST_NS;
+    for (unsigned i = 0; i < ST_MOVERS + ST_WALKERS; i++) {
+        bool mover = i < ST_MOVERS;
+        struct st_thread *t = mover ? &st_mv[i] : &st_wk[i - ST_MOVERS];
+        memset(t, 0, offsetof(struct st_thread, stack));
+        t->i = mover ? i : i - ST_MOVERS;
+        CHECK_ST(thread_spawn(mover ? "dirs mover" : "dirs walker", mover ? st_mover : st_walker,
+                              t, t->stack, sizeof(t->stack), &t->thread), OK);
+        th[i] = t->thread;
+    }
+    CHECK(wait_threads(th, ST_MOVERS + ST_WALKERS));
+    unsigned ok = 0, cut = 0, moves = 0, escapes = 0;
+    bool all = true;
+    for (unsigned i = 0; i < ST_MOVERS + ST_WALKERS; i++) {
+        const struct st_thread *t = i < ST_MOVERS ? &st_mv[i] : &st_wk[i - ST_MOVERS];
+        if (t->st != OK)
+            printf("utest: %s: %s %u: %s: %s\n", utest_cur, i < ST_MOVERS ? "mover" : "walker",
+                   t->i, t->what, status_str(t->st));
+        all &= t->st == OK;
+        ok += t->ok;
+        cut += t->cut;
+        moves += t->moves;
+        escapes += t->escapes;
+    }
+    printf("utest: %s: %u moves; %u answers from inside, %u cut off, %u from outside\n",
+           utest_cur, moves, ok, cut, escapes);
+    CHECK(all);
+    CHECK_EQ(escapes, 0u);
+    CHECK(ok > 0 && cut > 0 && moves >= ST_MOVERS);
+    close_all(st_sub, ST_WALKERS);
+    return stop_unsaved(&r);
+}
+
+/* (DR) A process holding its 64 channels (on /h/k00 to /h/k63) killed
+ * after half of those directories were removed under it: the removed
+ * ones dropped (their blocks free again) and every slot back (our 64 and
+ * three children's 64: the volume's 256). */
+bool t_extfs_dirs_killed(void)
+{
+    struct fatrun r;
+    static handle_t own[SHARE], kids[CHANNELS - SHARE];
+    handle_t mine, theirs, dup, job, proc;
+    struct process_info info;
+    uint64_t total = 0, before = 0, held = 0;
+    uint32_t nh = 0;
+    char p[16];
+    CHECK(start(&r));
+    CHECK_ST(t_mkdir(&r, "/h"), OK);
+    for (unsigned i = 0; i < SHARE; i++) {
+        snprintf(p, sizeof(p), "/h/k%02u", i);
+        CHECK_ST(t_mkdir(&r, p), OK);
+    }
+    CHECK_ST(t_free(&r, &total, &before), OK);
+    CHECK_ST(jam_channel_create(&mine, &theirs), OK);
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(child("xdirs-hold", NULL, job, theirs, &proc), OK);
+    CHECK_ST(jam_handle_duplicate(r.fs, RIGHT_SAME, &dup), OK);
+    CHECK_ST(jam_channel_write(mine, "f", 1, &dup, 1), OK);
+    CHECK_ST(read_msg(mine, NULL, 0, &nh), OK);   /* "r": it holds them */
+    for (unsigned i = 0; i < SHARE / 2; i++) {
+        snprintf(p, sizeof(p), "/h/k%02u", i);
+        CHECK_ST(t_unlink_flags(&r, p, FS_UNLINK_DIR), OK);   /* held: orphans */
+    }
+    CHECK_ST(t_free(&r, &total, &held), OK);
+    CHECK(held <= before);   /* their blocks kept while they are held */
+    CHECK_ST(jam_job_kill(job), OK);
+    CHECK_ST(spawn_wait(proc, FAT_CALL_NS, &info), OK);
+    jam_handle_close(proc);
+    jam_handle_close(job);
+    jam_handle_close(mine);
+    CHECK(freed_past(&r, before));
+    for (unsigned i = 0; i < SHARE; i++)
+        CHECK_ST(od(r.fs, "/", 0, &own[i], NULL), OK);
+    for (unsigned k = 0; k < 3; k++)
+        CHECK(kid(r.fs, "xdirs-share", &kids[k * SHARE]));
+    close_all(own, SHARE);
+    close_all(kids, CHANNELS - SHARE);
+    return stop_unsaved(&r);
+}
+
+#define DK_EVERY_MS 200u
+#define DK_KILLS    10u
+#define DK_MAX_NS   (120 * NS_PER_S)
+#define DK_FILES    4u
+
+static unsigned dk_io;   /* calls answered ERR_IO (in progress at two deaths), made again */
+
+static status_t dk_mk(handle_t ch, const char *n)
+{
+    status_t st;
+    bool again = false;
+    while ((st = mk(ch, n)) == ERR_IO) {
+        dk_io++;
+        again = true;
+    }
+    return again && st == ERR_ALREADY_EXISTS ? OK : st;
+}
+
+static status_t dk_od(handle_t ch, const char *n, handle_t *out)
+{
+    status_t st;
+    while ((st = od(ch, n, FS_READ, out, NULL)) == ERR_IO)
+        dk_io++;
+    return st;
+}
+
+static status_t dk_rm(handle_t ch, const char *n, uint32_t flags)
+{
+    status_t st;
+    bool again = false;
+    while ((st = fs_unlink_until(ch, dl(), n, L(n), flags)) == ERR_IO) {
+        dk_io++;
+        again = true;
+    }
+    return again && st == ERR_NOT_FOUND ? OK : st;
+}
+
+static status_t dk_file(handle_t ch, const char *n)
+{
+    struct fatrun c = on(ch);
+    struct tfile f;
+    status_t st;
+    while ((st = t_open(&c, n, FS_WRITE | FS_CREATE, &f)) == ERR_IO)
+        dk_io++;
+    if (st == OK)
+        t_close(&f);
+    return st;
+}
+
+static status_t dk_list(handle_t ch)
+{
+    struct fatrun c = on(ch);
+    status_t st;
+    while ((st = t_batch(&c, "", 0, &batch)) == ERR_IO)
+        dk_io++;
+    return st;
+}
+
+/* One round under top: DeleteDeep's tree made through channels, 4 files
+ * in each level, then removed through channels as DeletePathRecursively
+ * removes one (each level listed and its files unlinked; each directory
+ * removed while its channel is held, which then answers as a removed
+ * one). The step that failed, or NULL. */
+static status_t dk_st;   /* the failed step's answer */
+
+static const char *dk_round(handle_t top)
+{
+    static handle_t ch[LEVELS + 1];
+    char f[4] = "f0";
+    ch[0] = top;
+    for (unsigned i = 0; i < LEVELS; i++) {
+        if ((dk_st = dk_mk(ch[i], name)) != OK)
+            return "a mkdir";
+        for (unsigned k = 0; k < DK_FILES; k++) {
+            f[1] = (char)('0' + k);
+            if ((dk_st = dk_file(ch[i], f)) != OK)
+                return "a file made";
+        }
+        if ((dk_st = dk_od(ch[i], name, &ch[i + 1])) != OK)
+            return "an opendir";
+    }
+    for (unsigned i = 0; i < LEVELS; i++) {
+        if ((dk_st = dk_list(ch[i])) != OK)
+            return "a listing";
+        for (unsigned k = 0; k < DK_FILES; k++) {
+            f[1] = (char)('0' + k);
+            if ((dk_st = dk_rm(ch[i], f, 0)) != OK)
+                return "a file unlinked";
+        }
+    }
+    for (unsigned i = LEVELS; i > 0; i--) {
+        uint32_t nlink = 1;
+        if ((dk_st = dk_rm(ch[i - 1], name, FS_UNLINK_DIR)) != OK)
+            return "an rmdir";
+        while ((dk_st = dattr(ch[i], "", NULL, &nlink)) == ERR_IO)
+            dk_io++;
+        if (dk_st != OK || nlink)
+            return "a removed directory's channel";
+        jam_handle_close(ch[i]);
+    }
+    return NULL;
+}
+
+/* (DR) DeleteDeep's tree made and removed through channels, round after
+ * round, while the supervisor kills extfs every 200 ms: every call
+ * answered (OK, or ERR_IO for one in progress at two deaths, made again),
+ * every channel carried across every restart (never ERR_PEER_CLOSED),
+ * each directory removed while held answering as a removed one, and
+ * every one dropped at the end (the free bytes of before). */
+bool t_extfs_restart_deep(void)
+{
+    handle_t top;
+    unsigned count = 0, rounds = 0;
+    uint64_t total = 0, ref = 0, fr = 0;
+    memset(name, 'k', NM);
+    name[NM] = '\0';
+    dk_io = 0;
+    CHECK(ramdisk_create(&dd, EXT_DISK_SECTORS));
+    CHECK(extfs_sup_start(&dd, NULL, 0));
+    struct fatrun *f = extfs_sup_run();
+    CHECK_ST(t_mkdir(f, "/dk"), OK);
+    CHECK_ST(od(f->fs, "/dk", FS_READ, &top, NULL), OK);
+    CHECK_ST(t_free(f, &total, &ref), OK);
+    extfs_sup_storm(DK_EVERY_MS * NS_PER_MS);
+    const char *bad = NULL;
+    uint64_t t0 = now();
+    while (!bad && extfs_sup_crashes() < DK_KILLS && now() - t0 < DK_MAX_NS) {
+        bad = dk_round(top);
+        rounds += !bad;
+    }
+    extfs_sup_storm(0);
+    jam_sleep_until(now() + 100 * NS_PER_MS);   /* a kill the supervisor had timed already */
+    unsigned kills = extfs_sup_crashes();
+    printf("utest: %s: %u rounds of %u levels in %lu ms, extfs killed %u times, %u calls made "
+           "again (ERR_IO)%s%s%s%s\n", utest_cur, rounds, LEVELS,
+           (unsigned long)((now() - t0) / NS_PER_MS), kills, dk_io, bad ? "; failed at " : "",
+           bad ? bad : "", bad ? ": " : "", bad ? status_str(dk_st) : "");
+    CHECK(!bad);
+    CHECK(kills >= DK_KILLS);
+    struct fatrun t = on(top);
+    CHECK(dir_count(&t, "", NULL, &count, NULL));
+    CHECK_EQ(count, 0u);
+    /* Every removed directory dropped: the free bytes of before the
+     * rounds (the last channels' closes may still be on their way). Its
+     * disk isn't saved for e2fsck: the rounds write its 4 MiB journal over
+     * and over, more than extfs-svc-test's /data has room for. */
+    uint64_t end = now() + FAT_CALL_NS;
+    while (t_free(f, &total, &fr) == OK && fr < ref && now() < end)
+        jam_sleep_until(now() + 10 * NS_PER_MS);
+    if (fr != ref)
+        printf("utest: %s: %lu bytes free, %lu before the rounds\n", utest_cur,
+               (unsigned long)fr, (unsigned long)ref);
+    CHECK(fr == ref);
+    jam_handle_close(top);
+    CHECK_ST(t_unlink_flags(f, "/dk", FS_UNLINK_DIR), OK);
+    CHECK(extfs_sup_stop());
     return ramdisk_destroy(&dd);
 }

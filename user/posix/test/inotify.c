@@ -786,6 +786,50 @@ static void real_events(const char *m)
     printf("posixtest: inotify: %s: events from its service (%d records)\n", m, k);
 }
 
+/* After a change: one record, "s" in the parent's watch wd on fd (a
+ * second's wait at most). Each is taken before the next change, which an
+ * equal record still last in the queue would swallow (Linux's rule). */
+static bool heard_s(int fd, int wd)
+{
+    struct pollfd p = { .fd = fd, .events = POLLIN };
+    if (poll(&p, 1, 1000) != 1)
+        return false;
+    static const uint32_t mask[] = { IN_ATTRIB | IN_ISDIR };
+    static const char *const name[] = { "s" };
+    int k = drain(fd);
+    return k == 1 && in_order(k, wd, mask, name, 1);
+}
+
+/* (DR) futimens, fchmod and fchown on a directory's descriptor (on ext a
+ * directory channel: fs.setattr of ""): the parent's watch hears the
+ * directory's name, as Linux's does (Chromium's TouchFile in
+ * FilePathWatcherTest.RecursiveWatch). */
+static void dir_fd_events(const char *m)
+{
+    char dir[64], sub[80];
+    snprintf(dir, sizeof(dir), "%s/inotify-d", m);
+    snprintf(sub, sizeof(sub), "%s/s", dir);
+    rmdir(sub);
+    rmdir(dir);
+    CHECK(mkdir(dir, 0755) == 0 && mkdir(sub, 0755) == 0);
+    int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    int wd = inotify_add_watch(fd, dir, CR_MASK);
+    int d = open(sub, O_RDONLY | O_DIRECTORY);
+    CHECK(wd > 0 && d >= 0);
+    bool t = futimens(d, NULL) == 0 && heard_s(fd, wd);
+    bool c = fchmod(d, 0700) == 0 && heard_s(fd, wd);
+    bool o = fchown(d, getuid(), getgid()) == 0 && heard_s(fd, wd);
+    if (!t || !c || !o)
+        printf("posixtest: inotify: %s: a directory descriptor's change unheard by its "
+               "parent's watch:%s%s%s\n", m, t ? "" : " futimens", c ? "" : " fchmod",
+               o ? "" : " fchown");
+    CHECK(t && c && o);
+    CHECK(close(d) == 0);
+    CHECK(rmdir(sub) == 0 && rmdir(dir) == 0);
+    close(fd);
+    printf("posixtest: inotify: %s: a directory descriptor's changes named in its parent\n", m);
+}
+
 static long long now_us(void)
 {
     struct timespec t;
@@ -906,6 +950,7 @@ static void real_mounts(void)
                    (unsigned long)s.f_type);
         } else if (!(s.f_flags & ST_RDONLY) && wd > 0) {
             real_events(mounts[i]);
+            dir_fd_events(mounts[i]);
             racy_cost(mounts[i]);
         } else {
             CHECK(wd > 0);   /* read-only: quiet */

@@ -23,15 +23,29 @@ static struct xf_walk wa, wb;
 
 static bool is_dir(const struct ext_inode *in);
 
-/* An event of what walk w named: to its directory's watches with its name
- * (if the path ended in one), then to in's own (NULL: none). */
+/* An event of what walk w named: to its directory's watches with its name,
+ * then to in's own (NULL: none). A path that ended in no name ("" on a
+ * directory channel, ".", "..") named a directory, whose parent hears of
+ * it by its one name as Linux's does (fsnotify_parent): found by its ".."
+ * now, so a rename since it was opened is followed. */
 static void ev_walk(const struct xf_walk *w, const struct ext_inode *in, uint32_t mask)
 {
     if (!watching() || !mask)
         return;
-    const struct fsw_key dir = xf_key(&w->dir), self = in ? xf_key(in) : (struct fsw_key){ 0 };
+    struct fsw_key dir = xf_key(&w->dir);
+    const struct fsw_key self = in ? xf_key(in) : (struct fsw_key){ 0 };
     uint32_t flags = in && is_dir(in) ? FSW_EV_DIR : 0;
-    ev(w->has_name ? &dir : NULL, w->name.s, w->name.len, in ? &self : NULL, mask, flags, 0);
+    const char *name = w->name.s;
+    uint32_t len = w->name.len;
+    bool named = w->has_name;
+    struct ext_inode up;
+    char upname[EXT_NAME_MAX + 1];
+    if (!named && in && walk_parent(in, &up, upname, &len) == OK) {
+        dir = xf_key(&up);
+        name = upname;
+        named = true;
+    }
+    ev(named ? &dir : NULL, name, len, in ? &self : NULL, mask, flags, 0);
 }
 
 /* An event of inode in alone (its own watches). */

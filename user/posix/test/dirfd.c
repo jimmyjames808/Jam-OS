@@ -37,13 +37,21 @@
  *   - many: 100 directories open at once, more than the 64 channels a
  *     process has of a volume: the rest are text descriptions (the log
  *     says so once), so a rename is followed by the first, not by the
- *     last; each is written in and listed. */
+ *     last; each is written in and listed;
+ *   - stand (DR, ext): a directory removed while 4 processes stand in it,
+ *     each its current directory and a descriptor: each answers as a
+ *     removed one, and ".." gets it out.
+ * And once, on a fake `fs` service with directory channels: replaced
+ * (DR): a descriptor whose channel closed (a fresh start) opened again by
+ * its text when that is the same directory, id and volume, else ENOENT. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <jamos/libjam.h>
 #include <limits.h>
+#include <pthread.h>
 #include <spawn.h>
 #include <string.h>
 #include <sys/inotify.h>
@@ -54,6 +62,10 @@
 #include <time.h>
 #include <unistd.h>
 #include "pt.h"
+/* jl-names.h renames the layer's file_map (not used here) and fs_idl.h
+ * names the `file` stub so: the stub's name wins. */
+#undef file_map
+#include <fs_idl.h>
 
 #define EXT4_MAGIC 0xef53   /* statfs f_type of ext2, 3 and 4 */
 #define LEVELS     26       /* DeleteDeep's */
@@ -575,6 +587,317 @@ static void many(const char *top, bool ext)
         close(tfd);
 }
 
+/* ---- standing in a removed directory (DR) -------------------------------------------- */
+
+#define STANDERS 4
+
+/* A child standing in d (its current directory and descriptor fd) after
+ * the parent removed it: each answers as a removed one. 0, or the number
+ * of the check that failed. */
+static int stand_after(const char *top, const char *d, int fd)
+{
+    char cwd[PATH_MAX];
+    struct stat st;
+    errno = 0;
+    if (getcwd(cwd, sizeof(cwd)) || errno != ENOENT)
+        return 2;
+    if (fstat(fd, &st) || !S_ISDIR(st.st_mode) || st.st_nlink != 0)
+        return 3;
+    if (stat(".", &st) || st.st_nlink != 0)
+        return 4;
+    errno = 0;
+    if (open("x", O_WRONLY | O_CREAT | O_CLOEXEC, 0644) != -1 || errno != ENOENT)
+        return 5;
+    errno = 0;
+    if (put_file(fd, "y", "y") || errno != ENOENT)
+        return 6;
+    if (!link_is("/proc/self/cwd", d, true))
+        return 7;
+    /* ".." the parent it had, whose "st" is another directory now */
+    struct stat again;
+    int up = openat(fd, "..", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (up < 0 || fstatat(up, "st", &again, 0) || again.st_ino == st.st_ino)
+        return 8;
+    close(up);
+    if (chdir("..") || !getcwd(cwd, sizeof(cwd)) || strcmp(cwd, top))
+        return 9;
+    return 0;
+}
+
+/* (DR's hostile run) A directory removed while 4 processes stand in it,
+ * each its current directory and a descriptor on it: every one answers as
+ * a removed directory (getcwd ENOENT, no links, nothing made there, its
+ * /proc link "(deleted)", ".." the parent it had and chdir("..") out), and
+ * one made again at its name is another directory. ext only: on FAT a
+ * removed directory is a name, and nothing holds it. */
+static void stand(const char *top, bool ext)
+{
+    if (!ext)
+        return;
+    char d[TOP_MAX + 8];
+    snprintf(d, sizeof(d), "%s/st", top);
+    CHECK(mkdir(d, 0755) == 0);
+    struct stat was;
+    CHECK(stat(d, &was) == 0);
+    int ready[2], go[2];
+    CHECK(pipe(ready) == 0 && pipe(go) == 0);
+    pid_t kids[STANDERS];
+    for (int i = 0; i < STANDERS; i++) {
+        kids[i] = fork();
+        if (kids[i] == 0) {
+            close(ready[0]);
+            close(go[1]);
+            char b = 0;
+            int fd = chdir(d) == 0 ? open(".", O_RDONLY | O_DIRECTORY | O_CLOEXEC) : -1;
+            bool told = fd >= 0 && write(ready[1], "r", 1) == 1;
+            close(ready[1]);   /* a child that fails: the parent's read ends, not waits */
+            if (!told || read(go[0], &b, 1) != 1)
+                _exit(1);
+            _exit(stand_after(top, d, fd));
+        }
+        CHECK(kids[i] > 0);
+    }
+    close(ready[1]);
+    close(go[0]);
+    char b;
+    int in = 0;
+    while (in < STANDERS && read(ready[0], &b, 1) == 1)
+        in++;
+    CHECK(in == STANDERS);
+    CHECK(rmdir(d) == 0);
+    CHECK(mkdir(d, 0755) == 0);   /* made again: another directory, which nobody stands in */
+    struct stat now;
+    CHECK(stat(d, &now) == 0 && now.st_ino != was.st_ino);
+    for (int i = 0; i < STANDERS; i++)
+        CHECK(write(go[1], "g", 1) == 1);
+    close(go[1]);
+    close(ready[0]);
+    int bad = 0;
+    for (int i = 0; i < STANDERS; i++) {
+        int status = -1;
+        if (kids[i] <= 0 || waitpid(kids[i], &status, 0) != kids[i] || !WIFEXITED(status) ||
+            WEXITSTATUS(status)) {
+            printf("posixtest: dirfd: stand: child %d ended with %d\n", i,
+                   WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+            bad++;
+        }
+    }
+    CHECK(bad == 0);
+    CHECK(rmdir(d) == 0);
+}
+
+/* ---- a channel replaced after its service ended (DL1's reopen) ----------------------- */
+
+/* A fake `fs` service with directory channels, at RF_MOUNT: "/" and "/d"
+ * are directories; fs.opendir("/d") answers a channel served by a thread
+ * of its own with the id and volume rf says now. rf.gen moved: every
+ * channel made before closes, as when a service starts fresh. */
+#define RF_MOUNT "/ptdfake"
+
+static struct {
+    pthread_mutex_t mu;
+    handle_t        srv;        /* the mount's channel, our end */
+    uint64_t        id, volume; /* what the next fs.opendir answers */
+    unsigned        gen;        /* channels made before it moved close (atomic) */
+    int             dirs;       /* channels' threads running (atomic) */
+    int             threads;    /* every thread (atomic) */
+} rf = { .mu = PTHREAD_MUTEX_INITIALIZER };
+
+struct rf_dir {
+    handle_t ch;
+    uint64_t id;
+    unsigned gen;
+};
+
+static status_t rf_stat(void *ctx, const char *path, uint32_t len, uint64_t *size,
+                        uint8_t *is_dir, uint64_t *mtime, uint64_t *id)
+{
+    const struct rf_dir *x = ctx;
+    bool d = x ? !len : (len == 1 && path[0] == '/') || (len == 2 && !memcmp(path, "/d", 2));
+    if (!d)
+        return ERR_NOT_FOUND;
+    *size = 0;
+    *is_dir = 1;
+    *mtime = 0;
+    *id = x ? x->id : len == 1 ? 2 : rf.id;
+    return OK;
+}
+
+static status_t rf_statfs(void *ctx, uint64_t *total, uint64_t *free_bytes, uint8_t *ro,
+                          uint8_t label[16], uint32_t *magic, uint32_t *name_max,
+                          uint32_t *features)
+{
+    (void)ctx;
+    *total = 1u << 20;
+    *free_bytes = 1u << 19;
+    *ro = 0;
+    memset(label, 0, 16);
+    *magic = 0x01021994;
+    *name_max = 255;
+    *features = FS_FEAT_DIRS;
+    return OK;
+}
+
+static const struct fs_ops rf_dir_ops = { .stat = rf_stat, .statfs = rf_statfs };
+
+static void *rf_dir_main(void *arg)
+{
+    struct rf_dir *x = arg;
+    for (;;) {
+        signals_t seen = 0;
+        status_t st = jam_object_wait_one(x->ch, SIG_READABLE | SIG_PEER_CLOSED,
+                                          now() + 20 * NS_PER_MS, &seen);
+        if (__atomic_load_n(&rf.gen, __ATOMIC_SEQ_CST) != x->gen)
+            break;   /* the service "ended": unanswered */
+        if (st == ERR_TIMED_OUT)
+            continue;
+        if (st != OK || !(seen & SIG_READABLE))
+            break;
+        (void)fs_serve_one(x->ch, &rf_dir_ops, x);
+    }
+    jam_handle_close(x->ch);
+    free(x);
+    __atomic_sub_fetch(&rf.dirs, 1, __ATOMIC_SEQ_CST);
+    __atomic_sub_fetch(&rf.threads, 1, __ATOMIC_SEQ_CST);
+    return NULL;
+}
+
+static status_t rf_opendir(void *ctx, const char *path, uint32_t len, uint32_t flags,
+                           handle_t *out, uint64_t *id, uint64_t *volume)
+{
+    (void)ctx;
+    (void)flags;
+    if (len != 2 || memcmp(path, "/d", 2))
+        return ERR_NOT_FOUND;
+    struct rf_dir *x = malloc(sizeof(*x));
+    handle_t client;
+    if (!x || jam_channel_create(&client, &x->ch) != OK) {
+        free(x);
+        return ERR_NO_RESOURCES;
+    }
+    x->id = rf.id;
+    x->gen = __atomic_load_n(&rf.gen, __ATOMIC_SEQ_CST);
+    pthread_t t;
+    __atomic_add_fetch(&rf.dirs, 1, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&rf.threads, 1, __ATOMIC_SEQ_CST);
+    if (pthread_create(&t, NULL, rf_dir_main, x)) {
+        __atomic_sub_fetch(&rf.dirs, 1, __ATOMIC_SEQ_CST);
+        __atomic_sub_fetch(&rf.threads, 1, __ATOMIC_SEQ_CST);
+        jam_handle_close(x->ch);
+        jam_handle_close(client);
+        free(x);
+        return ERR_NO_RESOURCES;
+    }
+    pthread_detach(t);
+    *out = client;
+    *id = rf.id;
+    *volume = rf.volume;
+    return OK;
+}
+
+static status_t rf_mount_stat(void *ctx, const char *path, uint32_t len, uint64_t *size,
+                              uint8_t *is_dir, uint64_t *mtime, uint64_t *id)
+{
+    (void)ctx;
+    return rf_stat(NULL, path, len, size, is_dir, mtime, id);
+}
+
+static const struct fs_ops rf_mount_ops = { .stat = rf_mount_stat, .statfs = rf_statfs,
+                                            .opendir = rf_opendir };
+
+static void *rf_mount_main(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        signals_t seen = 0;
+        status_t st = jam_object_wait_one(rf.srv, SIG_READABLE | SIG_PEER_CLOSED,
+                                          now() + 20 * NS_PER_MS, &seen);
+        if (st == ERR_TIMED_OUT)
+            continue;
+        if (st != OK || !(seen & SIG_READABLE))
+            break;
+        pthread_mutex_lock(&rf.mu);
+        (void)fs_serve_one(rf.srv, &rf_mount_ops, NULL);
+        pthread_mutex_unlock(&rf.mu);
+    }
+    jam_handle_close(rf.srv);
+    __atomic_sub_fetch(&rf.threads, 1, __ATOMIC_SEQ_CST);
+    return NULL;
+}
+
+/* The fake's directory channels end (a fresh start): true once every
+ * one's thread has closed it. The next opendir answers id and volume. */
+static bool rf_restart(uint64_t id, uint64_t volume)
+{
+    pthread_mutex_lock(&rf.mu);
+    rf.id = id;
+    rf.volume = volume;
+    __atomic_add_fetch(&rf.gen, 1, __ATOMIC_SEQ_CST);
+    pthread_mutex_unlock(&rf.mu);
+    for (int i = 0; i < 200 && __atomic_load_n(&rf.dirs, __ATOMIC_SEQ_CST); i++)
+        usleep(10000);
+    return __atomic_load_n(&rf.dirs, __ATOMIC_SEQ_CST) == 0;
+}
+
+/* st_ino of fd's directory, or 0 with errno. */
+static ino_t ino_of(int fd)
+{
+    struct stat st;
+    return fstat(fd, &st) == 0 ? st.st_ino : 0;
+}
+
+/* (DR) DL1's reopen after ERR_PEER_CLOSED, which extfs can't be made to
+ * do from here (a fresh start gives its state up): on the fake, a
+ * directory descriptor whose channel closed is opened again by its last
+ * known text and carries on when that is the same directory (its id and
+ * volume); another directory at the name (another inode, or the same
+ * inode number on another volume, DR's L1) is ENOENT from then on, even
+ * once the name is the old directory again. */
+static void replaced(void)
+{
+    handle_t client;
+    rf.id = 7;
+    rf.volume = 1;
+    rf.gen = 0;
+    CHECK(jam_channel_create(&client, &rf.srv) == OK);
+    pthread_t t;
+    __atomic_add_fetch(&rf.threads, 1, __ATOMIC_SEQ_CST);
+    CHECK(pthread_create(&t, NULL, rf_mount_main, NULL) == 0);
+    pthread_detach(t);
+    CHECK(ns_mount(RF_MOUNT, client) == OK);
+    int a = open(RF_MOUNT "/d", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int b = open(RF_MOUNT "/d", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int c = open(RF_MOUNT "/d", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(a >= 0 && b >= 0 && c >= 0 && ino_of(a) == 7 && ino_of(b) == 7 && ino_of(c) == 7);
+    CHECK(__atomic_load_n(&rf.dirs, __ATOMIC_SEQ_CST) == 3);   /* each its channel */
+
+    /* The same directory there again: each carries on, on a channel of its own. */
+    CHECK(rf_restart(7, 1));
+    CHECK(ino_of(a) == 7 && ino_of(b) == 7 && ino_of(c) == 7);
+    CHECK(__atomic_load_n(&rf.dirs, __ATOMIC_SEQ_CST) == 3);
+
+    /* The same inode number on another volume: not the same directory. */
+    CHECK(rf_restart(7, 2));
+    errno = 0;
+    CHECK(ino_of(a) == 0 && errno == ENOENT);
+    /* Another inode at the name. */
+    CHECK(rf_restart(8, 1));
+    errno = 0;
+    CHECK(ino_of(b) == 0 && errno == ENOENT);
+    /* Gone stays gone: the old directory back at its name changes nothing. */
+    CHECK(rf_restart(7, 1));
+    errno = 0;
+    CHECK(ino_of(a) == 0 && errno == ENOENT && ino_of(b) == 0 && ino_of(c) == 7);
+    close(a);
+    close(b);
+    close(c);
+    CHECK(ns_unmount(RF_MOUNT) == OK);
+    for (int i = 0; i < 200 && __atomic_load_n(&rf.threads, __ATOMIC_SEQ_CST); i++)
+        usleep(10000);
+    CHECK(__atomic_load_n(&rf.threads, __ATOMIC_SEQ_CST) == 0);
+    printf("posixtest: dirfd: a closed channel replaced by its text, or ENOENT\n");
+}
+
 /* posixtest --child-dirfd <mode> [path], its 3 a directory: "deep" (the
  * bottom of the deep tree: getcwd ENAMETOOLONG, "file" there from both)
  * or "here" (getcwd says path, "kid" under 3, "exec" made in the current
@@ -637,7 +960,9 @@ void pt_dirfd(char **argv)
         up(mounts[m], ext);
         forked(tops[m], ext);
         many(tops[m], ext);
+        stand(tops[m], ext);
     }
+    replaced();
     for (int m = 0; m < 2; m++) {
         int r = have[m] ? open(mounts[m], O_RDONLY | O_DIRECTORY | O_CLOEXEC) : -1;
         if (r >= 0) {

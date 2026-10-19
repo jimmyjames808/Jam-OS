@@ -446,6 +446,7 @@ bool t_extfs_posix(void);
  * view's reach, watches across restarts, a given-up instance's bells; the
  * hostile runs (IR2); the second process's modes are xwatch-*. */
 bool t_extfs_watch_rows(void);
+bool t_extfs_watch_nameless(void);
 bool t_extfs_watch_moves(void);
 bool t_extfs_watch_views(void);
 bool t_extfs_watch_order(void);
@@ -470,6 +471,9 @@ bool t_extfs_dirs_gone(void);
 bool t_extfs_restart_dirs(void);
 bool t_extfs_restart_gone(void);
 bool t_extfs_restart_tree(void);   /* extfs_restart.c: the channels across the steps */
+bool t_extfs_dirs_storm(void);
+bool t_extfs_dirs_killed(void);
+bool t_extfs_restart_deep(void);
 int  extfs_dirs_child(int argc, char **argv);
 bool t_fs_no_locks(void);
 int  extfs_watch_child(int argc, char **argv);

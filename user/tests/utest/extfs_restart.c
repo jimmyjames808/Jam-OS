@@ -148,8 +148,11 @@ static void supervise(void *arg)
         if (jam_object_wait_one(s->r.proc, SIG_TERMINATED, until, &seen) != OK) {
             /* What the instance sends its keeper taken as it comes, as
              * volumes takes it: a drop then closes the keeper's copy (a
-             * watcher channel a successor refused closes for its client). */
-            (void)keeper_drain_upto(&s->keeper, 64);
+             * watcher channel a successor refused closes for its client).
+             * All of it, as volumes does: 64 a poll fell behind a deep
+             * tree's opens and closes (extfs_restart_deep), whose puts
+             * then met a full channel. */
+            (void)keeper_drain(&s->keeper);
             if ((storm && now() >= next_kill) || __atomic_load_n(&s->give_up, __ATOMIC_ACQUIRE)) {
                 (void)jam_process_kill(s->r.proc);   /* the next wait sees it end */
                 next_kill = now() + storm;

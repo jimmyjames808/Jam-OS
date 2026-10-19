@@ -282,6 +282,24 @@ static status_t give(struct ext_fs *fs, uint32_t ino, bool dir)
     return st;
 }
 
+status_t ext_inode_used(struct ext_fs *fs, uint32_t ino, bool *used)
+{
+    if (!ino || ino > fs->inodes)
+        return ERR_OUT_OF_RANGE;
+    uint32_t g = (ino - 1) / fs->inodes_per_group, at = (ino - 1) % fs->inodes_per_group;
+    struct ext_buf *b;
+    status_t st = ext_bitmap_read(fs, g, EXT_BITMAP_INODE, &b);
+    if (st == ERR_BAD_STATE) {
+        *used = false;   /* the group never wrote its bitmap: none of its inodes taken */
+        return OK;
+    }
+    if (st != OK)
+        return st;
+    *used = ext_bit(b->data, at);
+    ext_brelse(fs, b);
+    return OK;
+}
+
 status_t ext_inode_free(struct ext_fs *fs, struct ext_inode *in, uint32_t dtime)
 {
     status_t st = ext_writable(fs);
