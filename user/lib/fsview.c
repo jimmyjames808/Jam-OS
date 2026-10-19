@@ -7,7 +7,12 @@
  * generated dispatch, which refuses it. A path is
  * judged as the service will walk it: fs_path_clean resolves "." and ".."
  * first, so "/x/../etc/allow" is etc's. A view where etc doesn't exist
- * (FS_VIEW_NO_ETC) also has it left out of the root's listing. */
+ * (FS_VIEW_NO_ETC) also has it left out of the root's listing.
+ *
+ * The questions of where a place lies (in etc, in pkg, hidden) are asked
+ * of its region (its depth and its first two names' class): extfs's walk
+ * keeps one as it goes, and a cleaned path's is worked out from its text,
+ * so both ask the same code. */
 #include <fsview.h>
 
 /* Lower case for ASCII letters, the rest as it is. */
@@ -16,15 +21,11 @@ static char lower(char c)
     return c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
 }
 
-/* Is the name at s (up to its '/' or end; *len: that length) `want`
- * (lower case) as FAT compares it: without ASCII case, leading spaces, or
- * trailing dots and spaces? */
-static bool name_is(const char *s, size_t *len, const char *want)
+/* Is the name at s (len bytes) `want` (lower case) as FAT compares it:
+ * without ASCII case, leading spaces, or trailing dots and spaces? */
+static bool name_is(const char *s, size_t len, const char *want)
 {
-    size_t start = 0, end = 0, n = strlen(want);
-    while (s[end] && s[end] != '/')
-        end++;
-    *len = end;
+    size_t start = 0, end = len, n = strlen(want);
     while (start < end && s[start] == ' ')
         start++;
     while (end > start && (s[end - 1] == '.' || s[end - 1] == ' '))
@@ -37,40 +38,93 @@ static bool name_is(const char *s, size_t *len, const char *want)
     return true;
 }
 
+/* ---- regions ----------------------------------------------------------------------- */
+
+struct fs_region fs_region_child(struct fs_region r, const char *name, size_t len)
+{
+    if (!r.depth)
+        r.cls = name_is(name, len, "etc")   ? FS_REGION_ETC
+                : name_is(name, len, "pkg") ? FS_REGION_PKG
+                                            : FS_REGION_OTHER;
+    else if (r.depth == 1 && r.cls == FS_REGION_ETC)
+        r.cls = name_is(name, len, "ssh")               ? FS_REGION_ETC_SSH
+                : name_is(name, len, "authorized_keys") ? FS_REGION_ETC_AUTH
+                                                        : FS_REGION_ETC_REST;
+    r.depth++;
+    return r;
+}
+
+struct fs_region fs_region_parent(struct fs_region r)
+{
+    if (r.depth <= 1)
+        return (struct fs_region){ .depth = 0, .cls = FS_REGION_ROOT };
+    if (--r.depth == 1 && fs_region_in_etc(r))
+        r.cls = FS_REGION_ETC;   /* back in etc itself */
+    return r;
+}
+
+struct fs_region fs_region_of(const char *clean, size_t len)
+{
+    struct fs_region r = { .depth = 0, .cls = FS_REGION_ROOT };
+    if (!len)
+        return r;
+    /* every name, an empty one too ("etc/" is a name in etc, as before) */
+    for (size_t at = 0; at <= len;) {
+        size_t n = 0;
+        while (at + n < len && clean[at + n] != '/')
+            n++;
+        r = fs_region_child(r, clean + at, n);
+        at += n + 1;   /* past its '/' */
+    }
+    return r;
+}
+
+bool fs_region_in_etc(struct fs_region r)
+{
+    return r.cls >= FS_REGION_ETC && r.cls <= FS_REGION_ETC_AUTH;
+}
+
+bool fs_region_in_pkg(struct fs_region r)
+{
+    return r.cls == FS_REGION_PKG;
+}
+
+bool fs_region_hides(uint32_t flags, struct fs_region r, bool stat)
+{
+    if (!(flags & FS_VIEW_NO_ETC) || !fs_region_in_etc(r))
+        return false;
+    if (flags & FS_VIEW_HIDE_AUTH)
+        flags |= FS_VIEW_HIDE_ETC;   /* no other name of the file gets past */
+    if (r.cls == FS_REGION_ETC)   /* etc itself: a stat, unless nothing in it shows */
+        return (flags & FS_VIEW_HIDE_ETC) &&
+               (!stat || (flags & FS_VIEW_NO_ETC) == FS_VIEW_NO_ETC);
+    if (r.cls == FS_REGION_ETC_SSH)
+        return flags & FS_VIEW_HIDE_KEYS;
+    if (r.cls == FS_REGION_ETC_AUTH && r.depth == 2)   /* the file, not a name under it */
+        return flags & FS_VIEW_HIDE_AUTH;
+    return flags & FS_VIEW_HIDE_ETC;
+}
+
+/* ---- the same, asked of a cleaned path --------------------------------------------- */
+
 bool fs_view_in_etc(const char *clean)
 {
-    size_t n;
-    return name_is(clean, &n, "etc");
+    return fs_region_in_etc(fs_region_of(clean, strlen(clean)));
 }
 
 bool fs_view_in_pkg(const char *clean)
 {
-    size_t n;
-    return name_is(clean, &n, "pkg");
+    return fs_region_in_pkg(fs_region_of(clean, strlen(clean)));
 }
 
 bool fs_view_in_keys(const char *clean)
 {
-    size_t n, m;
-    return name_is(clean, &n, "etc") && clean[n] == '/' && name_is(clean + n + 1, &m, "ssh");
+    return fs_region_of(clean, strlen(clean)).cls == FS_REGION_ETC_SSH;
 }
 
 bool fs_view_hides(uint32_t flags, const char *clean, bool stat)
 {
-    size_t n, m;
-    if (!(flags & FS_VIEW_NO_ETC) || !name_is(clean, &n, "etc"))
-        return false;
-    if (flags & FS_VIEW_HIDE_AUTH)
-        flags |= FS_VIEW_HIDE_ETC;   /* no other name of the file gets past */
-    if (!clean[n])   /* etc itself: a stat, unless nothing in it shows */
-        return (flags & FS_VIEW_HIDE_ETC) &&
-               (!stat || (flags & FS_VIEW_NO_ETC) == FS_VIEW_NO_ETC);
-    const char *rest = clean + n + 1;
-    if (name_is(rest, &m, "ssh"))
-        return flags & FS_VIEW_HIDE_KEYS;
-    if (name_is(rest, &m, "authorized_keys") && !rest[m])
-        return flags & FS_VIEW_HIDE_AUTH;
-    return flags & FS_VIEW_HIDE_ETC;
+    return fs_region_hides(flags, fs_region_of(clean, strlen(clean)), stat);
 }
 
 /* A path (len bytes) at or under etc. One that can't be cleaned counts as
@@ -122,26 +176,39 @@ static bool path_at(const void *req, uint32_t n, uint32_t *o, const char **path,
     return true;
 }
 
+/* Does the second path of rename_at or link_at (len bytes) start at the
+ * view's root? Else it starts at their `to_dir`, a directory only the
+ * service can place (it judges where the path resolves), so the checks
+ * here leave it be. */
+static bool from_root(const char *path, uint32_t len)
+{
+    return len && path[0] == '/';
+}
+
 /* For the hiding flags (FS_VIEW_NO_ETC): does the view hide any path of
  * the request (n bytes)? Every method that takes a path, reads included. */
 static bool hidden_request(uint32_t flags, const void *req, uint32_t n)
 {
     /* skip: the first str is not a path (symlink's target: a string kept,
-     * not opened; what it leads to is judged when it is followed). */
-    static const struct { uint32_t ordinal, fixed; bool two, skip; } with_paths[] = {
-        { FS_OPEN, sizeof(struct fs_open_req), false, false },
-        { FS_STAT, sizeof(struct fs_stat_req), false, false },
-        { FS_READDIR, sizeof(struct fs_readdir_req), false, false },
-        { FS_MKDIR, sizeof(struct fs_mkdir_req), false, false },
-        { FS_UNLINK, sizeof(struct fs_unlink_req), false, false },
-        { FS_RENAME, sizeof(struct fs_rename_req), true, false },
-        { FS_GETATTR, sizeof(struct fs_getattr_req), false, false },
-        { FS_SETATTR, sizeof(struct fs_setattr_req), false, false },
-        { FS_SYMLINK, sizeof(struct fs_symlink_req), false, true },
-        { FS_READLINK, sizeof(struct fs_readlink_req), false, false },
-        { FS_LINK, sizeof(struct fs_link_req), true, false },
-        { FS_RESOLVE, sizeof(struct fs_resolve_req), false, false },
-        { FS_SUBVIEW, sizeof(struct fs_subview_req), false, false },
+     * not opened; what it leads to is judged when it is followed). at: the
+     * second path is `to_dir`'s (from_root). */
+    static const struct { uint32_t ordinal, fixed; bool two, skip, at; } with_paths[] = {
+        { FS_OPEN, sizeof(struct fs_open_req), false, false, false },
+        { FS_STAT, sizeof(struct fs_stat_req), false, false, false },
+        { FS_READDIR, sizeof(struct fs_readdir_req), false, false, false },
+        { FS_MKDIR, sizeof(struct fs_mkdir_req), false, false, false },
+        { FS_UNLINK, sizeof(struct fs_unlink_req), false, false, false },
+        { FS_RENAME, sizeof(struct fs_rename_req), true, false, false },
+        { FS_GETATTR, sizeof(struct fs_getattr_req), false, false, false },
+        { FS_SETATTR, sizeof(struct fs_setattr_req), false, false, false },
+        { FS_SYMLINK, sizeof(struct fs_symlink_req), false, true, false },
+        { FS_READLINK, sizeof(struct fs_readlink_req), false, false, false },
+        { FS_LINK, sizeof(struct fs_link_req), true, false, false },
+        { FS_RESOLVE, sizeof(struct fs_resolve_req), false, false, false },
+        { FS_SUBVIEW, sizeof(struct fs_subview_req), false, false, false },
+        { FS_OPENDIR, sizeof(struct fs_opendir_req), false, false, false },
+        { FS_RENAME_AT, sizeof(struct fs_rename_at_req), true, false, true },
+        { FS_LINK_AT, sizeof(struct fs_link_at_req), true, false, true },
     };
     const struct idl_req_hdr *h = req;
     /* a stat of etc itself answers in a partial view; on an ext volume, whose files have
@@ -159,7 +226,7 @@ static bool hidden_request(uint32_t flags, const void *req, uint32_t n)
         if (path_hidden(flags, path, len, stat))
             return true;
         return with_paths[i].two && path_at(req, n, &o, &path, &len) &&
-               path_hidden(flags, path, len, false);
+               (!with_paths[i].at || from_root(path, len)) && path_hidden(flags, path, len, false);
     }
     return false;
 }
@@ -223,8 +290,29 @@ status_t fs_view_check(uint32_t flags, const void *req, uint32_t n)
         if (n < o || !path_at(req, n, &o, &path, &len) || !path_at(req, n, &o, &to, &to_len))
             return OK;
         return change(flags, path, len, to, to_len);
+    case FS_RENAME_AT:   /* as rename and link; `to` here only from the root (from_root) */
+    case FS_LINK_AT:
+        o = h->ordinal == FS_RENAME_AT ? sizeof(struct fs_rename_at_req)
+                                       : sizeof(struct fs_link_at_req);
+        if (n < o || !path_at(req, n, &o, &path, &len) || !path_at(req, n, &o, &to, &to_len))
+            return OK;
+        return change(flags, path, len, from_root(to, to_len) ? to : NULL, to_len);
+    case FS_STAT:
+    case FS_READDIR:
+    case FS_SYNC:
+    case FS_STATFS:
+    case FS_VIEW:
+    case FS_GETATTR:
+    case FS_READLINK:
+    case FS_RESOLVE:
+    case FS_WATCH:
+    case FS_OPENDIR:
+        return OK;   /* no change (what they read is judged above) */
     default:
-        return OK;   /* stat, readdir, sync, statfs, getattr, readlink, resolve: no change */
+        /* An fs method this code doesn't know: it can't judge what the
+         * method would reach, so a view refuses it (teach it here when the
+         * protocol grows). Another protocol's is the dispatch's to refuse. */
+        return h->ordinal >> 16 == FS_PROTOCOL_ID ? ERR_ACCESS_DENIED : OK;
     }
     if (n < o || !path_at(req, n, &o, &path, &len))
         return OK;
@@ -276,7 +364,7 @@ static status_t readdir_no_etc(void *ctx, const char *path, uint32_t path_len, u
                                uint32_t *entries_len)
 {
     const struct no_etc *w = ctx;
-    char clean[FS_PATH_LEN + 1], name[FS_NAME_LEN + 1];
+    char clean[FS_PATH_LEN + 1];
     for (;;) {
         status_t st = w->ops->readdir(w->ctx, path, path_len, cookie, next, count, entries,
                                       entries_len);
@@ -287,12 +375,9 @@ static status_t readdir_no_etc(void *ctx, const char *path, uint32_t path_len, u
         struct fs_dirent e;
         while (at < *entries_len) {
             uint32_t from = at;
-            size_t n;
             if (!fs_dirent_get(entries, *entries_len, &at, &e))
                 return ERR_INTERNAL;   /* never pass on what we can't judge */
-            memcpy(name, e.name, e.name_len);
-            name[e.name_len] = '\0';
-            if (name_is(name, &n, "etc"))
+            if (name_is(e.name, e.name_len, "etc"))   /* no '/' or NUL in it */
                 continue;
             memmove(entries + kept, entries + from, at - from);
             kept += at - from;
