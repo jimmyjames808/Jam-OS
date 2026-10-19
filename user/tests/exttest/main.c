@@ -22,6 +22,18 @@
  *                                written and read back while the rest are
  *                                open (an extfs's open files and its job's
  *                                limits: docs/M13.6-REVIEW.md's R3).
+ *   exttest dirs <mount> <name>  through directory channels (fs.opendir,
+ *                                docs/DIRHANDLE-PLAN.md's DE2) on the volume
+ *                                mounted there: /<name> made, a tree of 26
+ *                                levels of 255-byte names under it (each
+ *                                made and opened from its parent's channel:
+ *                                no path over one name), an empty file at
+ *                                the bottom; three directories removed while
+ *                                channels hold them (an rmdir, a rename over
+ *                                one, an rmdir and one made again at the
+ *                                name), each answering with no links and
+ *                                ".." /<name>, then let go. The tree stays,
+ *                                for e2fsck.
  *
  *   exttest big <path> <MiB>     writes <MiB> MiB of the pattern below into
  *                                the file (made, or emptied), 1 MiB a write,
@@ -54,6 +66,7 @@
  *
  * Exit codes: 0 every check held; 1 a mismatch or a failed call; 2 usage.
  * Its list gives it every mount read-write. */
+#include <fs_idl.h>
 #include <os.h>
 #include <sha256.h>
 #include <wants.h>
@@ -522,6 +535,100 @@ static int cmd_open(const char *dir, uint64_t n)
     return 0;
 }
 
+#define TREE 26u   /* levels: base's DeleteDeep */
+
+static handle_t tree[TREE + 1];
+
+static bool said(const char *what, status_t st)
+{
+    if (st != OK)
+        printf("exttest: dirs: %s: %s\n", what, status_str(st));
+    return st == OK;
+}
+
+static status_t dopen(handle_t ch, const char *path, handle_t *out, uint64_t *id)
+{
+    uint64_t v = 0;
+    return fs_opendir_within(ch, FS_CALL_TIMEOUT, path, (uint32_t)strlen(path), 0, out, id, &v);
+}
+
+static status_t dattr(handle_t ch, const char *path, uint64_t *id, uint32_t *nlink)
+{
+    uint32_t mode, uid, gid;
+    uint64_t size, blocks;
+    int64_t at, mt, ct;
+    return fs_getattr_within(ch, FS_CALL_TIMEOUT, path, (uint32_t)strlen(path), 0, &mode, nlink,
+                             &uid, &gid, &size, &blocks, id, &at, &mt, &ct);
+}
+
+static status_t dmk(handle_t ch, const char *name)
+{
+    return fs_mkdir_within(ch, FS_CALL_TIMEOUT, name, (uint32_t)strlen(name), 0755);
+}
+
+static int cmd_dirs(const char *mount, const char *name)
+{
+    static const char *const held_name[3] = { "h1", "h2", "h3" };
+    char top[FS_PATH_MAX], nm[256];
+    handle_t fs, held[3] = { 0 }, f = 0, fv = 0;
+    uint64_t top_id = 0, ids[3] = { 0 }, id = 0, size = 0;
+    uint32_t nlink = 1;
+    memset(nm, 'd', 255);
+    nm[255] = '\0';
+    snprintf(top, sizeof(top), "/%s", name);
+    if (!said("the mount", ns_channel(mount, &fs)))
+        return 1;
+    bool ok = said("mkdir", dmk(fs, top)) && said("opendir", dopen(fs, top, &tree[0], &top_id));
+    for (unsigned i = 0; ok && i < TREE; i++)
+        ok = said("a level's mkdir", dmk(tree[i], nm)) &&
+             said("a level's opendir", dopen(tree[i], nm, &tree[i + 1], &id));
+    ok = ok && said("the bottom's file",
+                    fs_open_within(tree[TREE], FS_CALL_TIMEOUT, "f", 1, FS_WRITE | FS_CREATE,
+                                   FS_MODE_FILE_DEFAULT, &f, &fv, &size));
+    for (unsigned k = 0; ok && k < 3; k++)
+        ok = said("a held one's mkdir", dmk(tree[0], held_name[k])) &&
+             said("its opendir", dopen(tree[0], held_name[k], &held[k], &ids[k]));
+    ok = ok && said("mkdir r", dmk(tree[0], "r")) &&
+         said("rmdir h1", fs_unlink_within(tree[0], FS_CALL_TIMEOUT, "h1", 2, FS_UNLINK_DIR)) &&
+         said("r over h2", fs_rename_within(tree[0], FS_CALL_TIMEOUT, "r", 1, "h2", 2,
+                                             FS_RENAME_REPLACE)) &&
+         said("rmdir h3", fs_unlink_within(tree[0], FS_CALL_TIMEOUT, "h3", 2, FS_UNLINK_DIR)) &&
+         said("h3 again", dmk(tree[0], "h3"));
+    for (unsigned k = 0; ok && k < 3; k++) {
+        ok = said("a removed one's getattr", dattr(held[k], "", &id, &nlink));
+        if (ok && (id != ids[k] || nlink)) {
+            printf("exttest: dirs: %s: id %lu (was %lu), %u links\n", held_name[k],
+                   (unsigned long)id, (unsigned long)ids[k], nlink);
+            ok = false;
+        }
+        ok = ok && said("its ..", dattr(held[k], "..", &id, &nlink));
+        if (ok && id != top_id) {
+            printf("exttest: dirs: %s's .. is %lu, not %s\n", held_name[k], (unsigned long)id, top);
+            ok = false;
+        }
+        if (ok && dmk(held[k], "x") != ERR_NOT_FOUND) {
+            printf("exttest: dirs: %s: a name made in it\n", held_name[k]);
+            ok = false;
+        }
+    }
+    ok = ok && said("the bottom", dattr(tree[TREE], "../../..", &id, &nlink));
+    for (unsigned k = 0; k < 3; k++)
+        if (held[k])
+            jam_handle_close(held[k]);
+    for (unsigned i = 0; i <= TREE; i++)
+        if (tree[i])
+            jam_handle_close(tree[i]);
+    if (f)
+        jam_handle_close(f);
+    if (fv)
+        jam_handle_close(fv);
+    jam_handle_close(fs);
+    if (!ok)
+        return 1;
+    printf("exttest: dirs %s/%s: %u levels, 3 removed while held: PASS\n", mount, name, TREE);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     uint64_t mib = 0;
@@ -539,7 +646,9 @@ int main(int argc, char **argv)
     if (argc == 4 && !strcmp(argv[1], "open") && number(argv[3], &mib) && mib &&
         mib <= OPEN_MAX)
         return cmd_open(argv[2], mib);
+    if (argc == 4 && !strcmp(argv[1], "dirs"))
+        return cmd_dirs(argv[2], argv[3]);
     printf("usage: exttest big <path> <MiB> | sparse <path> | sums <dir> | digest <dir> | "
-           "copy <dir> <prefix> | open <dir> <count>\n");
+           "copy <dir> <prefix> | open <dir> <count> | dirs <mount> <name>\n");
     return 2;
 }

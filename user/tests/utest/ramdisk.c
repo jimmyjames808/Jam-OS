@@ -167,8 +167,49 @@ static void serve(void *arg)
     jam_handle_close(rd->ch);
 }
 
+static unsigned refused;
+static bool quiet;
+
+unsigned ramdisk_refused(void)
+{
+    return refused;
+}
+
+void ramdisk_quiet_refusals(bool on)
+{
+    quiet = on;
+}
+
+const char *ramdisk_busy(const struct ramdisk *rd)
+{
+    signals_t seen = 0;
+    if (!rd->buf)   /* no session started since the last join */
+        return NULL;
+    /* A thread that has ended (its client closed the channel) leaves nothing
+     * to protect: only a join was forgotten. */
+    if (jam_object_wait_one(rd->thread, SIG_TERMINATED, now(), &seen) != ERR_TIMED_OUT)
+        return NULL;
+    return rd->owner ? rd->owner : "(unnamed)";
+}
+
+/* rd is not being served: else the failure names the test that left it so
+ * (its service, extfs or fat, still holds the client end of the channel). */
+#define REQUIRE_IDLE(rd, what)                                                          \
+    do {                                                                                 \
+        const char *_who = ramdisk_busy(rd);                                             \
+        if (_who) {                                                                      \
+            refused++;                                                                   \
+            if (quiet)                                                                   \
+                return false;                                                            \
+            FAIL(what ": the RAM disk is still serving a session that test %s left "     \
+                 "(a failed test that never stopped its service?); not handed out again", \
+                 _who);                                                                  \
+        }                                                                                \
+    } while (0)
+
 bool ramdisk_create(struct ramdisk *rd, uint64_t blocks)
 {
+    REQUIRE_IDLE(rd, "ramdisk_create");
     memset(rd, 0, offsetof(struct ramdisk, stack));
     uint64_t addr = 0;
     CHECK_ST(jam_vmo_create(blocks * RAMDISK_SECTOR, 0, &rd->mem_vmo), OK);
@@ -182,7 +223,9 @@ bool ramdisk_create(struct ramdisk *rd, uint64_t blocks)
 bool ramdisk_serve(struct ramdisk *rd, bool read_only, handle_t *out_client)
 {
     uint64_t addr = 0;
+    REQUIRE_IDLE(rd, "ramdisk_serve");
     rd->read_only = read_only;
+    rd->owner = utest_cur;
     rd->buf_given = false;
     rd->served = 0;
     __atomic_store_n(&rd->stop, false, __ATOMIC_RELAXED);
@@ -295,4 +338,47 @@ bool ramdisk_has_late(const struct ramdisk *rd)
             return true;
     }
     return false;
+}
+
+/* ---- the refusal of a disk in use (a case of its own) --------------------------------- */
+
+/* A disk whose session is being served is not handed out again: a failed
+ * test that returned without stopping its service left extfs running on a
+ * shared static disk once, and the next test's ramdisk_create zeroed it
+ * under the serving thread (a page fault at 0). Both calls fail instead,
+ * quietly here, the session is left as it was, and once its client is gone
+ * the disk is free again. */
+bool t_ramdisk_in_use(void)
+{
+    static struct ramdisk rd;
+    handle_t client = HANDLE_INVALID, other = HANDLE_INVALID;
+    uint32_t size = 0, max_blocks = 0, buffer_max = 0;
+    uint64_t blocks = 0;
+    uint8_t read_only = 0;
+    uint16_t depth = 0;
+    signals_t seen = 0;
+    unsigned before = ramdisk_refused();
+    CHECK(ramdisk_create(&rd, 128));
+    CHECK(!ramdisk_busy(&rd));
+    CHECK(ramdisk_serve(&rd, false, &client));
+    CHECK(ramdisk_busy(&rd) && !strcmp(ramdisk_busy(&rd), utest_cur));
+    ramdisk_quiet_refusals(true);
+    bool created = ramdisk_create(&rd, 128);
+    bool served = ramdisk_serve(&rd, false, &other);
+    ramdisk_quiet_refusals(false);
+    CHECK(!created && !served);
+    CHECK_EQ(ramdisk_refused(), before + 2);
+    /* The session is as it was: the server answers. */
+    CHECK_ST(block_info(client, &size, &blocks, &read_only, &max_blocks, &depth, &buffer_max), OK);
+    CHECK_EQ(blocks, 128);
+    CHECK(ramdisk_busy(&rd));
+    /* Its client gone, the thread ends: free, joined or not. */
+    CHECK_ST(jam_handle_close(client), OK);
+    CHECK_ST(jam_object_wait_one(rd.thread, SIG_TERMINATED, now() + 5 * NS_PER_S, &seen), OK);
+    CHECK(!ramdisk_busy(&rd));
+    CHECK(ramdisk_join(&rd));
+    CHECK(ramdisk_destroy(&rd));
+    CHECK(ramdisk_create(&rd, 128));
+    CHECK(ramdisk_destroy(&rd));
+    return true;
 }

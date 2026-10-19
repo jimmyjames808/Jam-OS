@@ -63,6 +63,9 @@
 #                                      print what the PC would run, run nothing
 #                                      (pc-batch.sh start --detach; JAMOS_REMOTE_RUNID
 #                                      names the run instead of a new id)
+# A call that copies is refused (exit 2, naming the batch) while a pc-batch of
+# the same checkout still runs, here or detached on the PC: they share one copy
+# there (tools/pc-batch-busy.sh). JAMOS_REMOTE_FORCE_COPY=1 copies anyway.
 set -u
 [ $# -gt 0 ] || { echo "usage: tools/remote-test.sh <command> [args...] | --prepare"; exit 2; }
 prepare=0
@@ -162,6 +165,21 @@ else
 fi
 mkdir -p build
 if [ "$nosync" != 1 ]; then
+    # Every batch of this checkout (tools/pc-batch.sh) tests the one copy of it
+    # on the PC: a copy now would change the code under the batch's remaining
+    # runs (it voided a pre-push batch once). Refused while one runs, here or
+    # detached on the PC, unless JAMOS_REMOTE_FORCE_COPY=1; the batch's own copy
+    # is made with it set.
+    if [ "${JAMOS_REMOTE_FORCE_COPY:-0}" != 1 ]; then
+        base=${PC_BATCH_DIR:-build/batch}
+        . "$(dirname "$0")/pc-batch-busy.sh"
+        busy=$(busy_batches "" 0)
+        if [ -n "$busy" ]; then
+            first=${busy%% *}
+            echo "remote-test: batch $first of this checkout still runs, and its runs use the one copy of this checkout on $host: a copy now would change the code under its remaining runs (nothing copied, nothing run). Wait for it (tools/pc-batch.sh wait $first), or cancel it (tools/pc-batch.sh cancel $first), or set JAMOS_REMOTE_FORCE_COPY=1 to copy anyway" >&2
+            exit 2
+        fi
+    fi
     "$sshr" "${ssh_opts[@]}" "$host" "wsl --cd ~ mkdir -p $dir" < /dev/null
     # Several runs from one checkout copy it one at a time (lockf, the Mac's
     # flock): two rsyncs into one directory at once failed.

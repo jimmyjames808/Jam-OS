@@ -385,6 +385,7 @@ bool t_svc_child_gets_views(void);
 int  ns_svc_child(const char *name);   /* "utest ns-svc <name>|-" */
 int  ns_view_child(const char *how);   /* "utest ns-view r|w" */
 bool t_view_etc_names(void);
+bool t_ramdisk_in_use(void);
 bool t_fat_views(void);
 /* fs_attr.c: the calls M13.6 added to fs and file, as fat and the boot image answer. */
 bool t_dirent_types(void);
@@ -465,7 +466,10 @@ bool t_extfs_restart_locks(void);
 bool t_extfs_dirs(void);
 bool t_extfs_dirs_views(void);
 bool t_extfs_dirs_limits(void);
+bool t_extfs_dirs_gone(void);
 bool t_extfs_restart_dirs(void);
+bool t_extfs_restart_gone(void);
+bool t_extfs_restart_tree(void);   /* extfs_restart.c: the channels across the steps */
 int  extfs_dirs_child(int argc, char **argv);
 bool t_fs_no_locks(void);
 int  extfs_watch_child(int argc, char **argv);
@@ -482,6 +486,7 @@ bool t_fat_view_limits(void);
  * "jit-text"). */
 bool t_jit(void);
 bool t_jit_spawn(void);
+bool t_jit_mdwe(void);
 int  jit_child(int argc, char **argv);
 /* fork.c: libjam's fork (jam_fork) and vmar_clone's arguments, each in a
  * mode of ours ("utest fork-<what>") in a job of its own. */

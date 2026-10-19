@@ -3402,11 +3402,15 @@ lands (no WebAssembly then).
   keeps one VMO) and stays JIT memory; anything else mapped over it
   replaces it. `prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN)` (Linux's
   memory-deny-write-execute) gives the power up for good: libc closes
-  `SR_JIT`, under the table's lock; `PR_GET_MDWE` says it is in force
-  exactly when the process holds no power. A forked child gets a duplicate
+  every `SR_JIT` handle, under the table's lock (CJR2 finding 4);
+  `PR_GET_MDWE` says it is in force exactly when the process holds no
+  power. A forked child gets a duplicate
   of `SR_JIT` (libjam's fork), and an exec of the same program
   (`/proc/self/exe`) keeps it; posix_spawn and an exec of any other program
-  pass none. `MAP_JIT` is in `<sys/mman.h>` through an override of musl's
+  pass none. Unlike Linux's, it doesn't reach a program `/svc/exec` starts
+  (a caller whose list says `svc exec`): that one gets its own approval,
+  the power with it if its list asks (CJR2 finding 3; Chromium's list has
+  no `svc exec`). `MAP_JIT` is in `<sys/mman.h>` through an override of musl's
   `arch/x86_64/bits/mman.h`, and an override of its `src/mman/mmap.c`
   keeps the `EPERM` (upstream turns an anonymous mapping's `EPERM` into
   `ENOMEM`, a fix-up for Linux) (user/posix/musl/OVERRIDES).
@@ -3426,7 +3430,11 @@ lands (no WebAssembly then).
   give it up at its start (`PR_SET_MDWE`, in content's
   `ContentMainRunnerImpl::Initialize`), and gin run V8 `--jitless` unless
   the process is a renderer still holding it. So `ps` marks the renderers
-  alone `[jit]`.
+  alone `[jit]`. A renderer whose V8 is told `--jitless` (`--js-flags`:
+  the browser's for a site that may not JIT, or the owner's) gives it up
+  too (CJR2 finding 1). The browser holds it and could use it (CJR2
+  finding 2): only a launcher outside the browser (CR-f's) can take that
+  away.
 - **And SwiftShader's GPU process** (CR-e, built, the main session's
   revision of the rule above): WebGL in software is SwiftShader (patch
   0915: linked in as ANGLE's Vulkan), whose Reactor compiles each shader
@@ -3804,7 +3812,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CJ2. JIT for programs** (built 2026-10-19: its Chromium half with CR-e, [CR-e notes](#cr-e-notes)) | section 12's rest: `right jit` (wants, checkwants, allow's and pkg's words, init's slice), `ps`'s mark, libc's `MAP_JIT` (this half done 2026-10-14, see "CJ2 notes"); **still to do, after CB5**: V8's patch, the power to renderers only (with an unpatched launcher: [FORK-PLAN](FORK-PLAN.md#q4-the-jit-power-for-renderers-only-with-chromiums-own-launcher)'s Q4), `--jitless` for the rest | `user/include/wants.h`, the wants parser in libos, `tools/checkwants.py`, `user/services/shell/sh_allow.c`'s prompt, init's grant, `user/posix/sys/mem.c` (`MAP_JIT`), ports/chromium's V8 lines (and Q4's lines in content's child start, if so answered) | CJ1; CB5 | posixtest: `MAP_JIT` with and without the power; a JIT program writes code and runs it; cr-test.sh `chrome` with a Wasm page (CR-e) | **Opus** |
 | **CR1. Kernel review** | CK1, CK2, CK3, CP1's kernel line, CJ1 if merged: findings first (docs/CR-REVIEW-KERNEL.md, new), then High and Medium fixed with a test each; hostile tests (a TiB of reservations from a job with 16 MiB, 60,000 mappings in a storm of protects from 8 threads while another unmaps); **done 2026-10-15** ([CR-REVIEW-KERNEL.md](CR-REVIEW-KERNEL.md): 0 High, 3 Medium, 3 Low, 4 notes; two Mediums and every Low fixed, one Medium a design question) | the files its fixes need | CK1 to CK3 merged | its own; full ktest 4 and 8; soak 4 | **Opus** |
 | **CR2. POSIX and IPC review** | CL1, CL2, CL3, CU1, CU2, CS1: the descriptor passing (what crosses, what leaks, what a hostile peer can make the receiver do), the self-image (can it run anything the owner didn't approve?), `/proc`'s reopen; findings in [CR-REVIEW-POSIX](CR-REVIEW-POSIX.md) | the files its fixes need | CL1, CL2, CU1, CS1 merged | its own; posixtest; a fuzz loop between two processes | **Opus** |
-| **CJR. JIT review** | CJ1 and CJ2 against the owner's rule: can any program without the power get W+X, can a JIT VMO become approved code, can a handle hand-on widen rights; findings first, fixes with tests; **done 2026-10-16** for CJ1 and CJ2's first half ([CR-REVIEW-JIT.md](CR-REVIEW-JIT.md): 0 High, 0 Medium, 3 Low, 4 notes; finding 1 fixed, two design questions); **CJF** (2026-10-16) fixed findings 2 and 3 and took design question 1's (b), JIT VMOs never pinned | the files its fixes need | CJ1, CJ2 merged | its own | **Opus** |
+| **CJR. JIT review** | CJ1 and CJ2 against the owner's rule: can any program without the power get W+X, can a JIT VMO become approved code, can a handle hand-on widen rights; findings first, fixes with tests; **done 2026-10-16** for CJ1 and CJ2's first half ([CR-REVIEW-JIT.md](CR-REVIEW-JIT.md): 0 High, 0 Medium, 3 Low, 4 notes; finding 1 fixed, two design questions); **CJF** (2026-10-16) fixed findings 2 and 3 and took design question 1's (b), JIT VMOs never pinned; **CJR2** (2026-10-19) read CR-e's half and SWS's (its part "CJR2": 0 High, 1 Medium, 4 Low, 4 notes; the Medium, a renderer told `--jitless` keeping the power, fixed in patch 0914, and Low 4, `PR_SET_MDWE` missing a second handle, in libos; two design questions) | the files its fixes need | CJ1, CJ2 merged | its own | **Opus** |
 | **CRJ. The join** | ARCHITECTURE (Memory: reservations, JIT VMOs; Userland: `/proc`, descriptor passing, the self-image, the toolchain), the porter's guide (C++ and Rust ports, the clang drivers, big ports), USING (Chromium), TESTING (cr-test.sh, the build), BENCH (the build's figures, page loads, the JIT's), ROADMAP and HISTORY | the docs | CR1, CR2 merged; CB6 | `make check` | Sonnet 5.5 |
 
 **Later** (not tracked yet): the Jam OS sandbox (CR-f, its own plan),

@@ -33,11 +33,12 @@
 #   3. wcold: a cold boot of that stick runs B (the marker is there).
 #   4. wprev: a cold boot of the boot menu's "Jam OS (previous build)"
 #      (QEMU_BOOT_PREV) runs A (no marker).
-#   5. wfull: an old stick, with the 63 MiB ESP of sticks made before
-#      2026-10-12 (the Makefile's ESP_END_MIB was 64), A on it as its build
-#      and as the previous one: `run updtest writefull`: B is loaded but
-#      refused at ROOM with ERR_NO_SPACE ("can't hold three builds"), and
-#      on the Mac every file of its ESP is as it was, no .new or .old.
+#   5. wfull: an old stick, whose ESP holds two builds but not a third (the
+#      63 MiB ESP of sticks made before 2026-10-12 did, with the builds of
+#      then; it is sized here from today's build, 2.5 builds), A on it as its
+#      build and as the previous one: `run updtest writefull`: B is loaded
+#      but refused at ROOM with ERR_NO_SPACE ("can't hold three builds"),
+#      and on the Mac every file of its ESP is as it was, no .new or .old.
 # Every frame of run 2 is tagged VLAN 21 (the peer's and the pcap's checks).
 # WRITE_RUNS picks runs (wfail wstop wnet wfull; wnet is runs 2 to 4).
 # WRITE_PAD_MIB=<n> (wnet): build B's boot image also holds update-pad.bin,
@@ -329,13 +330,22 @@ EOF
 done
 fi
 if want wfull; then
-# Run 5: an old stick's 63 MiB ESP, with A as its build and as the
-# previous one, its /data as this test's: no room for B beside them.
-python3 tools/mkimage.py "$small" 64 128 &&
-    mformat -i "$small@@1M" -T $((63 * 2048)) -F -v JAMOS :: &&
-    mformat -i "$small@@64M" -T $((64 * 2048)) -F -v JAMOS-DATA :: &&
+# Run 5: an old stick's small ESP, with A as its build and as the previous
+# one, its /data as this test's: no room for B beside them. The ESP is
+# sized from today's build, whatever it weighs: two builds (the kernel and
+# the boot image each) and half of a third, so the old and the previous
+# build fit and the new one, which init's ROOM step asks a whole build
+# plus its slack for, does not. (A fixed 63 MiB was right for the builds of
+# 2026-10-12 and is too small for two of today's: the copy of the previous
+# one ran out of room, "can't make the old stick".)
+one=$(( $(wc -c < build/jamos.elf) + $(wc -c < "$out/bootfs-A.img") ))
+esp_end=$(( (one * 5 / 2) / 1048576 + 2 ))   # MiB; the ESP is 1 MiB to here
+echo "update-write-test: wfull: one build is $((one >> 10)) KiB: an ESP of $((esp_end - 1)) MiB"
+python3 tools/mkimage.py "$small" "$esp_end" $((esp_end + 64)) &&
+    mformat -i "$small@@1M" -T $(((esp_end - 1) * 2048)) -F -v JAMOS :: &&
+    mformat -i "$small@@${esp_end}M" -T $((64 * 2048)) -F -v JAMOS-DATA :: &&
     python3 tools/fat-label.py "$small" 1 --fix > /dev/null &&
-    python3 tools/fat-label.py "$small" 64 --fix > /dev/null &&
+    python3 tools/fat-label.py "$small" "$esp_end" --fix > /dev/null &&
     mmd -i "$small@@1M" ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine &&
     mcopy -n -o -i "$img@@1M" ::/EFI/BOOT/BOOTX64.EFI "$out/wfull-limine.efi" &&
     mcopy -i "$small@@1M" "$out/wfull-limine.efi" ::/EFI/BOOT/BOOTX64.EFI &&
@@ -344,17 +354,17 @@ python3 tools/mkimage.py "$small" 64 128 &&
     mcopy -i "$small@@1M" "$out/bootfs-A.img" ::/boot/bootfs.img &&
     mcopy -i "$small@@1M" build/jamos.elf ::/boot/prev-jamos.elf &&
     mcopy -i "$small@@1M" "$out/bootfs-A.img" ::/boot/prev-bootfs.img &&
-    mmd -i "$small@@64M" ::/etc ::/update &&
-    mcopy -i "$small@@64M" "$out/wtest.settings" ::/etc/settings &&
-    mcopy -i "$small@@64M" "$out/manifest" ::/update/manifest &&
-    mcopy -i "$small@@64M" "$out/jamos-B.elf" ::/update/jamos.elf &&
-    mcopy -i "$small@@64M" "$out/bootfs-B.img" ::/update/bootfs.img ||
+    mmd -i "$small@@${esp_end}M" ::/etc ::/update &&
+    mcopy -i "$small@@${esp_end}M" "$out/wtest.settings" ::/etc/settings &&
+    mcopy -i "$small@@${esp_end}M" "$out/manifest" ::/update/manifest &&
+    mcopy -i "$small@@${esp_end}M" "$out/jamos-B.elf" ::/update/jamos.elf &&
+    mcopy -i "$small@@${esp_end}M" "$out/bootfs-B.img" ::/update/bootfs.img ||
     fail "run 5: can't make the old stick"
 # Today's build may one day fit three to it: then a file takes the room.
 free=$(mdir -i "$small@@1M" ::/ 2>/dev/null | sed -n 's/^ *\([0-9 ]*\) bytes free.*/\1/p' | tr -d ' ')
 need=$(( 2 * ($(wc -c < "$out/jamos-B.elf") + $(wc -c < "$out/bootfs-B.img")) + (4 << 20) ))
 if [ -n "$free" ] && [ "$free" -ge "$need" ]; then
-    echo "update-write-test: wfull: three builds fit a 63 MiB ESP: filling it"
+    echo "update-write-test: wfull: three builds fit this ESP: filling it"
     head -c $((free - need / 2)) /dev/zero > "$out/wfull-filler.bin"
     mcopy -i "$small@@1M" "$out/wfull-filler.bin" ::/filler.bin
 fi

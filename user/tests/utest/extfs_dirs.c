@@ -24,9 +24,27 @@
  * three children's 64 each handed to us (256), a closed channel's slot
  * taken again at once, and a process with one refused its second.
  *
+ * extfs_dirs_gone (DE2, the plan's 3.3): a held directory removed (rmdir
+ * through the mount's channel and through its parent's, a rename over it):
+ * its channel answers "" and "." (no links), sync and statfs, opendir of
+ * "" (a second channel on it), ".." its old parent (a name made there, the
+ * root above it) and nothing else; one made again at its name is another
+ * directory, and no new one takes its inode; ".." from one whose parent
+ * went too (ERR_NOT_FOUND) or is removed and held (it answers as a removed
+ * one, its ".." on); its last channel closed, its block is free again; a
+ * directory moved below itself by rename_at refused; one left held at
+ * the stop goes then (the saved disk's e2fsck).
+ *
  * extfs_restart_dirs: across restarts (utest's supervisor, extfs_restart.c):
  * a channel carried on (its view's flags too), and one whose reply died
- * made again. */
+ * made again.
+ *
+ * extfs_restart_gone (DE2): held directories removed with extfs ended at
+ * each point of the removal (its ".." recorded, the journal's commit, the
+ * slot's, the answer; an rmdir and a rename over one): each kept across the
+ * restarts, its channel and ".." as before; then a fresh start: every
+ * channel closed (ERR_PEER_CLOSED, the request in progress's too) and the
+ * removed directories dropped by its mount. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -558,6 +576,209 @@ bool t_extfs_dirs_limits(void)
     return stop(&r, "dirs-limits");
 }
 
+/* ---- removed directories --------------------------------------------------------------- */
+
+/* fs.getattr of path on ch, a directory: its id and link count (either
+ * may be NULL). */
+static status_t dattr(handle_t ch, const char *path, uint64_t *id, uint32_t *nlink)
+{
+    uint32_t mode = 0, uid, gid, nl;
+    uint64_t size, blocks, i;
+    int64_t at, mt, ct;
+    status_t st = fs_getattr_until(ch, dl(), path, L(path), 0, &mode, nlink ? nlink : &nl, &uid,
+                                   &gid, &size, &blocks, id ? id : &i, &at, &mt, &ct);
+    return st == OK && (mode & S_TYPE) != S_DIR ? ERR_NOT_DIR : st;
+}
+
+/* ch's directory, id `id`, removed: "" and "." it, with no links, sync and
+ * statfs answered; nothing listed, made, opened, changed or resolved, no
+ * other name, no '/' path. */
+static bool removed_is(handle_t ch, uint64_t id)
+{
+    struct fatrun r = on(ch);
+    struct tfile f;
+    uint64_t got_id = 0, total, fr;
+    uint32_t nlink = 1, magic, name_max, feat;
+    uint8_t ro, label[16], kind;
+    CHECK_ST(dattr(ch, "", &got_id, &nlink), OK);
+    CHECK(got_id == id && nlink == 0);
+    CHECK_ST(dattr(ch, ".", &got_id, NULL), OK);
+    CHECK_EQ(got_id, id);
+    CHECK_ST(dattr(ch, "./.", NULL, NULL), OK);
+    CHECK_ST(t_stat_id(&r, "", &got_id), OK);
+    CHECK_EQ(got_id, id);
+    CHECK_ST(fs_sync_until(ch, dl()), OK);
+    CHECK_ST(fs_statfs_until(ch, dl(), &total, &fr, &ro, label, &magic, &name_max, &feat), OK);
+    CHECK_ST(t_batch(&r, "", 0, &batch), ERR_NOT_FOUND);
+    CHECK_ST(mk(ch, "x"), ERR_NOT_FOUND);
+    CHECK_ST(t_open(&r, "f", FS_READ | FS_WRITE | FS_CREATE, &f), ERR_NOT_FOUND);
+    CHECK_ST(fs_setattr_until(ch, dl(), "", 0, 0, FS_ATTR_MODE, 0700, 0, 0, 0, 0), ERR_NOT_FOUND);
+    CHECK_ST(dattr(ch, "x", NULL, NULL), ERR_NOT_FOUND);
+    CHECK_ST(dattr(ch, "/", NULL, NULL), ERR_NOT_FOUND);
+    CHECK_ST(rs(ch, "", &kind, got), ERR_NOT_FOUND);
+    return true;
+}
+
+/* ch's ".." is directory `want`; want 0: gone (ERR_NOT_FOUND), at once or
+ * once a closed channel's packet is served (asked again until then). */
+static bool up_is(handle_t ch, uint64_t want)
+{
+    uint64_t id = 0, end = dl();
+    status_t st;
+    while ((st = dattr(ch, "..", &id, NULL)) == OK && !want && now() < end)
+        jam_sleep_until(now() + 10 * NS_PER_MS);
+    CHECK_ST(st, want ? OK : ERR_NOT_FOUND);
+    if (want)
+        CHECK_EQ(id, want);
+    return true;
+}
+
+/* The volume's free bytes rise past `than` (as up_is: asked again). */
+static bool freed_past(const struct fatrun *r, uint64_t than)
+{
+    uint64_t total = 0, fr = 0, end = dl();
+    do {
+        CHECK_ST(t_free(r, &total, &fr), OK);
+        if (fr > than)
+            return true;
+        jam_sleep_until(now() + 10 * NS_PER_MS);
+    } while (now() < end);
+    FAIL("%lu bytes free, %lu before: the removed directory is still there", (unsigned long)fr,
+         (unsigned long)than);
+}
+
+bool t_extfs_dirs_gone(void)
+{
+    struct fatrun r;
+    handle_t g, g2, h, p, q, s, top;
+    uint64_t id_a = 0, id_g = 0, id = 0, id_p = 0, id_q = 0, id_s = 0, id_t = 0, id_w = 0;
+    uint64_t total = 0, fr = 0;
+    uint32_t nlink = 0;
+    char path[32];
+    CHECK(start(&r));
+    CHECK_ST(t_mkdir(&r, "/a"), OK);
+    CHECK_ST(t_mkdir(&r, "/a/g"), OK);
+    CHECK_ST(t_stat_id(&r, "/a", &id_a), OK);
+    CHECK_ST(od(r.fs, "/a/g", FS_READ, &g, &id_g), OK);
+    struct fatrun gr = on(g);
+
+    /* Removed while held: its name gone, its parent's link count down; its
+     * channel answers "" and "." only, its ".." the parent. */
+    CHECK_ST(dattr(r.fs, "/a", NULL, &nlink), OK);
+    CHECK_EQ(nlink, 3u);
+    CHECK_ST(t_unlink(&r, "/a/g"), OK);
+    CHECK_ST(t_stat(&r, "/a/g", NULL, NULL, NULL), ERR_NOT_FOUND);
+    CHECK_ST(dattr(r.fs, "/a", NULL, &nlink), OK);
+    CHECK_EQ(nlink, 2u);
+    CHECK(removed_is(g, id_g));
+    CHECK(up_is(g, id_a));
+    CHECK(inside_is(g, "..", "a"));
+    CHECK(inside_is(g, "./../.", "a"));
+    CHECK(put_file(&gr, "../made", "m"));
+    CHECK(file_is(&r, "/a/made", "m"));
+    CHECK(dir_at(g, "../.."));
+    CHECK_ST(mode_of(g, "../../..", &nlink), ERR_LINK_OUT);
+
+    /* Made again at its name: another directory, the channel staying on the
+     * removed one; no directory made takes its inode while it is held. */
+    CHECK_ST(t_mkdir(&r, "/a/g"), OK);
+    CHECK_ST(t_stat_id(&r, "/a/g", &id), OK);
+    CHECK(id != id_g);
+    CHECK(put_file(&r, "/a/g/in", "in"));
+    CHECK(removed_is(g, id_g));
+    CHECK(file_is(&gr, "../g/in", "in"));
+    for (unsigned i = 0; i < 16; i++) {
+        snprintf(path, sizeof(path), "/a/n%u", i);
+        CHECK_ST(t_mkdir(&r, path), OK);
+        CHECK_ST(t_stat_id(&r, path, &id), OK);
+        CHECK(id != id_g);
+    }
+
+    /* opendir of "" on it: a second channel on the removed directory, its
+     * ".." the same; nothing else opens. Its last channel closed, it goes. */
+    CHECK_ST(od(g, "", 0, &g2, &id), OK);
+    CHECK_EQ(id, id_g);
+    CHECK_ST(od(g, "x", 0, &h, NULL), ERR_NOT_FOUND);
+    CHECK_ST(od(g, "/a", 0, &h, NULL), ERR_NOT_FOUND);
+    jam_handle_close(g);
+    CHECK(removed_is(g2, id_g));
+    CHECK(up_is(g2, id_a));
+    CHECK_ST(t_free(&r, &total, &fr), OK);
+    jam_handle_close(g2);
+    CHECK(freed_past(&r, fr));
+
+    /* ".." from one whose parent went too: a parent no channel held is free
+     * (or another inode now): ERR_NOT_FOUND. */
+    CHECK_ST(t_mkdir(&r, "/p"), OK);
+    CHECK_ST(t_mkdir(&r, "/p/q"), OK);
+    CHECK_ST(od(r.fs, "/p/q", 0, &q, &id_q), OK);
+    CHECK_ST(t_unlink(&r, "/p/q"), OK);
+    CHECK_ST(t_unlink(&r, "/p"), OK);
+    CHECK(removed_is(q, id_q));
+    CHECK(up_is(q, 0));
+    for (unsigned i = 0; i < 4; i++) {
+        snprintf(path, sizeof(path), "/m%u", i);
+        CHECK_ST(t_mkdir(&r, path), OK);
+    }
+    CHECK(up_is(q, 0));
+    CHECK_ST(dattr(q, "../..", NULL, NULL), ERR_NOT_FOUND);
+    jam_handle_close(q);
+
+    /* ... and one held, removed too: it answers as a removed one, its ".."
+     * on to the root; a channel opened on it by ".." keeps it. */
+    CHECK_ST(t_mkdir(&r, "/p"), OK);
+    CHECK_ST(t_mkdir(&r, "/p/q"), OK);
+    CHECK_ST(od(r.fs, "/p", 0, &p, &id_p), OK);
+    CHECK_ST(od(p, "q", 0, &q, &id_q), OK);
+    CHECK_ST(fs_unlink_until(p, dl(), "q", 1, FS_UNLINK_DIR), OK);   /* through its parent's */
+    CHECK_ST(t_unlink(&r, "/p"), OK);
+    CHECK(removed_is(q, id_q));
+    CHECK(removed_is(p, id_p));
+    CHECK(up_is(q, id_p));
+    CHECK_ST(dattr(q, "..", NULL, &nlink), OK);
+    CHECK_EQ(nlink, 0u);
+    CHECK_ST(dattr(q, "../q", NULL, NULL), ERR_NOT_FOUND);
+    CHECK(dir_at(q, "../.."));
+    CHECK(inside_is(q, "../../a", "a"));
+    CHECK_ST(od(q, "..", 0, &h, &id), OK);
+    CHECK_EQ(id, id_p);
+    jam_handle_close(p);
+    CHECK(removed_is(h, id_p));
+    CHECK(up_is(q, id_p));
+    jam_handle_close(h);
+    CHECK(up_is(q, 0));   /* p's last channel closed: it went */
+    jam_handle_close(q);
+
+    /* A rename over a held empty directory: the channel stays on the one
+     * renamed over, its ".." where it was. */
+    CHECK_ST(t_mkdir(&r, "/s"), OK);
+    CHECK_ST(t_mkdir(&r, "/t"), OK);
+    CHECK(put_file(&r, "/t/f", "t"));
+    CHECK_ST(od(r.fs, "/s", 0, &s, &id_s), OK);
+    CHECK_ST(t_stat_id(&r, "/t", &id_t), OK);
+    CHECK_ST(t_rename_flags(&r, "/t", "/s", FS_RENAME_REPLACE), OK);
+    CHECK(removed_is(s, id_s));
+    CHECK(inside_is(s, "..", ""));
+    struct fatrun sr = on(s);
+    CHECK(file_is(&sr, "../s/f", "t"));
+    CHECK_ST(t_stat_id(&r, "/s", &id), OK);
+    CHECK_EQ(id, id_t);
+
+    /* rename_at moving a directory below itself (to_dir by its id): refused
+     * (ext_rename climbs from the new parent by inode). */
+    CHECK_ST(t_mkdir(&r, "/v"), OK);
+    CHECK_ST(t_mkdir(&r, "/v/w"), OK);
+    CHECK_ST(t_stat_id(&r, "/v/w", &id_w), OK);
+    CHECK_ST(od(r.fs, "/", 0, &top, NULL), OK);
+    CHECK_ST(fs_rename_at_until(top, dl(), "v", 1, id_w, "v", 1, 0), ERR_INVALID_ARGS);
+    jam_handle_close(top);
+
+    /* s still held at the stop: it goes then (the saved disk's e2fsck). */
+    bool ok = stop(&r, "dirs-gone");
+    jam_handle_close(s);
+    return ok;
+}
+
 /* ---- restarts ------------------------------------------------------------------------ */
 
 /* extfs ended by its test powers (utest's restart supervisor): instance 0
@@ -594,5 +815,78 @@ bool t_extfs_restart_dirs(void)
     CHECK_EQ(extfs_sup_ended(), 2u);
     CHECK(extfs_sup_stop());
     CHECK(extfs_save(&dd, "restart-dirs"));
+    return ramdisk_destroy(&dd);
+}
+
+/* Held directories removed with extfs ended at each point of the removal
+ * (test.c's powers; instance n ends at dies[n]); the comments name the
+ * instance each request ends. Then a fresh start. */
+bool t_extfs_restart_gone(void)
+{
+    static const char *const dies[] = {
+        "die=removed:1", "die=journal:1", "die=commit:1",  "die=answered:1",
+        "die=removed:1", "die=removed:1", "die=removed:2",
+    };
+    handle_t ga, g[4], s;
+    uint64_t id_a = 0, id_g[4], id_s = 0, id_t = 0, id = 0, total = 0, fr = 0;
+    char name[4] = "g0";
+    CHECK(ramdisk_create(&dd, EXT_DISK_SECTORS));
+    CHECK(extfs_sup_start(&dd, dies, 7));
+    struct fatrun *sr = extfs_sup_run();
+    CHECK_ST(t_mkdir(sr, "/a"), OK);
+    CHECK_ST(t_stat_id(sr, "/a", &id_a), OK);
+    CHECK_ST(od(sr->fs, "/a", 0, &ga, NULL), OK);
+    for (unsigned i = 0; i < 4; i++) {
+        name[1] = (char)('0' + i);
+        CHECK_ST(mk(ga, name), OK);
+        CHECK_ST(od(ga, name, 0, &g[i], &id_g[i]), OK);
+    }
+    CHECK_ST(mk(ga, "s"), OK);
+    CHECK_ST(mk(ga, "t"), OK);
+    CHECK_ST(od(ga, "s", 0, &s, &id_s), OK);
+    CHECK_ST(t_stat_id(sr, "/a/t", &id_t), OK);
+
+    /* Instance 0 ends with g0's ".." recorded, 1 with its rmdir in the
+     * journal (run again), 2 answers it from its slot; 2 ends with g1's
+     * slot committed, 3 answers; 3 ends with g2's answer waiting, 4 sends
+     * it; 4 and 5 end with the rename over s recorded, 6 runs it. */
+    CHECK_ST(fs_unlink_until(ga, dl(), "g0", 2, FS_UNLINK_DIR), OK);
+    CHECK_EQ(extfs_sup_ended(), 2u);
+    CHECK_ST(fs_unlink_until(ga, dl(), "g1", 2, FS_UNLINK_DIR), OK);
+    CHECK_EQ(extfs_sup_ended(), 3u);
+    CHECK_ST(t_unlink_flags(sr, "/a/g2", FS_UNLINK_DIR), OK);
+    CHECK_EQ(extfs_sup_ended(), 4u);
+    CHECK_ST(t_rename_flags(sr, "/a/t", "/a/s", FS_RENAME_REPLACE), OK);
+    CHECK_EQ(extfs_sup_ended(), 6u);
+
+    /* Instance 6: each kept, its channel and ".." as before; s is t's now. */
+    for (unsigned i = 0; i < 3; i++) {
+        CHECK(removed_is(g[i], id_g[i]));
+        CHECK(up_is(g[i], id_a));
+    }
+    CHECK(removed_is(s, id_s));
+    CHECK(up_is(s, id_a));
+    CHECK_ST(t_stat_id(sr, "/a/s", &id), OK);
+    CHECK_EQ(id, id_t);
+    CHECK_ST(t_stat(sr, "/a/g0", NULL, NULL, NULL), ERR_NOT_FOUND);
+    CHECK(dir_at(g[3], "../g3"));
+
+    /* A fresh start (6 ends with g3's ".." recorded, its second removal
+     * after the rename's, 7 is handed a new state): the rmdir in progress
+     * and every channel closed, g3 not
+     * removed, the removed ones dropped by 7's mount. */
+    CHECK_ST(t_free(sr, &total, &fr), OK);
+    extfs_sup_fresh();
+    CHECK_ST(fs_unlink_until(ga, dl(), "g3", 2, FS_UNLINK_DIR), ERR_PEER_CLOSED);
+    CHECK_EQ(extfs_sup_ended(), 7u);
+    for (unsigned i = 0; i < 4; i++)
+        CHECK_ST(dattr(g[i], "", NULL, NULL), ERR_PEER_CLOSED);
+    CHECK_ST(dattr(s, "", NULL, NULL), ERR_PEER_CLOSED);
+    CHECK_ST(t_stat_id(sr, "/a/g3", &id), OK);
+    CHECK_EQ(id, id_g[3]);
+    CHECK(freed_past(sr, fr));
+    close_all((handle_t[]){ ga, g[0], g[1], g[2], g[3], s }, 6);
+    CHECK(extfs_sup_stop());
+    CHECK(extfs_save(&dd, "restart-gone"));
     return ramdisk_destroy(&dd);
 }

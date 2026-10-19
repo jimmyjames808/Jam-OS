@@ -1073,7 +1073,13 @@ bool t_extfs_watch_cost(void)
     uint64_t out = now() - t0;
     printf("utest: %s: a directory moved out of the subview: %lu us\n", utest_cur,
            (unsigned long)(out / NS_PER_US));
-    CHECK(out <= base + 50 * NS_PER_MS);
+    /* The move reads the deep path once: about 25 times what 8 plain renames
+     * take (7 ms against 0.28 ms with KVM; 101 ms against 4.8 ms under TCG,
+     * 87 ms against 4.6 ms on a loaded PC: the ratio holds, the milliseconds
+     * don't). A bound of 100 times the base and 50 ms over passes all three,
+     * and fails a check that reads the path for each of the 256 watches
+     * (256 times the one read: 1.8 s with KVM, 25 s under TCG). */
+    CHECK(out <= 100 * base + 50 * NS_PER_MS);
     NOTHING(&s, "none of the deep watches was under what moved");
     unwatcher(&s);
     jam_handle_close(sub);
@@ -1869,7 +1875,11 @@ bool t_extfs_watch_unread(void)
     CHECK(rung(&a));
     CHECK(j2.used[JOB_LIMIT_PAGES] <= j1.used[JOB_LIMIT_PAGES] + 2);
     CHECK_EQ(j2.used[JOB_LIMIT_HANDLES], j1.used[JOB_LIMIT_HANDLES]);
-    CHECK(j2.used[JOB_LIMIT_MSG_BYTES] <= j1.used[JOB_LIMIT_MSG_BYTES]);
+    /* One message of slack: the sample can land while a request or its reply
+     * is still queued (j1 3,648 and j2 3,720 B once: 72 B in flight). The
+     * biggest here is a request with the 200-byte name, under 256 B; a
+     * queue that grew with the changes would be 2,000 of them. */
+    CHECK(j2.used[JOB_LIMIT_MSG_BYTES] <= j1.used[JOB_LIMIT_MSG_BYTES] + 256);
     CHECK(j1.used[JOB_LIMIT_PAGES] <= j0.used[JOB_LIMIT_PAGES] + 32);   /* 16 KiB of records */
     CHECK(take_all(&a));
     CHECK_EQ(ngot, (int)(FSWATCH_QUEUE_BYTES / (FSWATCH_RECORD_FIXED + 200) + 1));

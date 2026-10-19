@@ -291,6 +291,11 @@ uint32_t op_pid(void)
     return op.running ? svcstate_pid(state_slots(), op.slot) : 0;
 }
 
+bool op_running(void)
+{
+    return op.running;
+}
+
 static status_t take(const struct xf_chan *c, unsigned slot, const struct idl_slot *is)
 {
     if (c->proto == XF_PROTO_CTL)

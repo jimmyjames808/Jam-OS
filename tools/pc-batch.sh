@@ -37,9 +37,10 @@
 # the running batch) while a batch started from this checkout still runs,
 # here or detached on the PC, unless it is given --force (the old batch's
 # remaining runs then test the new code). Wait for the first, or cancel it.
-# A batch from another checkout is no hindrance (each has a copy of its own);
-# a single remote-test.sh run from this checkout while a batch runs is not
-# stopped, and changes the copy as well: don't.
+# A batch from another checkout is no hindrance (each has a copy of its own).
+# A single remote-test.sh run that would copy this checkout while one of its
+# batches runs is refused the same way (tools/pc-batch-busy.sh; JAMOS_REMOTE_FORCE_COPY=1
+# copies anyway); runs that don't copy (JAMOS_REMOTE_NOSYNC=1) are no hindrance.
 #
 # Exit status (wait, report, run): 0 every run passed (or passed when run
 # again), 1 one failed, 124 not finished yet, 2 a usage error.
@@ -78,6 +79,8 @@ ssh_opts=(-o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=10 -o Serv
 me=tools/pc-batch.sh
 
 die() { echo "pc-batch: $*" >&2; exit 2; }
+
+. "$(cd "$(dirname "$0")" && pwd)/pc-batch-busy.sh"   # busy_batches
 
 # split <command text>: the words into assigns=(VAR=x ...) and cmdv=(program args...).
 split() {
@@ -294,10 +297,10 @@ drive() {
             # Detached: the copy alone. The PC builds before the first run
             # (each run's own build check, remote-test's), so the Mac needn't
             # stay awake while the build waits for the budget.
-            JAMOS_REMOTE_COPY_ONLY=1 "$rt" --prepare >> "$d/prepare.log" 2>&1 < /dev/null
+            JAMOS_REMOTE_FORCE_COPY=1 JAMOS_REMOTE_COPY_ONLY=1 "$rt" --prepare >> "$d/prepare.log" 2>&1 < /dev/null
             rc=$?
         else
-            "$rt" --prepare >> "$d/prepare.log" 2>&1 < /dev/null
+            JAMOS_REMOTE_FORCE_COPY=1 "$rt" --prepare >> "$d/prepare.log" 2>&1 < /dev/null
             rc=$?
         fi
         # Runs that build without the kernel tests: that build too, now.
@@ -563,23 +566,8 @@ resume() {   # resume <id>: a detached batch's runs that didn't finish, on the P
     echo "batch $bid: on the PC again; next: $me wait $bid"
 }
 
-# running_batches <new id> <1: ask the PC too>: the ids of this checkout's other
-# batches still running: a driver alive here, or (a detached batch, its driver
-# gone after the hand-off) the batch's own driver alive on the PC.
-running_batches() {
-    local o ids=
-    for o in $(ls "$base"); do
-        [ "$o" != "$1" ] && [ ! -f "$base/$o/done" ] && kill -0 "$(cat "$base/$o/driver.pid" 2> /dev/null)" 2> /dev/null && ids="$ids $o"
-    done
-    if [ "$2" = 1 ]; then
-        ids="$ids $(printf 'for o in ~/work/.batch/%s/*/; do [ -f "$o/started" ] && [ ! -f "$o/done" ] && ! flock -n "$o/lock" true && basename "$o"; done; exit 0\n' \
-            "$(basename "$top")" | "$sshr" "${ssh_opts[@]}" "$JAMOS_REMOTE" "wsl -e bash -s" 2> /dev/null)"
-    fi
-    echo $ids
-}
-
 start() {
-    local rerun=0 detach=0 force=0 list line name rest n id busy o ask
+    local rerun=0 detach=0 force=0 list line name rest n id busy
     while :; do
         case ${1:-} in
         --rerun-failed) rerun=1; shift ;;
@@ -619,11 +607,7 @@ start() {
     # of this checkout's batches runs (--force: started anyway). A detached
     # batch is on the PC for long after its driver here is gone: the PC is asked
     # when this one is detached, or an earlier detached batch isn't collected yet.
-    ask=$detach
-    for o in $(ls "$base"); do
-        [ "$o" != "$id" ] && [ -f "$base/$o/handed" ] && [ ! -f "$base/$o/collected" ] && ask=1
-    done
-    busy=$(running_batches "$id" $ask)
+    busy=$(busy_batches "$id" $detach)
     if [ -n "$busy" ]; then
         if [ $force = 1 ]; then
             echo "pc-batch: --force: batch $busy of this checkout still runs; its remaining runs test this copy" >&2

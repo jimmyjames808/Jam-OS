@@ -109,14 +109,19 @@ handle_t startup_handle(uint32_t role)
     return HANDLE_INVALID;
 }
 
-static void drop_entry(unsigned i);
-
+/* Every entry with role, not only the first (a power given up is given up
+ * whole however many handles of it a starter gave), each emptied where it
+ * is rather than closed up as drop_entry does: another thread looking up
+ * another role meanwhile (libc's signal thread) still finds its entry in
+ * its place. The role goes first, so a lookup from then on finds nothing. */
 void startup_handle_drop(uint32_t role)
 {
     for (unsigned i = 0; i < msg_nhandles; i++)
         if (msg_roles[i] == role) {
-            drop_entry(i);
-            return;
+            handle_t h = msg_handles[i];
+            __atomic_store_n(&msg_roles[i], SR_NONE, __ATOMIC_RELAXED);
+            __atomic_store_n(&msg_handles[i], HANDLE_INVALID, __ATOMIC_RELAXED);
+            jam_handle_close(h);
         }
 }
 
