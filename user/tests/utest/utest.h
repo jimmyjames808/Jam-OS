@@ -438,7 +438,7 @@ bool t_extfs_posix(void);
  * 2.2's rows, moves, views and a second process, the close rule, the
  * queue's bound and the caps; what a view hides, a watch moved out of its
  * view's reach, watches across restarts, a given-up instance's bells; the
- * second process's modes are xwatch-*. */
+ * hostile runs (IR2); the second process's modes are xwatch-*. */
 bool t_extfs_watch_rows(void);
 bool t_extfs_watch_moves(void);
 bool t_extfs_watch_views(void);
@@ -448,6 +448,10 @@ bool t_extfs_watch_hidden(void);
 bool t_extfs_watch_reach(void);
 bool t_extfs_watch_deep(void);
 bool t_extfs_watch_cost(void);
+bool t_extfs_watch_storm(void);
+bool t_extfs_watch_threads(void);
+bool t_extfs_watch_abuse(void);
+bool t_extfs_watch_unread(void);
 bool t_extfs_restart_watch(void);
 bool t_extfs_restart_reach(void);
 bool t_extfs_restart_giveup(void);
