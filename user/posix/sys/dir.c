@@ -117,7 +117,8 @@ static status_t opendir_raw(const struct path *p, uint32_t flags, handle_t *ch, 
 
 /* x's channel went (its service ended): an open of the last known text
  * through the namespace in its place, if that is the same directory (its
- * id); else none, and x is gone. x->ch_lock. */
+ * id on the same volume: an id is an inode number, which another volume
+ * mounted at the name has too); else none, and x is gone. x->ch_lock. */
 static void replace_locked(struct dir *x)
 {
     jam_handle_close(x->ch);
@@ -130,9 +131,8 @@ static void replace_locked(struct dir *x)
     uint64_t id = 0, volume = 0;
     if (!path_set(x->path, p) && p->where == PATH_MOUNT &&
         opendir_raw(p, x->flags, &ch, &id, &volume) == OK) {
-        if (id == x->id) {
+        if (id == x->id && volume == x->volume) {
             x->ch = ch;
-            x->volume = volume;
             x->gone = false;
         } else {
             jam_handle_close(ch);   /* another directory has the name now */
