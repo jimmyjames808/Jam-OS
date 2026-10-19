@@ -1235,39 +1235,40 @@ static status_t dk_list(handle_t ch)
  * removes one (each level listed and its files unlinked; each directory
  * removed while its channel is held, which then answers as a removed
  * one). The step that failed, or NULL. */
+static status_t dk_st;   /* the failed step's answer */
+
 static const char *dk_round(handle_t top)
 {
     static handle_t ch[LEVELS + 1];
     char f[4] = "f0";
     ch[0] = top;
     for (unsigned i = 0; i < LEVELS; i++) {
-        if (dk_mk(ch[i], name) != OK)
+        if ((dk_st = dk_mk(ch[i], name)) != OK)
             return "a mkdir";
         for (unsigned k = 0; k < DK_FILES; k++) {
             f[1] = (char)('0' + k);
-            if (dk_file(ch[i], f) != OK)
+            if ((dk_st = dk_file(ch[i], f)) != OK)
                 return "a file made";
         }
-        if (dk_od(ch[i], name, &ch[i + 1]) != OK)
+        if ((dk_st = dk_od(ch[i], name, &ch[i + 1])) != OK)
             return "an opendir";
     }
     for (unsigned i = 0; i < LEVELS; i++) {
-        if (dk_list(ch[i]) != OK)
+        if ((dk_st = dk_list(ch[i])) != OK)
             return "a listing";
         for (unsigned k = 0; k < DK_FILES; k++) {
             f[1] = (char)('0' + k);
-            if (dk_rm(ch[i], f, 0) != OK)
+            if ((dk_st = dk_rm(ch[i], f, 0)) != OK)
                 return "a file unlinked";
         }
     }
     for (unsigned i = LEVELS; i > 0; i--) {
         uint32_t nlink = 1;
-        if (dk_rm(ch[i - 1], name, FS_UNLINK_DIR) != OK)
+        if ((dk_st = dk_rm(ch[i - 1], name, FS_UNLINK_DIR)) != OK)
             return "an rmdir";
-        status_t st;
-        while ((st = dattr(ch[i], "", NULL, &nlink)) == ERR_IO)
+        while ((dk_st = dattr(ch[i], "", NULL, &nlink)) == ERR_IO)
             dk_io++;
-        if (st != OK || nlink)
+        if (dk_st != OK || nlink)
             return "a removed directory's channel";
         jam_handle_close(ch[i]);
     }
@@ -1305,9 +1306,9 @@ bool t_extfs_restart_deep(void)
     jam_sleep_until(now() + 100 * NS_PER_MS);   /* a kill the supervisor had timed already */
     unsigned kills = extfs_sup_crashes();
     printf("utest: %s: %u rounds of %u levels in %lu ms, extfs killed %u times, %u calls made "
-           "again (ERR_IO)%s%s\n", utest_cur, rounds, LEVELS,
+           "again (ERR_IO)%s%s%s%s\n", utest_cur, rounds, LEVELS,
            (unsigned long)((now() - t0) / NS_PER_MS), kills, dk_io, bad ? "; failed at " : "",
-           bad ? bad : "");
+           bad ? bad : "", bad ? ": " : "", bad ? status_str(dk_st) : "");
     CHECK(!bad);
     CHECK(kills >= DK_KILLS);
     struct fatrun t = on(top);
