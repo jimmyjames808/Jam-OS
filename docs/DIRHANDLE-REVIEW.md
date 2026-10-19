@@ -23,7 +23,7 @@ got), **Medium** is wrong behaviour the system or a test tier will meet,
 **Low** is a wart or a mismatch with the documented rule that nothing
 relies on yet.
 
-Counts: **0 High, 1 Medium, 3 Low, 7 notes.** No channel reached past its
+Counts: **0 High, 1 Medium, 3 Low, 8 notes.** No channel reached past its
 view by any path tried, by reading or by the hostile runs (climbs, ids,
 `..` through hidden places, places across renames and restarts: 15,000
 moves in and out of a subview under walkers, nothing from outside); no
@@ -190,7 +190,18 @@ attributes of an empty, removed directory.
   the text steers it nowhere the caller couldn't go, and a raised child
   gets no channel. DL2's note "init's relay drops untrusted text" means
   the descriptors'.
-- **N7. WQ's `xf_heard`.** The record is written whole before its mark
+- **N7. A full keep channel fails the request.** extfs sends every put
+  and drop to its keeper without waiting (keepch's events); when the
+  keeper has fallen 1,024 messages behind, a put fails and so does the
+  request that made the handle (`ERR_SHOULD_WAIT` to an open or opendir),
+  and a drop is only logged ("can't tell the keeper slot ... is closed").
+  volumes takes everything at each event, so it isn't met there; utest's
+  supervisor took 64 messages every 50 ms and `extfs_restart_deep` met it
+  (fixed in the test's supervisor: all of them, as volumes). Directory
+  channels add a put and a drop per directory opened, so a deep walk
+  sends more than it did. Recommendation: later extfs hardening, a put
+  that waits a little for room (the keeper reads) before it gives up.
+- **N8. WQ's `xf_heard`.** The record is written whole before its mark
   (`hear`, a signal fence between), put back only by the request of its
   own sequence number (`wback_unhear` in `unmake`, before anything else of
   the rerun) and only where the mark is still the one recorded, then
@@ -246,21 +257,23 @@ reference.
 
 ## Tests
 
-The row's hostile runs, each passing on this branch (batch 20083538,
-a-extfs: 53 passed) and with no fix to make:
+The row's hostile runs, each passing on this branch (batch 20090927,
+a-extfs: 53 passed; the init run and the shell's basic script run them
+too) and with no fix to make in what they test:
 - utest `extfs_dirs_storm`: 8 threads move `/v/in/d<k>` to `/out/d<k>`
   and back through the volume's whole channel for 3 s while 4 walk
   through channels on them opened in the subview `/v` and held across the
   moves: each probe answered from inside or `ERR_NOT_FOUND` (cut off),
   never `/out/secret` by `../secret`, `/out`'s listing through `..`, a
-  place but `in/d<k>`, or a `rename_at` into `/out` by its id. 15,014
-  moves, 30,302 answers from inside, 20,178 cut off, 0 from outside.
+  place but `in/d<k>`, or a `rename_at` into `/out` by its id. 29,684
+  moves, 59,951 answers from inside, 39,889 cut off, 0 from outside.
 - utest `extfs_restart_deep`: DeleteDeep's tree (26 levels of 255-byte
   names, 4 files in each) made and removed through channels only (each
   level listed, files unlinked, each directory removed while its channel
   is held, which then answers as removed), round after round while the
-  supervisor kills extfs every 200 ms: 39 rounds, 10 kills, every call
-  answered, no channel lost, and the free bytes of before at the end.
+  supervisor kills extfs every 200 ms: 86 rounds, 10 kills, every call
+  answered, no channel lost, and the free bytes of before at the end
+  (N7 met here first, in the test's own keeper).
 - utest `extfs_dirs_killed`: a process holding its 64 channels (on
   `/h/k00` to `/h/k63`) killed after 32 of those directories were removed
   under it: their blocks free again, and the volume's 256 slots all taken

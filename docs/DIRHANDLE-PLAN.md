@@ -1243,7 +1243,7 @@ numbers per shard, is [CR-PLAN's DC notes](CR-PLAN.md#dc-notes).
 ### DR notes
 
 Built (2026-10-20): the review is [DIRHANDLE-REVIEW.md](DIRHANDLE-REVIEW.md),
-findings first: 0 High, 1 Medium, 3 Low, 7 notes.
+findings first: 0 High, 1 Medium, 3 Low, 8 notes.
 - **Fixed:** M1, DC's `RecursiveWatch`: a path-less change of a directory
   (`fs.setattr` of `""` on its channel, a path ending in `.` or `..`) now
   tells its parent's watch, by the name found from its `..` entry at the
@@ -1265,7 +1265,22 @@ findings first: 0 High, 1 Medium, 3 Low, 7 notes.
   case). The new utest cases save no disk for e2fsck: extfs-svc-test's
   `/data` (64 MiB) is nearly full of the others' (the storm's save met
   `ERR_NO_SPACE` after its checks passed), so `extfs_restart_deep` checks
-  that the free bytes come back instead.
+  that the free bytes come back instead. It first failed on utest's own
+  keeper (64 keep messages taken a poll: an open refused on the full keep
+  channel), fixed in the test's supervisor; extfs's side is the review's
+  N7 (later hardening).
+- **Runs** (the PC): without the three fixes (a branch with them
+  reverted) batch 20084227: `extfs_watch_nameless`, posixtest inotify's
+  `dir_fd_events` and dirfd's `replaced` FAIL, as they should. On this
+  branch: batch 20085357 (17 runs at 77b1ba83): `make check`, the eight
+  `tools/extfs-test.sh` cases, posix-dirfd, posix-inotify, posix-files,
+  posix-fork, posix-run PASS; the init run, `tools/extfs-svc-test.sh` and
+  sh-basic FAIL on `extfs_restart_deep` (the test's keeper, above; the
+  init run's first try also `ns_changes_stay_bounded`, which passed on its
+  try again: load); after the supervisor's fix batch 20090927: `make
+  check`, the init run, `tools/extfs-svc-test.sh` (53 passed, every disk
+  clean), sh-basic PASS; batch 20091345 with `JAMOS_DATA_FS=fat`:
+  posix-dirfd PASS. No kernel change, so no ktest.
 
 ## 8. Tests
 
