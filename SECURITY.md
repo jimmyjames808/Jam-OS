@@ -35,7 +35,7 @@ limit and not a new bug:
   a process that gave the power up (`PR_SET_MDWE`) does not pass that on
   across `/svc/exec`.
 - **Chromium has no sandbox of Jam OS's own yet** (CR-f is not built; its
-  plan is being written). It runs `--no-sandbox`, so a bug in a renderer
+  plan is [docs/SANDBOX-PLAN.md](docs/SANDBOX-PLAN.md)). It runs `--no-sandbox`, so a bug in a renderer
   gives an attacker what the browser's list allows: the network, `/data`
   and the desktop. Use it for ordinary sites only. The review of the layers
   the sandbox will stand on lists what it must close
