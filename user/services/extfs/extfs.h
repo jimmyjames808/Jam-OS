@@ -15,13 +15,15 @@
  * successor's start is the recovery a power cut needs (the journal's
  * replay, then the orphan list). What the state VMO keeps is small: the
  * request slots and each one's transaction id, the open files (inode
- * number and generation, flags), the views (flags, the root's inode and
- * place), the mapped files (inode, kind, key), the watches (watch.c's
- * table: the watcher channels and their views, the watched inodes), the
- * record locks (locks.c's table and lock owners). The block cache, the
- * directory hash, the watchers' queued events and the locks' waits are
- * not kept (a successor's queues start with IN_Q_OVERFLOW; a waiter asks
- * again).
+ * number and generation, flags), the views (flags, the root's inode), the
+ * mapped files (inode, kind, key), the watches (watch.c's table: the
+ * watcher channels and their views, the watched inodes), the record locks
+ * (locks.c's table and lock owners), the directory channels (the
+ * directory's inode and generation, the view's flags and root). The block
+ * cache, the directory hash, where each directory lies (walk.c's places),
+ * the watchers' queued events and the locks' waits are not kept (a
+ * successor's queues start with IN_Q_OVERFLOW; a waiter asks again; a
+ * place is found again by climbing).
  *
  * Files: main.c the startup, the mount (and the format), the event loop;
  * disk.c the ext library's device over `block`; state.c the state VMO;
@@ -35,7 +37,8 @@
  * subviews; pager.c mapped files and the mount's pager; wback.c their
  * stores written back; watch.c file watching (fs.watch's channels and
  * the events, docs/INOTIFY-PLAN.md); locks.c record locks (file.lock,
- * <rlock.h>); test.c the test powers. */
+ * <rlock.h>); dirs.c directory channels (fs.opendir,
+ * docs/DIRHANDLE-PLAN.md); test.c the test powers. */
 #pragma once
 
 #include <stdbool.h>
@@ -63,13 +66,14 @@
  * volumes' ext_limits give the job room for all of them. */
 #define XF_MAX_FILES   256         /* open files at once */
 #define XF_VIEWS       128         /* views and subviews served at once */
+#define XF_DIRS        256u        /* directory channels at once (fs.opendir: dirs.c) ... */
+#define XF_DIRS_PROC   64u         /* ... from one process (the opendir request's writer) */
 #define XF_FILE_BUF    (64u << 10) /* each open file's transfer buffer, bytes */
-#define XF_ROOT_MAX    1024u       /* a subview's root's place, bytes with its NUL */
 #define XF_LINKS_MAX   40u         /* links one path may follow (POSIX's SYMLOOP_MAX) */
 #define XF_MAGIC       0xef53u     /* statfs's magic: Linux's EXT4_SUPER_MAGIC */
 #define XF_NAME_MAX    255u        /* statfs's longest name */
 #define XF_FEATURES    (FS_FEAT_LINKS | FS_FEAT_MODES | FS_FEAT_CASE | FS_FEAT_BIG | \
-                        FS_FEAT_MULTI_WRITER)
+                        FS_FEAT_MULTI_WRITER | FS_FEAT_DIRS)
 #define XF_DEFER_MAX   64u         /* orphans and truncations left for after an answer */
 #define XF_MAX_MAPS    256u        /* mapped files at once (file.map's VMOs: pager.c) */
 #define XF_LOCK_OWNERS 64u         /* lockowner's owners at once (locks.c: OFD and flock) */
@@ -102,16 +106,23 @@ _Static_assert(XF_MAX_MAPS <= 256, "a slot fits a key's low byte");
 #define XF_KEY_WATCH(s, g) (XF_KEY_WATCH_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define XF_KEY_LOCK_BIT    (1ull << 59)   /* a lock owner's token (locks.c): its slot */
 #define XF_KEY_LOCK(i)     (XF_KEY_LOCK_BIT | (uint64_t)(i))
+#define XF_KEY_DIR_BIT     (1ull << 58)   /* a directory channel (dirs.c) */
+#define XF_KEY_DIR(s, g)   (XF_KEY_DIR_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define XF_KEY_SLOT(k)     ((unsigned)((k) & 0xffff))
 #define XF_KEY_GEN(k)      ((uint32_t)((k) >> 16 & 0xffffffffu))
 
+/* A channel's id in a request slot: its kind in the top two bits (0: the
+ * mount's own channels, numbered, and the directory channels, bit 24),
+ * its generation's low 16 bits and its slot. */
 #define XF_CHAN_FS          1u
 #define XF_CHAN_CTL         2u
 #define XF_CHAN_OWN         3u
 #define XF_CHAN_FILE(s, g)  (1u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
 #define XF_CHAN_VIEW(s, g)  (2u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
 #define XF_CHAN_WATCH(s, g) (3u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
-_Static_assert(XF_MAX_FILES <= 256 && XF_VIEWS <= 256 && FSW_CHANNELS <= 256,
+#define XF_CHAN_DIR_BIT     (1u << 24)
+#define XF_CHAN_DIR(s, g)   (XF_CHAN_DIR_BIT | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
+_Static_assert(XF_MAX_FILES <= 256 && XF_VIEWS <= 256 && FSW_CHANNELS <= 256 && XF_DIRS <= 256,
                "a slot fits a channel id's low byte");
 
 /* The steps of a start, timed for a restart's log line (adopt.c). */
@@ -151,7 +162,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 9u            /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 10u           /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied
@@ -170,15 +181,29 @@ struct xf_file {
                                * error_seq: wback_sample at the open, wback_file) */
 };
 
-/* One view (fs.view, fs.subview; its channel is views.c's). */
+/* One view (fs.view, fs.subview; its channel is views.c's, and where its
+ * root lies, found by climbing). */
 struct xf_view {
     bool     used;
     uint32_t flags;           /* FS_VIEW_* */
     uint32_t gen;
     uint32_t root_ino;        /* its root directory (EXT_ROOT_INO: the volume's) ... */
     uint32_t root_igen;       /* ... and its generation */
-    uint32_t root_len;        /* the root's place from the volume's root ("" for it) */
-    char     root[XF_ROOT_MAX];
+};
+
+/* One directory channel (fs.opendir; its channel is dirs.c's). Its view
+ * is a copy of the one it was opened through (that channel may close
+ * first). */
+struct xf_dir {
+    bool     used;
+    uint32_t gen;             /* bumped on every opendir of the slot: its port key */
+    uint32_t ino;             /* the directory: its inode ... */
+    uint32_t igen;            /* ... and that inode's generation */
+    uint32_t flags;           /* its view's FS_VIEW_* ... */
+    uint32_t root_ino;        /* ... root ... */
+    uint32_t root_igen;       /* ... and the root's generation, */
+    int32_t  view;            /* checked unless this is -1 (the mount's own channel), else 0 */
+    uint32_t pid;             /* the process that opened it (XF_DIRS_PROC) */
 };
 
 /* One VMO file.map made (pager.c): the file it shows, and how. */
@@ -221,6 +246,7 @@ struct xf_slot {
 #define XF_MADE_MAP        3u
 #define XF_MADE_MAP_SHARED 4u
 #define XF_MADE_WATCH      5u   /* fs.watch's watcher channel (the library's number) */
+#define XF_MADE_DIR        6u   /* fs.opendir's directory channel */
 struct xf_made {
     uint64_t seq;
     uint32_t kind;
@@ -234,8 +260,6 @@ struct xf_wview {
     uint32_t gen;             /* bumped at each fs.watch of the slot: its port key */
     int32_t  view;            /* -1: the mount's own channel (the root's generation not
                                * checked), else 0 */
-    uint32_t root_len;        /* the root's place from the volume's root */
-    char     root[XF_ROOT_MAX];
 };
 
 /* A rename's reach check (watch.c's `moved`), held to its request's
@@ -279,6 +303,7 @@ struct xf_state {
     uint64_t        map_seq;       /* the last key's sequence number (pager.c) */
     uint32_t        err_seq;       /* the last write-back error's number (wback.c) */
     struct xf_locks locks;         /* locks.c's */
+    struct xf_dir   dirs[XF_DIRS]; /* dirs.c's */
     struct xf_watches watch;       /* watch.c's */
 };
 
@@ -311,21 +336,35 @@ status_t disk_flush(void);
 
 enum xf_proto { XF_PROTO_FS, XF_PROTO_FILE, XF_PROTO_CTL, XF_PROTO_WATCH };
 
+/* Where a directory lies (walk.c's walk_place): its region, found by
+ * climbing its ".." entries to the volume's root, and kept until a rename
+ * moves a directory (the epoch, docs/DIRHANDLE-PLAN.md 3.2). Memory only:
+ * a successor climbs again. */
+struct xf_place {
+    uint64_t         epoch;   /* walk.c's epoch when found (0: never) */
+    status_t         st;      /* OK, or why not (ERR_NOT_FOUND: gone, or out of reach) */
+    struct fs_region region;
+};
+
 /* The context of an fs request: the channel's view (the mount's own
- * channels: the whole volume, no flags). */
+ * channels: the whole volume, no flags), and a directory channel's
+ * directory, where its relative paths start. */
 struct xf_ctx {
-    uint32_t    flags;        /* FS_VIEW_*: judged where paths resolve (walk.c) */
-    uint32_t    root_ino, root_igen;
-    const char *root;         /* the root's place from the volume's root */
-    uint32_t    root_len;
-    int         view;         /* its slot of views[], or -1 */
+    uint32_t         flags;   /* FS_VIEW_*: judged where paths resolve (walk.c) */
+    uint32_t         root_ino, root_igen;
+    struct xf_place *root_at; /* where the root lies (NULL: found at each walk) */
+    int              view;    /* its slot of views[] (or 0: a copy's, the root's generation
+                               * checked), or -1 */
+    uint32_t         dir_ino; /* a directory channel's directory (0: none) ... */
+    uint32_t         dir_igen;
+    struct xf_place *dir_at;  /* ... and where it lies (NULL: found at each walk) */
 };
 
 struct xf_chan {
     handle_t        ch;
     uint32_t        id;       /* XF_CHAN_* */
     enum xf_proto   proto;
-    struct xf_ctx   ctx;      /* XF_PROTO_FS */
+    struct xf_ctx   ctx;      /* XF_PROTO_FS (a view's, a directory channel's) */
     struct xf_file *file;     /* XF_PROTO_FILE */
     void           *watch;    /* XF_PROTO_WATCH: watch.c's record of the channel */
 };
@@ -389,9 +428,13 @@ struct xf_walk {
     struct ext_name name;
     char     namebuf[EXT_NAME_MAX + 1];
     struct fs_region region;  /* where it lies, for the view's checks (<fsview.h>) */
-    char     phys[FS_PATH_LEN + 1];   /* the same as text, from the volume's root (no
-                                       * leading '/'): fs.resolve's answer only */
-    uint32_t phys_len;
+    /* The names walked below `base` (the view's root, or the directory
+     * channel's directory, or one its ".." climbed to), as text:
+     * fs.resolve's answer only (walk_inside). */
+    uint32_t base;
+    char     rel[FS_PATH_LEN + 1];
+    uint32_t rel_len;
+    bool     rel_long;        /* ... they passed FS_PATH_LEN bytes: no answer */
     /* ERR_LINK_OUT: where it went on (fs.resolve's answers) */
     uint8_t  kind;
     uint32_t used;
@@ -399,19 +442,41 @@ struct xf_walk {
     uint32_t next_len;
 };
 
-/* Walk path (len bytes, as the protocol carried it) in view c: every name,
- * ".." physically, links inside the view followed (up to XF_LINKS_MAX:
- * ERR_LINK_LOOP past it), the search bit of every directory looked into
- * checked. The last name need not be there (found false). Errors:
- * ERR_LINK_OUT (an absolute link, or ".." above the view's root: w->kind,
- * used, next); ERR_NOT_FOUND, ERR_NOT_DIR on the way; ERR_ACCESS_DENIED
+/* Walk path (len bytes, as the protocol carried it) in view c, from the
+ * view's root if it starts with '/' or c is no directory channel, else
+ * from c's directory: every name, ".." physically (from a directory
+ * channel's directory, its own ".." entry, up to the view's root), links
+ * inside the view followed (up to XF_LINKS_MAX: ERR_LINK_LOOP past it),
+ * the search bit of every directory looked into checked. The last name
+ * need not be there (found false). Errors: ERR_LINK_OUT (an absolute
+ * link, or ".." above the view's root: w->kind, used, next);
+ * ERR_NOT_FOUND, ERR_NOT_DIR on the way (ERR_NOT_FOUND too for a
+ * directory channel whose directory is gone, or lies where its view
+ * doesn't reach or hides: docs/DIRHANDLE-PLAN.md's Q2); ERR_ACCESS_DENIED
  * (a search bit, or a directory the view hides wholly); ERR_NAME_TOO_LONG;
  * ERR_INVALID_ARGS (a name ext can't hold); ERR_IO. */
 status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t flags,
               struct xf_walk *w);
-/* fs.resolve's answer for an INSIDE path: the place relative to the view's root. */
-void     walk_inside(const struct xf_ctx *c, const struct xf_walk *w, char *out,
+/* fs.resolve's answer for an INSIDE path: the place relative to the
+ * view's root (a directory channel's own place found by climbing and
+ * naming each directory). ERR_NAME_TOO_LONG past FS_PATH_LEN bytes. */
+status_t walk_inside(const struct xf_ctx *c, const struct xf_walk *w, char *out,
                      uint32_t *out_len);
+/* Where directory ino lies (generation gen; 0: not checked), into *p: as
+ * found before, unless a directory moved since (walk_moved), else found
+ * now by climbing ".." entries to the volume's root. stop (0: none): the
+ * view's root (generation stop_gen, 0: not checked), which the climb must
+ * pass (else ERR_NOT_FOUND: it lies outside the view). Also ERR_NOT_FOUND
+ * for a directory gone, its inode used again or not a directory; ERR_IO.
+ * Returns p->st. */
+status_t walk_place(struct xf_place *p, uint32_t ino, uint32_t gen, uint32_t stop,
+                    uint32_t stop_gen);
+/* Where w's answer lies, as found now (a new view's root, a new directory
+ * channel's directory). */
+struct xf_place walk_place_of(const struct xf_walk *w);
+/* A rename moved a directory to another parent, or renamed one in the
+ * volume's top two levels: every place found before is found again. */
+void     walk_moved(void);
 /* Does the view hide what w names (reads and changes alike)? stat: fs.stat. */
 bool     walk_hidden(const struct xf_ctx *c, const struct xf_walk *w, bool stat);
 /* May the view change what w names (FS_VIEW_GUARD_ETC and FS_VIEW_GUARD_PKG
@@ -495,8 +560,9 @@ status_t views_add(void *host, handle_t ch, uint32_t flags);
 status_t views_sub(const struct xf_ctx *parent, const struct xf_walk *w, uint32_t flags,
                    handle_t *out);
 /* The flags fs_view_dispatch is given for a channel: a subview rooted
- * outside `etc` can't reach it, so the lexical etc checks (made on paths
- * relative to its root) are left to walk.c's. */
+ * outside `etc` can't reach it, and a directory channel's relative `etc`
+ * is not the volume's, so the lexical etc checks (made on paths as if from
+ * the volume's root) are left to walk.c's there. */
 uint32_t views_lexical(const struct xf_ctx *c);
 void     views_event(uint64_t key);
 void     views_unheld(void);
@@ -509,6 +575,31 @@ bool     views_chan(uint32_t i, uint32_t gen16, struct xf_chan *out);
 const char *views_check(void);
 /* The whole volume, as the mount's own channels see it. */
 void     views_whole(struct xf_ctx *c);
+
+/* ---- dirs.c ------------------------------------------------------------------ */
+
+/* fs.opendir through c of directory w->in (walked in c, checked by
+ * fsops.c): a directory channel keeping c's view, its client end *out.
+ * ERR_NO_RESOURCES: XF_DIRS, or the writer's XF_DIRS_PROC. */
+status_t dirs_open(const struct xf_ctx *c, const struct xf_walk *w, handle_t *out);
+/* rename_at's and link_at's to_dir: directory `id` placed in c's view (by
+ * climbing: the view's root met on the way), as a directory channel's
+ * context *out (its place in *at). ERR_NOT_FOUND: no such directory, or
+ * the view doesn't reach it. */
+status_t dirs_of_id(const struct xf_ctx *c, uint64_t id, struct xf_ctx *out, struct xf_place *at);
+/* The volume's number in opendir's reply (its UUID folded). */
+uint64_t dirs_volume(void);
+/* fs.view's add on a directory channel: ERR_NOT_SUPPORTED. */
+status_t dirs_no_view(void *host, handle_t ch, uint32_t flags);
+void     dirs_event(uint64_t key);
+void     dirs_unheld(void);
+void     dirs_drop(uint32_t i);
+void     dirs_drop_unknown(void);
+bool     dirs_take(uint32_t i, const handle_t *hs, unsigned n);
+unsigned dirs_adopt(void);
+status_t dirs_remake(uint32_t i, handle_t *out);
+bool     dirs_chan(uint32_t i, uint32_t gen16, struct xf_chan *out);
+const char *dirs_check(void);
 
 /* ---- pager.c ----------------------------------------------------------------- */
 
@@ -705,7 +796,9 @@ unsigned locks_adopt(void);
 #define XF_KEEP_MAP(i)  ((uint32_t)(XF_MAX_FILES + XF_VIEWS + (i)))
 #define XF_KEEP_WATCH(i) ((uint32_t)(XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS + (i)))
 #define XF_KEEP_LOCK(i) ((uint32_t)(XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS + FSW_CHANNELS + (i)))
-#define XF_KEEP_SLOTS   (XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS + FSW_CHANNELS + XF_LOCK_OWNERS)
+#define XF_KEEP_DIR(i)  ((uint32_t)(XF_KEEP_LOCK(XF_LOCK_OWNERS) + (i)))
+#define XF_KEEP_SLOTS   (XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS + FSW_CHANNELS + XF_LOCK_OWNERS + \
+                         XF_DIRS)
 
 status_t kept_put(uint32_t slot, const handle_t *hs, unsigned n);
 /* ... with a ring the keeper sounds on hs[1] when it closes the slot

@@ -1,10 +1,11 @@
 /* extfs: every request run as one journal transaction (docs/M13.6-PLAN.md,
  * "The disk is the state").
  *
- * Every request extfs serves (fs on the mount's channels or a view, file,
- * fsctl, fswatch) is read into a slot of the state VMO (svcstate_prepare,
- * then the protocol's generated <proto>_take_slot; fs's with svcstate_read,
- * which keeps the writer's pid) and run from there, in four steps:
+ * Every request extfs serves (fs on the mount's channels, a view or a
+ * directory channel, file, fsctl, fswatch) is read into a slot of the
+ * state VMO (svcstate_prepare, then the protocol's generated
+ * <proto>_take_slot; fs's with svcstate_read, which keeps the writer's
+ * pid) and run from there, in four steps:
  *   1. begin: the journal's transaction (ext_jnl_begin), and the slot's
  *      record of it emptied (kept->slot: no transaction id yet);
  *   2. run, with its generated <proto>_run_slot (fs_view_dispatch for fs,
@@ -326,8 +327,8 @@ static uint32_t dispatch(const struct xf_chan *c, unsigned slot, handle_t *rhs, 
         return fswatch_run_slot(c->ch, &is, &xf_watch_ops, c->watch, rhs, rhn);
     struct xf_ctx *ctx = (struct xf_ctx *)&c->ctx;
     const struct fs_view_server v = {
-        .flags = views_lexical(ctx), .ops = &xf_fs_ops, .ctx = ctx, .add = views_add,
-        .host = ctx,
+        .flags = views_lexical(ctx), .ops = &xf_fs_ops, .ctx = ctx,
+        .add = ctx->dir_ino ? dirs_no_view : views_add, .host = ctx,
     };
     return fs_view_dispatch(&v, is.q, *is.n, is.r, rhs, rhn);
 }
@@ -370,6 +371,8 @@ static void unmake(void)
         views_drop(m->index);
     else if (m->kind == XF_MADE_MAP)
         maps_unmake(m->index);
+    else if (m->kind == XF_MADE_DIR)
+        dirs_drop(m->index);
 }
 
 /* Step 1. */

@@ -4,7 +4,9 @@
  * otherwise, so a method that fails half way leaves nothing behind.
  *
  * Every path is walked by walk.c (links, "..", the search bits, what the
- * view hides where the path resolves); then each method checks what it
+ * view hides where the path resolves; on a directory channel from its
+ * directory, and rename_at's and link_at's `to` from their `to_dir`,
+ * placed by dirs.c); then each method checks what it
  * changes: the volume writable, the view allowing the change where the
  * path resolves (walk_may_change), the directory's write and search bits
  * for a name added or removed, the file's bits for an open.
@@ -340,20 +342,21 @@ static void renamed(bool exchange)
     watch_moved(&wb.in, &wb.dir, &wa.dir);
 }
 
-static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const char *to,
-                          uint32_t to_len, uint32_t flags)
+/* rename and rename_at: from walked in c, to in ct (c's view; another
+ * directory channel's context for rename_at). */
+static status_t rename_in(const struct xf_ctx *c, const char *from, uint32_t from_len,
+                          const struct xf_ctx *ct, const char *to, uint32_t to_len, uint32_t flags)
 {
-    const struct xf_ctx *c = ctx;
     if ((flags & ~(uint32_t)(FS_RENAME_REPLACE | FS_RENAME_EXCHANGE)) ||
         (flags & FS_RENAME_REPLACE && flags & FS_RENAME_EXCHANGE))
         return ERR_INVALID_ARGS;
     status_t st = walk_found(c, from, from_len, W_NOFOLLOW, &wa);
     if (st != OK)
         return st;
-    st = walk(c, to, to_len, W_NOFOLLOW, &wb);
+    st = walk(ct, to, to_len, W_NOFOLLOW, &wb);
     if (st != OK)
         return st;
-    if (walk_hidden(c, &wb, false))
+    if (walk_hidden(ct, &wb, false))
         return ERR_ACCESS_DENIED;
     if (!wa.has_name || !wb.has_name)
         return ERR_INVALID_ARGS;   /* the root, or "." / ".." */
@@ -361,7 +364,7 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
         return ERR_NOT_FOUND;
     st = may_name(c, &wa);
     if (st == OK)
-        st = may_name(c, &wb);
+        st = may_name(ct, &wb);
     if (st != OK)
         return st;
     if (wb.found && !(flags & FS_RENAME_EXCHANGE) && wb.in.ino != wa.in.ino &&
@@ -384,14 +387,43 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
         defer_drop(orphan);
     if (wb.found && wb.in.ino == wa.in.ino)
         return OK;   /* a name onto another name of the same inode: nothing done, no event */
+    /* A directory moved to another parent, or renamed where the regions'
+     * names are: every place found before is found again (walk.c). */
+    bool moved_dir = is_dir(&wa.in) || ((flags & FS_RENAME_EXCHANGE) && is_dir(&wb.in));
+    if (moved_dir && (!same || wa.region.depth <= 2 || wb.region.depth <= 2))
+        walk_moved();
     renamed(flags & FS_RENAME_EXCHANGE);
     return OK;
 }
 
+static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const char *to,
+                          uint32_t to_len, uint32_t flags)
+{
+    return rename_in(ctx, from, from_len, ctx, to, to_len, flags);
+}
+
+static status_t op_rename_at(void *ctx, const char *from, uint32_t from_len, uint64_t to_dir,
+                             const char *to, uint32_t to_len, uint32_t flags)
+{
+    struct xf_ctx ct;
+    struct xf_place at;
+    status_t st = dirs_of_id(ctx, to_dir, &ct, &at);
+    return st == OK ? rename_in(ctx, from, from_len, &ct, to, to_len, flags) : st;
+}
+
+/* A directory channel cut off (its directory gone, or out of its view's
+ * reach): every request ERR_NOT_FOUND, these two that name no path too. */
+static status_t dir_held(const struct xf_ctx *c)
+{
+    return c->dir_ino ? walk(c, "", 0, 0, &wa) : OK;
+}
+
 static status_t op_sync(void *ctx)
 {
-    (void)ctx;
-    status_t st = wback_all();   /* mapped files' stores, every one made before the call */
+    status_t st = dir_held(ctx);
+    if (st != OK)
+        return st;
+    st = wback_all();            /* mapped files' stores, every one made before the call */
     status_t fl = disk_flush();  /* every answered request is committed already; a failed
                                   * one's data too, on a disk with a cache */
     return st != OK ? st : fl;
@@ -401,7 +433,9 @@ static status_t op_statfs(void *ctx, uint64_t *out_total, uint64_t *out_free,
                           uint8_t *out_read_only, uint8_t out_label[16], uint32_t *out_magic,
                           uint32_t *out_name_max, uint32_t *out_features)
 {
-    (void)ctx;
+    status_t st = dir_held(ctx);
+    if (st != OK)
+        return st;
     struct ext_fs *fs = &vol.fs;
     *out_total = fs->blocks << fs->block_log;
     *out_free = ext_free_blocks(fs) << fs->block_log;
@@ -509,19 +543,19 @@ static status_t op_readlink(void *ctx, const char *path, uint32_t path_len, char
     return st;
 }
 
-static status_t op_link(void *ctx, const char *from, uint32_t from_len, const char *to,
-                        uint32_t to_len)
+/* link and link_at: from walked in c, to in ct (as rename_in's). */
+static status_t link_in(const struct xf_ctx *c, const char *from, uint32_t from_len,
+                        const struct xf_ctx *ct, const char *to, uint32_t to_len)
 {
-    const struct xf_ctx *c = ctx;
     status_t st = walk_found(c, from, from_len, W_NOFOLLOW, &wa);
     if (st != OK)
         return st;
     if (is_dir(&wa.in))
         return ERR_IS_DIR;
-    st = walk(c, to, to_len, W_NOFOLLOW, &wb);
+    st = walk(ct, to, to_len, W_NOFOLLOW, &wb);
     if (st != OK)
         return st;
-    if (walk_hidden(c, &wb, false))
+    if (walk_hidden(ct, &wb, false))
         return ERR_ACCESS_DENIED;
     if (wb.found || !wb.has_name)
         return ERR_ALREADY_EXISTS;
@@ -529,7 +563,7 @@ static status_t op_link(void *ctx, const char *from, uint32_t from_len, const ch
      * from outside where the view guards it. */
     if (!walk_may_change(c, &wa))
         return ERR_ACCESS_DENIED;
-    st = may_name(c, &wb);
+    st = may_name(ct, &wb);
     if (st != OK)
         return st;
     struct ext_time now;
@@ -540,6 +574,21 @@ static status_t op_link(void *ctx, const char *from, uint32_t from_len, const ch
     ev_inode(&wa.in, FSWATCH_IN_ATTRIB, 0);   /* its link count first (fsnotify_link) */
     ev_name(&wb.dir, &wb.name, FSWATCH_IN_CREATE, false, 0);
     return OK;
+}
+
+static status_t op_link(void *ctx, const char *from, uint32_t from_len, const char *to,
+                        uint32_t to_len)
+{
+    return link_in(ctx, from, from_len, ctx, to, to_len);
+}
+
+static status_t op_link_at(void *ctx, const char *from, uint32_t from_len, uint64_t to_dir,
+                           const char *to, uint32_t to_len)
+{
+    struct xf_ctx ct;
+    struct xf_place at;
+    status_t st = dirs_of_id(ctx, to_dir, &ct, &at);
+    return st == OK ? link_in(ctx, from, from_len, &ct, to, to_len) : st;
 }
 
 static status_t op_resolve(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
@@ -564,8 +613,7 @@ static status_t op_resolve(void *ctx, const char *path, uint32_t path_len, uint3
         return ERR_ACCESS_DENIED;
     *out_kind = FS_RESOLVE_INSIDE;
     *out_used = (uint16_t)path_len;
-    walk_inside(c, w, out_next, out_next_len);
-    return OK;
+    return walk_inside(c, w, out_next, out_next_len);
 }
 
 static status_t op_subview(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
@@ -573,6 +621,8 @@ static status_t op_subview(void *ctx, const char *path, uint32_t path_len, uint3
 {
     const struct xf_ctx *c = ctx;
     struct xf_walk *w = &wa;
+    if (c->dir_ino)
+        return ERR_NOT_SUPPORTED;   /* on the mount's channel (fs.idl) */
     if (flags & ~(uint32_t)FS_VIEW_FLAGS)
         return ERR_INVALID_ARGS;
     status_t st = walk_found(c, path, path_len, 0, w);
@@ -587,7 +637,35 @@ static status_t op_subview(void *ctx, const char *path, uint32_t path_len, uint3
  * too, whose watches stay quiet. */
 static status_t op_watch(void *ctx, handle_t *out_watcher)
 {
+    if (((const struct xf_ctx *)ctx)->dir_ino)
+        return ERR_NOT_SUPPORTED;   /* on the mount's channel (fs.idl) */
     return watch_new(ctx, out_watcher);
+}
+
+/* A directory channel (dirs.c) for the directory path names, keeping this
+ * channel's view. */
+static status_t op_opendir(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
+                           handle_t *out_dir, uint64_t *out_id, uint64_t *out_volume)
+{
+    const struct xf_ctx *c = ctx;
+    struct xf_walk *w = &wa;
+    if (flags & ~(uint32_t)(FS_READ | FS_NOFOLLOW))
+        return ERR_INVALID_ARGS;
+    status_t st = walk_found(c, path, path_len, flags & FS_NOFOLLOW ? W_NOFOLLOW : 0, w);
+    if (st != OK)
+        return st;
+    if ((w->in.d.mode & EXT_S_IFMT) == EXT_S_IFLNK)
+        return ERR_INVALID_ARGS;   /* FS_NOFOLLOW, and the last name is a link */
+    if (!is_dir(&w->in))
+        return ERR_NOT_DIR;
+    if ((flags & FS_READ) && !may(&w->in, 4))
+        return ERR_ACCESS_DENIED;
+    st = dirs_open(c, w, out_dir);
+    if (st != OK)
+        return st;
+    *out_id = w->in.ino;
+    *out_volume = dirs_volume();
+    return OK;
 }
 
 const struct fs_ops xf_fs_ops = {
@@ -595,7 +673,7 @@ const struct fs_ops xf_fs_ops = {
     .unlink = op_unlink, .rename = op_rename, .sync = op_sync, .statfs = op_statfs,
     .getattr = op_getattr, .setattr = op_setattr, .symlink = op_symlink,
     .readlink = op_readlink, .link = op_link, .resolve = op_resolve, .subview = op_subview,
-    .watch = op_watch,
+    .watch = op_watch, .opendir = op_opendir, .rename_at = op_rename_at, .link_at = op_link_at,
 };
 
 /* ---- fsctl -------------------------------------------------------------------------- */

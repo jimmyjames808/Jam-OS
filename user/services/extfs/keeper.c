@@ -1,7 +1,7 @@
 /* extfs: its side of the keep channel (<keep.h>), as fat's keeper.c.
  * Every handle a client holds the other end of (an open file's channel
  * and buffer, a view's channel, a watcher channel and its bell: watch.c,
- * a lock owner's token: locks.c),
+ * a lock owner's token: locks.c, a directory channel: dirs.c),
  * and a shared mapped file's VMO (pager.c),
  * is put with the keeper before the request that made it commits, so a
  * slot the state knows is always one the keeper was sent; a drop is sent
@@ -14,8 +14,8 @@
 #include "extfs.h"
 
 _Static_assert(XF_KEEP_SLOTS <= KEEP_MAX_SLOTS, "the keeper takes every slot");
-_Static_assert(XF_MAX_FILES * 2 + XF_VIEWS + XF_MAX_MAPS + FSW_CHANNELS * 2 + XF_LOCK_OWNERS <=
-               KEEP_MAX_HANDLES, "the keeper holds them all");
+_Static_assert(XF_MAX_FILES * 2 + XF_VIEWS + XF_MAX_MAPS + FSW_CHANNELS * 2 + XF_LOCK_OWNERS +
+               XF_DIRS <= KEEP_MAX_HANDLES, "the keeper holds them all");
 
 status_t kept_put(uint32_t slot, const handle_t *hs, unsigned n)
 {

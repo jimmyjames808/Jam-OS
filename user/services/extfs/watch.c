@@ -22,7 +22,8 @@
  * after the answer) come outside requests, at once.
  *
  * **Restarts** (2.8). The library's table, each channel's view (its flags
- * and root in the table's record, the root's place here) and each watched
+ * and root in the table's record; where the root lies is found again by
+ * climbing, walk.c's) and each watched
  * file's directory are in the state VMO (struct xf_watches); each channel
  * is with the keeper from its fs.watch on (slot XF_KEEP_WATCH: the channel
  * alone), and with its bell once given (the two). A successor takes the
@@ -54,8 +55,9 @@ static struct fsw w;   /* over kept->watch.table */
 
 /* A watcher channel's part here, by the library's number. */
 static struct wchan {
-    bool          armed;
-    struct xf_ctx ctx;              /* the view it came from (its root's place: the state's) */
+    bool            armed;
+    struct xf_ctx   ctx;            /* the view it came from (its root: the state's) */
+    struct xf_place root_at;        /* where that root lies (walk.c's) */
 } wc[FSW_CHANNELS];
 static uint32_t held_bits;          /* held back by the unread bound */
 _Static_assert(FSW_CHANNELS <= 32, "held_bits has a bit for each");
@@ -597,7 +599,7 @@ static void ctx_of(unsigned i)
     const struct xf_wview *v = &kept->watch.views[i];
     wc[i].ctx = (struct xf_ctx){
         .flags = r->view, .root_ino = (uint32_t)r->root, .root_igen = r->root_gen,
-        .root = v->root, .root_len = v->root_len, .view = v->view,
+        .root_at = &wc[i].root_at, .view = v->view,
     };
 }
 
@@ -635,8 +637,6 @@ static bool reap(void)
 status_t watch_new(const struct xf_ctx *c, handle_t *out)
 {
     handle_t mine = HANDLE_INVALID, client = HANDLE_INVALID;
-    if (c->root_len >= XF_ROOT_MAX)
-        return ERR_NAME_TOO_LONG;
     const struct fsw_key root = { .ino = c->root_ino, .gen = c->root_igen };
     uint32_t i = 0;
     status_t st = ERR_NO_RESOURCES;
@@ -655,9 +655,7 @@ status_t watch_new(const struct xf_ctx *c, handle_t *out)
     struct xf_wview *v = &kept->watch.views[i];
     v->gen++;
     v->view = c->view < 0 ? -1 : 0;   /* a view's root is checked by its generation */
-    v->root_len = c->root_len;
-    memcpy(v->root, c->root, c->root_len);
-    v->root[c->root_len] = '\0';
+    wc[i].root_at = c->root_at ? *c->root_at : (struct xf_place){ 0 };
     ctx_of(i);
     wc[i].armed = false;
     st = kept_put(XF_KEEP_WATCH(i), &w.chans[i].ch, 1);
@@ -741,7 +739,6 @@ static bool view_ok(unsigned i)
     const struct fsw_chan_rec *r = &kept->watch.table.chans[i];
     const struct xf_wview *v = &kept->watch.views[i];
     return !(r->view & ~FS_VIEW_FLAGS) && r->root && r->root <= UINT32_MAX &&
-           v->root_len < XF_ROOT_MAX && strnlen(v->root, v->root_len) == v->root_len &&
            (v->view == -1 || v->view == 0);
 }
 

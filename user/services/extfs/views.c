@@ -9,11 +9,12 @@
  * then walk.c's judgment on where the path resolves, with the view's
  * flags. A subview's paths are relative to its root, which the shared
  * code's checks of `etc` (the volume's top-level directory) can't know
- * about: they are given only the read-only bit (views_lexical), and
- * walk.c judges `etc` on the region (<fsview.h>) its walk keeps, which
- * starts at the root's: worked out from the root's text (`root`, the
- * subview's place when it was made, which fs.resolve's answers skip). A
- * new channel made from a view never has less than its flags: fs.view's
+ * about: they are given only the read-only bit (views_lexical), as a
+ * directory channel's are, and walk.c judges `etc` on the region
+ * (<fsview.h>) its walk keeps, which starts at the root's: where the root
+ * lies, found by climbing from it (walk_place) and found again after a
+ * rename moves a directory, so a root renamed into `etc` is judged there.
+ * A new channel made from a view never has less than its flags: fs.view's
  * add ORs in the parent's.
  *
  * Each slot's flags, generation and root are in the state; its channel
@@ -22,23 +23,24 @@
 
 static handle_t view_ch[XF_VIEWS];
 static uint64_t held[(XF_VIEWS + 63) / 64];   /* held back by the unread bound */
+static struct xf_place view_at[XF_VIEWS];     /* where each root lies */
 
 void views_whole(struct xf_ctx *c)
 {
-    *c = (struct xf_ctx){ .flags = 0, .root_ino = EXT_ROOT_INO, .root = "", .view = -1 };
+    *c = (struct xf_ctx){ .flags = 0, .root_ino = EXT_ROOT_INO, .view = -1 };
 }
 
 uint32_t views_lexical(const struct xf_ctx *c)
 {
-    return c->root_len ? c->flags & FS_VIEW_READ_ONLY : c->flags;
+    return c->root_ino != EXT_ROOT_INO || c->dir_ino ? c->flags & FS_VIEW_READ_ONLY : c->flags;
 }
 
 static void ctx_of(unsigned i, struct xf_ctx *c)
 {
     const struct xf_view *v = &kept->views[i];
     *c = (struct xf_ctx){
-        .flags = v->flags, .root_ino = v->root_ino, .root_igen = v->root_igen, .root = v->root,
-        .root_len = v->root_len, .view = (int)i,
+        .flags = v->flags, .root_ino = v->root_ino, .root_igen = v->root_igen,
+        .root_at = &view_at[i], .view = (int)i,
     };
 }
 
@@ -76,23 +78,20 @@ static status_t add(const struct xf_ctx *parent, const struct xf_walk *w, handle
             continue;
         uint32_t gen = v->gen + 1;
         *v = (struct xf_view){ .flags = parent->flags | flags, .gen = gen };
+        view_at[i] = parent->root_at ? *parent->root_at : (struct xf_place){ 0 };
         if (w) {
             v->root_ino = w->in.ino;
             v->root_igen = w->in.d.generation;
-            v->root_len = w->phys_len;
-            memcpy(v->root, w->phys, w->phys_len);
+            view_at[i] = walk_place_of(w);
         } else {
             v->root_ino = parent->root_ino;
             v->root_igen = parent->view >= 0 ? parent->root_igen : 0;
-            v->root_len = parent->root_len;
-            memcpy(v->root, parent->root, parent->root_len);
             if (parent->view < 0) {   /* the volume's root: its generation, for the check */
                 struct ext_inode root;
                 if (ext_iget(&vol.fs, EXT_ROOT_INO, 0, &root) == OK)
                     v->root_igen = root.d.generation;
             }
         }
-        v->root[v->root_len] = '\0';
         v->used = true;
         view_ch[i] = ch;
         status_t st = kept_put(XF_KEEP_VIEW(i), &ch, 1);
@@ -116,8 +115,6 @@ status_t views_add(void *host, handle_t ch, uint32_t flags)
 status_t views_sub(const struct xf_ctx *parent, const struct xf_walk *w, uint32_t flags,
                    handle_t *out)
 {
-    if (w->phys_len >= XF_ROOT_MAX)
-        return ERR_NAME_TOO_LONG;
     /* A root at or under etc: only where the shared code would allow it
      * for that place (fs_view_check's subview rule, judged where it
      * resolves). */
@@ -203,8 +200,7 @@ const char *views_check(void)
 {
     for (unsigned i = 0; i < XF_VIEWS; i++) {
         const struct xf_view *v = &kept->views[i];
-        if (v->used && ((v->flags & ~FS_VIEW_FLAGS) || v->root_len >= XF_ROOT_MAX ||
-                        !v->root_ino || strnlen(v->root, v->root_len) != v->root_len))
+        if (v->used && ((v->flags & ~FS_VIEW_FLAGS) || !v->root_ino))
             return "a view out of range";
     }
     return NULL;

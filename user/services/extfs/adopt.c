@@ -17,7 +17,8 @@
  *      (ext_jnl_committed): it is done, and its slot is committed now with
  *      the reply it holds. Not committed in the journal: the slot it made
  *      (an fs.open's file, an fs.view's view, an fs.watch's watcher
- *      channel) is forgotten, and it runs again (step 5);
+ *      channel, an fs.opendir's directory channel) is forgotten, and it
+ *      runs again (step 5);
  *   3. the keeper's handles taken back (keep_restore), each only if the
  *      state knows its slot;
  *   4. the orphans dropped but those the state holds open;
@@ -35,9 +36,10 @@
  *      unreported.
  *
  * A state that fails a check is given up on: the views are kept if their
- * table checks out, every open file and watcher channel is closed (its
- * client sees ERR_PEER_CLOSED; a watcher's bell is rung first, so a poll
- * wakes to see it), and the request in progress is answered ERR_IO. */
+ * table checks out, every open file, directory channel and watcher channel
+ * is closed (its client sees ERR_PEER_CLOSED; a watcher's bell is rung
+ * first, so a poll wakes to see it), and the request in progress is
+ * answered ERR_IO. */
 #include <keep.h>
 #include "extfs.h"
 
@@ -51,7 +53,7 @@ struct found {
     bool        fresh, keep_views, restored;
     const char *why;
     const char *request;
-    unsigned    files, views, watchers;
+    unsigned    files, views, dirs, watchers;
 };
 
 static bool crashed(void)
@@ -97,12 +99,14 @@ void recover_orphans(void)
 /* ---- the kept handles --------------------------------------------------------------- */
 
 struct taking {
-    bool files, views, watches, locks;
+    bool files, views, watches, locks, dirs;
 };
 
 static bool take(void *ctx, uint32_t slot, const handle_t *hs, unsigned n)
 {
     const struct taking *t = ctx;
+    if (slot >= XF_KEEP_DIR(0))
+        return t->dirs && dirs_take(slot - XF_KEEP_DIR(0), hs, n);
     if (slot >= XF_KEEP_LOCK(0))
         return t->locks && locks_take(slot - XF_KEEP_LOCK(0), hs, n);
     if (slot < XF_KEEP_VIEW(0))
@@ -144,6 +148,8 @@ static bool chan_of(unsigned slot, struct xf_chan *c)
         return c->ch != HANDLE_INVALID;
     }
     uint32_t kind = id >> 30, i = id & 0xff, gen = id >> 8 & 0xffff;
+    if (kind == 0 && (id & ~0xffffffu) == XF_CHAN_DIR_BIT)
+        return dirs_chan(i, gen, c);
     if (kind == 1)
         return files_chan(i, gen, c);
     if (kind == 2)
@@ -180,6 +186,7 @@ static const char *reply_again(const struct xf_chan *c, unsigned slot)
     status_t st = m->kind == XF_MADE_FILE    ? files_remake(m->index, &hs[0], &hs[1])
                   : m->kind == XF_MADE_VIEW  ? views_remake(m->index, &hs[0])
                   : m->kind == XF_MADE_WATCH ? watch_remake(m->index, &hs[0])
+                  : m->kind == XF_MADE_DIR   ? dirs_remake(m->index, &hs[0])
                                              : maps_remake(m->index, &hs[0]);
     if (st != OK) {
         answer_status(c, slot, st);
@@ -241,10 +248,11 @@ static void say(const struct found *f)
                f->keep_views ? ", views kept" : ", views closed", (unsigned)j->replayed, since);
         return;
     }
-    printf("extfs %s: restart (%s, adoption %lu): %u file(s), %u view(s), %u watcher(s); "
-           "request in progress: %s; journal: %u transaction(s) replayed%s\n", vol.name,
-           vol.ended ? vol.ended : "?", (unsigned long)state_slots()->h->adopted, f->files,
-           f->views, f->watchers, f->request, (unsigned)j->replayed, since);
+    printf("extfs %s: restart (%s, adoption %lu): %u file(s), %u view(s), %u directory "
+           "channel(s), %u watcher(s); request in progress: %s; journal: %u transaction(s) "
+           "replayed%s\n", vol.name, vol.ended ? vol.ended : "?",
+           (unsigned long)state_slots()->h->adopted, f->files, f->views, f->dirs, f->watchers,
+           f->request, (unsigned)j->replayed, since);
 }
 
 static status_t start_fresh(struct found *f)
@@ -263,6 +271,7 @@ static status_t start_fresh(struct found *f)
     }
     files_drop_unknown();
     views_drop_unknown();
+    dirs_drop_unknown();
     maps_drop_unknown();   /* their VMOs' pages: the requests of keys it doesn't know */
     recover_orphans();
     f->views = views_adopt();
@@ -287,6 +296,8 @@ static void unmake(unsigned slot)
         kept->maps[m->index].used = false;    /* to run: its VMO's GONE finds a key nobody knows */
     else if (m->kind == XF_MADE_WATCH && m->index < FSW_CHANNELS)
         watch_unmake(m->index);               /* the keeper's copy is refused, so dropped */
+    else if (m->kind == XF_MADE_DIR && m->index < XF_DIRS)
+        kept->dirs[m->index].used = false;    /* the keeper's copy is refused, so dropped */
 }
 
 status_t adopt(bool adopted, bool *no_volume)
@@ -312,14 +323,17 @@ status_t adopt(bool adopted, bool *no_volume)
     f.keep_views = !f.why;
     if (!f.why && (!kept->mounted || memcmp(kept->uuid, vol.fs.sb.uuid, sizeof(kept->uuid))))
         f.why = "a state of another volume";
-    if (!f.why && (kept->made.kind > XF_MADE_WATCH ||
+    if (!f.why && (kept->made.kind > XF_MADE_DIR ||
                    kept->made.index >= (kept->made.kind == XF_MADE_FILE    ? XF_MAX_FILES
                                         : kept->made.kind == XF_MADE_VIEW  ? XF_VIEWS
                                         : kept->made.kind == XF_MADE_WATCH ? FSW_CHANNELS
+                                        : kept->made.kind == XF_MADE_DIR   ? XF_DIRS
                                                                            : XF_MAX_MAPS)))
         f.why = "the request's slot out of range";
     if (!f.why)
         f.why = files_check();
+    if (!f.why)
+        f.why = dirs_check();
     if (!f.why)
         f.why = maps_check();
     if (!f.why)
@@ -333,7 +347,7 @@ status_t adopt(bool adopted, bool *no_volume)
             unmake(f.slot);
     }
     if (!restore(&f, (struct taking){ .files = true, .views = true, .watches = true,
-                                       .locks = true })) {
+                                       .locks = true, .dirs = true })) {
         f.why = "the keeper's restore failed";
         return start_fresh(&f);
     }
@@ -347,6 +361,7 @@ status_t adopt(bool adopted, bool *no_volume)
     f.files = files_adopt();
     (void)locks_adopt();   /* after files_adopt, whose closes let go of POSIX locks */
     f.views = views_adopt();
+    f.dirs = dirs_adopt();
     f.watchers = watch_adopt();
     maps_adopt();   /* after files_adopt, whose closes let go of shared VMOs */
     say(&f);
