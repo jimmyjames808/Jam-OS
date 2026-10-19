@@ -212,6 +212,11 @@ def main(argv):
     if term is None:
         report(False, "no run/fonts.log")
         term = ""
+    # What the shell printed, the log lines taken out: a kernel's or a
+    # service's line may come anywhere in a line the shell echoes, and is
+    # whole (tools/bigprog-test.sh's rule), so the echoed commands below are
+    # found again once their pieces join.
+    term = re.sub(r"\[ *\d+\.\d{6}\] [^\n]*\n", "", term)
     for n in range(1, 5):
         m = re.search(r"^rc%d-(\d+)" % n, term, re.M)
         report(m and m.group(1) == "0", "run %d exit status %s" % (n, m.group(1) if m else "missing"))
