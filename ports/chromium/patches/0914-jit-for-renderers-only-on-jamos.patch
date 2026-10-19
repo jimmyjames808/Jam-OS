@@ -72,7 +72,7 @@ Forwarded: not-needed (Jam OS's: its JIT power)
 +  // IsJitDisabled, or the owner's): it makes no code, so it holds no power
 +  // to make any. V8 reads its flags in order, the last one deciding.
 +  const std::string js_flags =
-+      command_line.GetSwitchValueASCII(switches::kJavaScriptFlags);
++      command_line.GetSwitchValueASCII("js-flags");  // blink's kJavaScriptFlags
 +  bool jitless = false;
 +  for (std::string_view flag :
 +       base::SplitStringPiece(js_flags, " ", base::TRIM_WHITESPACE,
