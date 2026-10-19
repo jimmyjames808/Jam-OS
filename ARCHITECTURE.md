@@ -22,20 +22,21 @@ built yet, it says so.
 | Boot | Limine, behind `struct boot_info`; an own UEFI loader later |
 | Kernel | Mechanisms and enforcement only; drivers and services are processes |
 | SMP | From day one |
-| Native API | Capability handles; a POSIX layer on musl (M13, under way: [docs/M13-PLAN.md](docs/M13-PLAN.md)) |
-| Process creation | No `fork` in the kernel, ever; the POSIX layer gets `posix_spawn` (M13.5 emulates `fork` in libc on copy-on-write child VMOs) |
+| Native API | Capability handles; a POSIX layer on musl 1.2.6 over them ([The POSIX layer](#the-posix-layer)) |
+| Process creation | No `fork` in the kernel, ever. The kernel has two mechanisms, a copy-on-write copy of an address space into a new process (`vmar_clone`) and a process taking a new image in place (`process_replace`); libc's `fork`, `vfork`, `execve` and `posix_spawn` are built on them ([fork, vfork and exec](#fork-vfork-and-exec)) |
 | Syscall ABI | Unstable until M14; numbers, wrappers and the kernel dispatch table are generated from one table (`abi/syscalls.def`); a call may clobber the vector registers, as a C call does ([The system call ABI](#the-system-call-abi)) |
 | IPC | Async channels + synchronous `channel_call`; ports for multi-wait |
 | Bulk data | Through shared VMOs (rings + offsets), not 64 KiB channel messages |
 | Memory API | VMOs + VMAR handles |
 | Scheduler | Per-CPU run queues, 32 priorities, work stealing |
-| Filesystem | FAT32 only, on USB mass storage and (read-only so far) on NVMe partitions; the boot partition (ESP) is read-only to every program; only init writes it, for `update` |
-| Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers), lwIP (netstack's IPv4, ARP, ICMP and UDP); uACPI when power management lands |
-| Executables | Static ELF64 |
+| Filesystems | `/data` is ext4 (a subset, own code, the `extfs` service) by default, on the boot stick and on an internal NVMe drive Jam OS owns (`/jam`); FAT32 (the `fat` service, on FatFs) for the boot partition (ESP) and for other people's FAT sticks. The ESP is read-only to every program; only init writes it, for `update` and the installer. A Jam OS NVMe drive's two partitions are writable and every other NVMe drive is read-only ([Storage](#storage)) |
+| Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), musl (libc), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers), lwIP (netstack's IPv4, ARP, ICMP, UDP and TCP), Monocypher (signatures), tinyssh (the SSH server), sbase, Lua and libc-test (boot-image POSIX programs); further ports are signed packages built from recipes ([Packages](#packages-and-the-ports-system)), Chromium and what it stands on among them; uACPI when power management lands |
+| Executables | Static ELF64: the boot image's at 0x400000, a port's wherever its recipe links it (Chromium's above 4 GiB) |
 | Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows (on a plain boot only while the shell runs that program in the foreground: [Debugging](#debugging)) |
 | IOMMU | Intel VT-d, DMA and interrupt remapping ([The IOMMU](#the-iommu)): each `dma_cap` has a domain holding only what it pinned, and a device raises only its own interrupts. Built (M11) and on by default since the PC signed it off (2026-10-07); with the boot word `iommu=off` a driver's device can reach all of RAM |
 | Users | Single user, no accounts. Handles are the only authority; a future "user" would be a namespace root plus a job quota (FAT32 can't store owners anyway) |
 | Networking | The board's own NIC, driven natively; every frame in the configured mode only: tagged with one VLAN (the owner's builds: VLAN 21), or untagged and never tagged (a public build's default) ([Networking](#networking)) |
+| Browser (the main goal) | Chromium's own Linux code, built against the musl sysroot with a patch set (`ports/chromium`), runs multi-process on the POSIX layer and Jam OS's compositor, rendering in software; only renderers may JIT ([Chromium](#chromium)) |
 
 ## What Jam OS defends against
 
@@ -44,10 +45,16 @@ What the design defends against today:
 - **Programs.** A program can do only what its handles allow: the
   services under `/svc` and the mounts its list asks for (read-only, or
   writable with `etc` guarded), approved by the owner with `allow` for a
-  program on `/data`. A server decides by the channel a request came on,
-  never by who sent it (there is no sender identity in the IPC). A way for
-  a program to get something it wasn't granted is a bug
-  ([SECURITY.md](SECURITY.md)).
+  program on `/data`, or by the owner's one answer to `pkg` for a package's
+  programs; the kernel checks every page of such a program against its
+  approval as the page arrives ([Executables](#userland)). Memory that is
+  writable and executable at once exists only for a program whose list says
+  `right jit` and is approved, and only as JIT memory ([Memory](#memory)). A
+  server decides by the channel a request came on, never by who sent it:
+  the kernel stamps each message with its writer's pid, which the services
+  use to name a lock's owner and a starter to tell its child's notices from
+  anyone's, never to grant anything. A way for a program to get something
+  it wasn't granted is a bug ([SECURITY.md](SECURITY.md)).
 - **Crashing services and drivers.** Each is a process: a crash ends that
   process, devmgr, volumes or init starts it again, and the kernel goes on. fat
   and the mixer outlive their process: a successor carries on from the
@@ -88,11 +95,22 @@ Not yet:
   `play`, `jamcover`) hold no `dma_cap`, and neither do the processes
   that parse what the network sends (netstack, dhcp, dns, netlog,
   `bin/update`): the NIC's driver reads only a frame's length and tag.
+- **Chromium's processes from each other.** Chromium runs without its own
+  sandbox (`--no-sandbox`), and the processes its launcher forks (renderers,
+  the GPU process, the network and audio services) all have the browser's
+  namespace: the network, `/svc/audio`, `/data` or `/jam` as the browser
+  was given them. Each is in a job of its own inside the browser's
+  (killing the browser kills them), but nothing narrows what it can reach.
+  Jam OS's own sandbox for it, a job and a narrowed namespace per renderer,
+  is the next layer (CR-f in
+  [CR-PLAN.md](docs/CR-PLAN.md)); until it lands the browser is for
+  ordinary sites.
 - **Anyone holding the stick.** The ESP, `/data/etc/allow` and the logs
-  can be changed on another computer: FAT32 keeps no owners and nothing
-  on it is checked at boot (only `update`'s builds are signed, and the
-  key that checks them is in the build on the stick), and authority never
-  came from the filesystem.
+  can be changed on another computer: FAT32 and ext keep no owners that
+  mean anything here, and nothing on them is checked at boot (only
+  `update`'s builds and a package's manifest are signed, and the keys that
+  check them are in the build on the stick), and authority never came from
+  the filesystem.
 - **Spectre-class attacks**: no mitigations.
 
 ## The migration rule
@@ -132,21 +150,23 @@ Every driver and service is a userspace process from the start.
 ## Layers
 
 ```
- Userland: init · shell · apps · POSIX programs                ring 3
+ Userland: init · shell · apps · POSIX programs (Chromium)    ring 3
  libos runtime (syscalls, malloc, channels, IDL stubs, ELF loader,
-   the file namespace); POSIX layer = musl + libjam (M13, under way)
+   the file namespace); POSIX layer = musl + libjam (the Linux call layer)
  ─────────────────────────────────────────────────────────────
- Services (processes): devmgr · volumes · console · serialin · bootfs ·
-   fat (one per volume) · logd · mixer · music
-   netstack (lwIP) · dhcp · dns · netlog
+ Services (processes): devmgr · volumes · console · compositor ·
+   serialin · bootfs · fat, extfs (one per volume, and pagers) ·
+   logd · mixer · music · netstack (lwIP) · dhcp · dns · netlog ·
+   sntp · unix (named sockets)
    later: power
  Drivers (processes): usb-bus (xHCI + hubs) → hid, usb-storage
-   nvme (read-only so far) · hda (HD Audio)
+   nvme (writes only a Jam OS drive's) · hda (HD Audio)
    rtl8125, e1000e (network cards)
  ───────────── <jam/driver.h> boundary (handles only) ────────
  Kernel core: objects & handles · channels · ports             ring 0
    scheduler · VMOs & address spaces (pager VMOs: the fault path waits
-   for a user-space pager, M12.5) · PCI core · IRQ routing
+   for a user-space pager, which also takes a mapped file's dirty pages
+   back) · PCI core · IRQ routing
    IOMMU (VT-d: DMA and interrupt remapping)
    PMM · VMM · per-CPU · LAPIC/IOAPIC · timers · panic/klog
    later: uACPI
@@ -304,13 +324,20 @@ Every driver and service is a userspace process from the start.
     order just drops counts. Creation costs a reference per shared page
     and one shootdown of the parent's writable entries (made read-only);
     the child is charged then for every page it may come to own, so no
-    later write fails for its job. A kept VMO's pages are copied, never
+    later write fails for its job. A parent is frozen while its children
+    are made: the freeze waits for the `vmo_write` copies under way, so
+    a child's bytes never change after its copy returned, and a wait for
+    someone else's freeze ends at a kill, so a kill or an exec in place is
+    never held up by another process's clone. A kept VMO's pages are copied, never
     shared (a write would swap a page under its kept readers); a pin or a
     kernel mapping separates its shared pages first, and no child shares
     a pinned range. A child of a pager VMO copies the pager's pages as it
     first touches them (MAP_PRIVATE), its whole range charged up front;
     it is never executable. The design and its reasons: the M13 plan's
     "F1a design".
+  - *pager* (`pager_create_vmo`, on a pager object that a filesystem
+    service holds): the pages of a mapped file, every one absent at first.
+    See [Pagers](#pagers-and-mapped-files) below.
 - **VMAR**: one flat address space per process, no nested VMARs. Maps
   VMOs with R/W/X; W^X always, and an executable mapping needs `RIGHT_EXEC`
   on the VMO handle. The one exception is a **JIT VMO** (`vmo_make_jit`,
@@ -318,7 +345,16 @@ Every driver and service is a userspace process from the start.
   approved): made from a fresh VMO's only handle, never sealed and never
   given a child, it may be mapped writable and executable at once through
   a handle with both rights; a duplicate without write maps execute-only
-  (the argument is at the top of `kernel/mm/aspace.c`). An address space's mappings are a balanced tree by
+  (the argument is at the top of `kernel/mm/aspace.c`). A JIT VMO is
+  never a pager VMO, never sealed or verified and never pinned for a
+  device, so JIT memory never counts as approved code. The power reaches a
+  program as a startup role of its own, `SR_JIT` (a duplicate of the
+  starter's root narrowed to `RIGHT_ROOT_JIT`, `RIGHT_DUPLICATE` and
+  `RIGHT_TRANSFER`; every starter gives it from the list alone and it is
+  never on the program's root), and `ps` marks a process `[jit]` once its
+  address space has mapped a JIT VMO executable. libc's `mmap` with
+  `MAP_JIT` and `prctl(PR_SET_MDWE)` are the user side
+  ([Memory and JIT](#memory-and-jit)). An address space's mappings are a balanced tree by
   address that also keeps the largest free gap of each subtree, so a
   fault's lookup and a placement are O(log n), up to
   `VMAR_MAX_MAPPINGS` (65,536). A mapping without `VMAR_FIXED` goes top
@@ -349,6 +385,24 @@ Every driver and service is a userspace process from the start.
   (a mapping of an ordinary VMO dies on a read past a shrunk end, or on a
   decommitted page whose new commit the client's job refuses). Its length
   is what was mapped; a pool that grew is mapped again.
+- **Fork and exec, the kernel's halves.** `vmar_clone` copies the caller's
+  address space into a process that was made and not started, at one
+  instant (the caller's other threads wait while it runs). Each mapping
+  has a clone mode, set at `vmar_map`: by default a *copy* (one
+  copy-on-write child of its VMO, never executable; every copied mapping
+  of one VMO maps the same child), or *share* (the same VMO), or *none*
+  (the range stays empty); a writable mapping of a writable pager VMO is
+  always shared. The children and every page they share are charged to
+  the job at the call (the caller's, for a fork), so a fork that
+  succeeds cannot fail later for want of memory; a pin or a kernel
+  mapping over a page to copy fails the call. The copy's handle table
+  starts at random generations, so a stale value of the parent's is
+  almost never valid there. `process_replace` is exec in place: the
+  calling process takes a prepared process's address space, ends its
+  other threads, closes every handle but the one it is told to keep and
+  goes on at the new entry, with its pid, its object (every handle others
+  hold of it), its job and its CPU time unchanged. `vmar_resident` says
+  which pages of a range are present (libc's `mincore`).
 - **DMA**: `vmo_pin` needs a `dma_cap`. With the IOMMU on (`iommu=on`) a
   pin also maps its pages in the cap's IOMMU domain, and an unpin waits
   for the unit's invalidation before the pages may go; the addresses a
@@ -381,6 +435,83 @@ Every driver and service is a userspace process from the start.
   while PCIDs are on (errata ADL063, RPL042), which would break the
   kernel's own shootdowns: there PCIDs stay off (`pcid_decide`; the boot
   log's `pcid:` line says which and why; boot `forcepcid` overrides).
+
+### Pagers and mapped files
+
+A **pager** (`pager_create`, calls 160 to 166; `RIGHT_ROOT_PAGER`, which
+volumes and the tests hold) is a kernel object that a user-space service
+holds to supply the pages of the VMOs made from it, each under a key the
+service chooses (an open file's). volumes makes one for every filesystem
+service it starts and hands it to each instance of it (fat's and
+extfs's `*_SR_PAGER`, `READ WRITE WAIT` only), with a budget in pages
+and an answer time; init makes one for the memory `/tmp`. The pager and its
+pages are charged to its maker's job. Closing its last handle detaches
+every VMO it made.
+
+- **Reads.** A page that is absent when it is touched (a fault, a
+  `vmo_read`) queues a request in the pager, or joins one that covers it;
+  the service reads requests with `pager_next` and answers with
+  `pager_supply` (the pages) or a failure (`pager_op`). A request stays
+  in the pager until it is answered, so a successor of a dead service
+  takes the old ones again (`PAGER_NEXT_AGAIN`), and one not answered
+  within the pager's answer time fails `ERR_TIMED_OUT`. Past the pager's
+  budget, and when the job or the memory runs short, the oldest supplied
+  pages are dropped and asked for again at their next touch. When a VMO
+  has no handle, no mapping and no dirty page left, the service gets a
+  `PAGER_REQ_GONE` and answers with a detach, which frees the key.
+- **Programs from a disk.** `vmo_make_exec_verified` seals a pager VMO
+  against a table of the SHA-256 of each of its pages (the approval's page
+  table, [Userland](#userland)): a page is published only if it matches,
+  a fault on one that doesn't kills the thread ("a page doesn't match the
+  approved program"), and the VMO is never writable and never shared (the
+  service makes one of the caller's own for each run, `FILE_MAP_EXEC`). It
+  needs `RIGHT_ROOT_VMEX`, which only
+  init and the shell hold, and a file up to 1 GiB (`VMO_VERIFIED_MAX`).
+  While a file is mapped to run, it can't be opened for writing, mapped
+  to write or removed (`ERR_BUSY`). A program on `/data` or in a package
+  therefore starts at once, its pages fetched as it runs and shared by
+  every process that runs it (Chromium's 340 MB `headless_shell` is run
+  this way).
+- **Writable mappings (ext only).** `file.map` with `FILE_MAP_WRITE` gives
+  the file's one *writable* pager VMO, shared by every mapper of the file
+  (key = inode number and generation; found again with `PAGER_VMO_FIND`),
+  so a store through any mapping is every other mapper's and `read`'s at
+  once. Its pages are clean (the disk's bytes), dirty (stored to since
+  their last write-back began) or writing (that write-back has not ended).
+  A clean or writing page is mapped read-only in every mapping, so a store
+  faults and makes it dirty; dirty and writing pages are never evicted and
+  hold their VMO alive after its last handle and mapping go (the hold: a
+  store outlives `munmap`, the program and a restart of the service). A
+  pager may have a quarter of its budget dirty; a store that meets the
+  limit waits for write-back with a deadline (the pager's answer time),
+  never for ever, and a kernel copy that cannot wait gets `ERR_IO`. The service
+  takes the dirty runs out with `pager_dirty` (`PAGER_DIRTY_BEGIN` makes
+  them writing and write-protects them before they are copied, so a store
+  after the copy dirties the page again), writes them to the file in one
+  journal transaction and says so (`pager_op` `PAGER_OP_WRITTEN`, OK or
+  an error). It is asked for that by `vmo_sync` (libc's `msync`),
+  `file.sync` and `fs.sync`, when the dirty pages pass a quarter of the
+  pager's budget, and by age (`files.writeback`, 10 s by default); the
+  service writes a mapped file with `pager_write` (into the pages that
+  are present, whatever their state), so its own `write` and a truncate's
+  zeroed tail meet the mappers' bytes. Only ext does this; fat's mappings
+  are read-only (`FILE_MAP_WRITE` is `ERR_NOT_SUPPORTED` there). A
+  `MAP_PRIVATE` writable mapping is a copy-on-write child of the file's
+  VMO, which a store never reaches. A file with a writable mapping cannot
+  be run, and a file being run cannot be mapped writable (`ERR_BUSY`, `ETXTBSY`).
+- **Write-back errors are heard once** (WR2), as Linux's errseq: a run
+  that cannot be written (`ERR_IO`, or `ERR_NO_SPACE` for a full volume)
+  becomes clean all the same, and the VMO keeps the error and a count that
+  moves with each error after one was reported. `vmo_sync` takes the
+  caller's sample of that count (libc keeps one per mapping, a forked
+  child's copy too), and with `VMO_SYNC_WAIT` returns the kept error if the
+  count moved past it, then sets the sample: every mapper hears of an error
+  once. A mapping made after an error nobody heard of still gets it. The
+  file service keeps the same mark for each open's `file.sync`, so a
+  `fsync` after a failed write-back reports it once per open, and a
+  `file.sync` replayed after the service's death reports the error its
+  first run did (`struct xf_heard`, written before the mark); `fs.sync`
+  (`syncfs`) has none.
 
 ## SMP
 
@@ -589,7 +720,8 @@ Every driver and service is a userspace process from the start.
   `ERR_*`, or a value). The wrappers `jam_<name>` (`user/lib/syscalls.S`,
   declared in `user/include/jam_syscalls.h`) are generated, out-of-line C
   functions. A call that goes away leaves its number unused for good (17,
-  50, 74, 96, 100 and 101 so far), so a program built before gets
+  74, 96, 100 and 101 so far; 50 was reused for `vmo_sync` in M12, while
+  the ABI was still open), so a program built before gets
   `ERR_NOT_SUPPORTED`, never another call.
 - **What every call follows** (the comments in `abi/syscalls.def` say what
   each does and which errors it gives):
@@ -619,17 +751,23 @@ Every driver and service is a userspace process from the start.
     `sysconf`, `/proc/meminfo`) with no handle or right.
     `process_get_maps` lists a process's mappings, each with its VMO and
     the pages present (`RIGHT_INSPECT`; libc's `/proc/<pid>/maps`, stat and
-    status are made from it).
+    status are made from it). `exception_entry_set`, `exception_done`,
+    `thread_exception_stack` and `thread_raise` (170 to 173) are the fault
+    upcalls ([Scheduler](#scheduler)): libc's signal handlers for a thread
+    busy in its own code, `sigaltstack` and a stack overflow.
+  - *Fork and exec* (65, 139): `vmar_clone` and `process_replace`
+    ([Memory](#memory)); `vmar_resident` (66) is `mincore`'s kernel half.
   - *Drivers*: `dma_cap_create` takes the job that pays for the cap, its
     pins and its IOMMU tables; `dma_vmo_create` makes the contiguous and
     DMA32 VMOs; `vmo_pin` takes its arguments in a struct, with
     `VMO_PIN_READ_ONLY`; `pci_bus_master_off` (devmgr's) turns bus mastering
     off and only a function's current `dma_cap` turns it on
     ([Drivers and services](#drivers-and-services)).
-  - *Pagers* (160 to 164): a process that supplies the pages of VMOs made
-    from its pager object (M12.5: the object, its VMOs and the fault path
-    are built and tested; no service is a pager yet,
-    [docs/M12.5-PLAN.md](docs/M12.5-PLAN.md)).
+  - *Pagers* (160 to 166) and `vmo_sync`, `vmo_make_exec_verified`,
+    `vmo_make_jit`, `vmo_create_child`: a process that supplies the pages
+    of VMOs made from its pager object, and the VMOs a program's code and
+    a mapped file's stores need ([Pagers and mapped
+    files](#pagers-and-mapped-files)). fat and extfs are the pagers.
 - **The register rule: a system call is a C function call.** The kernel
   keeps every general register but rax, rcx and r11 (the instruction
   itself overwrites rcx and r11), and keeps MXCSR and the x87 control
@@ -639,7 +777,7 @@ Every driver and service is a userspace process from the start.
   while the kernel ran it) comes back with them zeroed, never with
   another thread's values. A switch inside a call therefore saves two
   words, not the XSAVE state (`kernel/arch/x86_64/fpu.c`). Programs that
-  call through C functions (libos, and a POSIX layer later) need nothing;
+  call through C functions (libos, and libc's call layer) need nothing;
   code that issues `syscall` itself lists xmm0-15 as clobbered and keeps
   nothing on the x87 stack. Linux keeps every register across a system
   call; Jam OS does not.
@@ -705,6 +843,13 @@ Every driver and service is a userspace process from the start.
   meanwhile is copied into an ordinary, charged message first). Every
   other message is allocated and charged as described above. Switch
   `channel_slots` (the benchmark's `slots`; no boot word).
+- **The writer's pid.** The kernel stamps every message, as it is written,
+  with the pid of the process that wrote it (0: a kernel thread), and
+  `channel_read` with `CHANNEL_READ_PID` gives it after the handles' count.
+  It is a name, not authority: a file service names the owner of a POSIX
+  record lock by it (so no process can speak for another), and a POSIX
+  starter drops a notice on its child's signal channel that did not come
+  from the child.
 - **`channel_reply_wait`**: a server's reply and its wait for the next
   request in one call: a write on one end (none on a first call), then
   the next message read from a channel end straight into the server's
@@ -755,9 +900,11 @@ Every driver and service is a userspace process from the start.
     `voldisks` (the disk list, a drive's digest and health: the shell's,
     through init), `volinstall` (an NVMe drive made a Jam OS disk, erased
     first if it isn't empty and the owner confirms, init's alone), `disks` (devmgr's disks, told to volumes) and `mounts` (what volumes
-    tells its watchers), `fs` and `file` (a filesystem to programs),
-    `fsctl` (volumes stopping a filesystem service; its counters, for
-    tests).
+    tells its watchers), `fs` and `file` (a filesystem to programs: paths,
+    links and modes, views and subviews, directory channels, `file.map`,
+    record locks), `fswatch` and `fswatch_bell` (file watching: a
+    watcher channel and its bell, [Storage](#storage)), `fsctl` (volumes
+    stopping a filesystem service; its counters, for tests).
   - **Sound**: `audio` and `audio_stream`, `audioctl` (the mixer),
     `music`.
   - **Network**: `netctl` (netstack's control channel), `net` and its
@@ -774,19 +921,29 @@ Every driver and service is a userspace process from the start.
     service that hands them out), `keepch` (the keep channel of a service
     that outlives its process), `nschan` (a program's namespace),
     `update` (one offer of a fetched build), `splashch` (the boot splash
-    and init).
+    and init), `pkgctl` (init's approval of a package's programs, for
+    `bin/pkg`: [Packages](#packages-and-the-ports-system)).
+  - **POSIX**: `signal` (a POSIX program's signal channel, from its
+    starter), `exec` and `exec_prog` (init's sealer, `/svc/exec`: a
+    program on a disk started for another program), `session` and
+    `session_ctl` (init's sessions, `/svc/session`: a shell on a
+    connection console, for the SSH server), `tty` (a terminal as a
+    POSIX program sees it, from the console), `unix` (the named
+    `AF_UNIX` broker, `/svc/unix`).
   - Tests: `null`, `edu` and `idltest`.
 
   Still written by hand, each named in `ids.txt`: the startup message
-  (`startup`), a warm spare's promotion message (`standby`) and the POSIX
-  hand-over (`posixfds`), all read before `main` or by libos itself; and
+  (`startup`), a warm spare's promotion message (`standby`), the POSIX
+  hand-over (`posixfds`) and the two a forked child reads first (`fork`:
+  libjam's, its startup roles; `posixfork`: the POSIX layer's, its
+  descriptors and mappings), all read before `main` or by libos itself; and
   the plain byte channels and shared-memory layouts (the mixer's, the
   sockets' and netdev's rings, a state VMO). Planned: `power`. Bulk data
   (disk blocks, packets, file contents) moves through a shared VMO ring;
   messages carry offsets. Every protocol's file states its restart rule
   (a paragraph beginning `Restart:` or `Reconnect:`, which `genidl`
   checks): either a restart is not seen (the `kept` protocols: `fs`,
-  `file`, `audio`, `audio_stream`, `audioctl`: [Services that outlive their
+  `file`, `fswatch`, `audio`, `audio_stream`, `audioctl`: [Services that outlive their
   process](#services-that-outlive-their-process)), or what a client does
   after `PEER_CLOSED` and what it loses.
 - **What a message can hold** (`tools/genidl.py` has the whole language):
@@ -800,8 +957,13 @@ Every driver and service is a userspace process from the start.
   **events** (`event`), one-way messages in either direction that nothing
   answers, with txid 0, so a protocol can send a stream of notifications
   (`usbbus_events`, `mounts`, the keep channel) without a call each, the
-  queue's limit being the flow control. A request or reply is at most
-  16 KiB (`MSG_MAX`). A `const` line gives a protocol its flags and
+  queue's limit being the flow control. A generated server never serves a
+  call whose txid is 0: a txid-0 message is an event, and one that is not
+  a valid event of that protocol (a call sent with txid 0 among them) is
+  dropped with its handles closed and never answered; a protocol without
+  events drops every txid-0 message the same way. (A reply with txid 0
+  would be taken for an event, and no caller waits for one.) A request or
+  reply is at most 16 KiB (`MSG_MAX`). A `const` line gives a protocol its flags and
   states. A method is `later` (answered after its handler returned:
   `initctl.kill`, `volumes.remount`) or `idempotent` (safe to run again).
 - **Generated calls in three shapes** (`tools/genidl.py` has the
@@ -1007,14 +1169,16 @@ port, so while it handles one request every other client waits behind it.
 | Component | Uses | Provides | Built |
 |---|---|---|---|
 | devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision; `devmgr` and `devmgrctl` (devices named by an address `(kind, a, b, n)`); the `usbbus` service to trusted clients; each disk's `storage` channel, told to volumes (it holds no filesystem and no mount) | yes |
-| volumes | the `storage` channels devmgr tells it of, init's control and ESP channels | every disk's partitions' filesystem services (fat) and their supervision with a warm spare, the mounts (`/data`, `/esp`, `/usbN`) told to init and every other watcher, the ESP made writable for init's `update` write alone ([Storage](#storage)) | yes |
+| volumes | the `storage` channels devmgr tells it of, init's control and ESP channels | every disk's partitions' filesystem services (fat or extfs, by what the partition holds) and their supervision (a warm spare for fat), each service's pager, the mounts (`/data`, `/jam`, `/esp`, `/usbN`, `/nvmeN`) told to init and every other watcher, the ESP made writable for init's `update` write alone, a blank NVMe drive made a Jam OS disk and a Jam OS disk's partitions opened for the installer ([Storage](#storage)) | yes |
 | usb-bus | its PCI device (xHCI) | one `usb` channel per interface, sent to devmgr as an event on a channel of its own as the interface appears (`usbbus_events`, `DR_EVENTS`); hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (libos's cooperative tasks, `<jam/task.h>`: [How a service waits](#how-a-service-waits)) | yes |
 | hid | a `usb` interface | `input` events (a boot keyboard's usages and modifiers, no layout; mouse in boot or report protocol) to the compositor, which lights its LEDs | yes |
 | console | a window on `/svc/wayland` and COM1's output (the root's `RIGHT_ROOT_SERIAL_OUT`), the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log ([Debugging](#debugging)), and its keys to the focused client (`keys`) | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
 | usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` (devmgr asks it for a channel of volumes' own), a `block` channel per partition | yes |
-| nvme | its PCI function (an NVMe controller: MSI-X, DMA queues) | `storage` and `block` for an internal drive, up to 32 requests in flight; writes only a Jam OS drive's two partitions, and a blank drive's table on `create_table` (or, with the owner's confirmation checked in the driver, an erased one's), decided from the table it reads itself ([M12.7-PLAN](docs/M12.7-PLAN.md)) | every boot (every other drive read-only: `tools/checknvme.py`; `ro`, from `diskro`, makes every drive read-only; volumes mounts its FAT partitions read-only as `/nvmeN`); the word `nvmetest=` only adds the driver's test reads |
-| fat | one partition's `block` channel, a state VMO and a keep channel from volumes | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to volumes; outlives its process ([below](#services-that-outlive-their-process)) | yes |
+| nvme | its PCI function (an NVMe controller: MSI-X, DMA queues) | `storage` and `block` for an internal drive, up to 32 requests in flight; writes only a Jam OS drive's two partitions, and a blank drive's table on `create_table` (or, with the owner's confirmation checked in the driver, an erased one's), decided from the table it reads itself ([HISTORY](docs/HISTORY.md#m127-nvme-and-the-installer)) | every boot (every other drive read-only: `tools/checknvme.py`; `ro`, from `diskro`, makes every drive read-only; volumes mounts a drive's partitions read-only as `/nvmeN`, but for the Jam OS drive's data partition, `/jam`, which is read-write); the word `nvmetest=` only adds the driver's test reads |
+| fat | one partition's `block` channel, a state VMO and a keep channel from volumes | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs), and its mapped files' pages as a pager (read-only mappings); `fsctl` to volumes; outlives its process ([below](#services-that-outlive-their-process)) | yes |
+| extfs | one partition's `block` channel (or, for the memory `/tmp`, a VMO), a state VMO, a keep channel and a pager from volumes (init for the memory `/tmp`) | `fs` and `file` for one ext volume (symbolic and hard links, modes, 16 TiB files, record locks, directory channels, file watching, writable mapped files), and its pager; `fsctl` to volumes; outlives its process ([Storage](#extfs-the-ext4-service)) | yes (`/data` by default; `/jam`; init's `/tmp` in memory) |
+| unix | the server end of `/svc/unix`'s shared channel from init | `unix`: named `AF_UNIX` sockets for POSIX programs, a listener a channel of its own ([The POSIX layer](#the-posix-layer)) | yes (init starts it in shell mode and supervises it) |
 | bootfs | the bootfs image VMO | `fs` and `file` for `/boot`, read-only | yes |
 | logd | the kernel log, `/data` | each boot's log as a file on the stick | yes |
 | hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | yes |
@@ -1084,9 +1248,9 @@ Rules for userspace drivers:
   again (`input` and `console` define theirs).
 - **Kill**: the shell's `kill <name>` asks init (`initctl.kill`, a
   string), which kills its own services itself, asks volumes
-  (`volumes.kill`) to kill a filesystem service (`fat-<mount>`:
-  `fat-data`, `fat-usb0`, found by its mount, since a promoted spare's
-  process is called `fat-spare`) and asks devmgr (`devmgrctl.kill_process`,
+  (`volumes.kill`) to kill a filesystem service (`fat-<mount>` or
+  `extfs-<mount>`: `fat-usb0`, `extfs-data`, found by its mount, since a
+  promoted spare's process is called `fat-spare`) and asks devmgr (`devmgrctl.kill_process`,
   by the koid of the process the name has in the kernel's list) to kill a
   driver: a PCI driver (usb-bus, hda) or a USB class driver, one per
   interface. Whoever supervises it starts it again. The shell refuses to
@@ -1112,7 +1276,7 @@ Rules for userspace drivers:
 
 ## Services that outlive their process
 
-fat and the mixer keep their queues and their state outside their
+fat, extfs and the mixer keep their queues and their state outside their
 process, so a successor carries on where a dead instance stopped and
 their clients never see the death: no error, no lost write, no gap in
 the sound, only a slower answer ([HISTORY: M11.6](docs/HISTORY.md#m116-services-that-outlive-their-process)).
@@ -1122,8 +1286,8 @@ A service like that keeps three kinds of state apart:
    channel and views, an open file's channel and buffer VMO, a mixer
    stream's channel, ring and event, an opener's channel, the mixer's
    channels to the hda driver): kept alive by the supervisor (volumes for
-   fat, init for the mixer), which holds a duplicate of each. Clients'
-   handles never change.
+   fat and extfs, init for the mixer), which holds a duplicate of each.
+   Clients' handles never change.
 2. **What the service knows** (the volume, every open file, what it holds
    for the disk; every stream's numbers, the output's position, the
    limiter): in a **state VMO** the supervisor makes, keeps and hands to
@@ -1152,7 +1316,8 @@ stopped in order (a remount): then clients see `ERR_PEER_CLOSED`.
 
 **The state VMO** (`<svcstate.h>`, `user/lib/svcstate.c`): made by the
 supervisor (4 MiB reserved for fat, of which fat's layout uses 1224 KiB,
-mostly the write hold; 1 MiB for the mixer, which uses about 32 KiB),
+mostly the write hold; 1 MiB for extfs and for the mixer, which uses about
+32 KiB),
 charged to its job, never mapped by it, and handed to each instance with
 read, write and map only (no resize, transfer or duplicate, so the
 service can't pass it on). The service maps it at a fixed address
@@ -1189,9 +1354,27 @@ call is answered exactly once.
 
 **A bad request.** A request in progress when the service *crashes*
 twice (not a deliberate kill: the supervisor tells each instance how the
-last one ended, in its arguments) is answered `ERR_IO` (fat) or
+last one ended, in its arguments) is answered `ERR_IO` (fat and extfs) or
 `ERR_INTERNAL` (the mixer) and dropped, and the service carries on: one
 crafted request can't crash every successor in turn.
+
+**extfs keeps less, because the disk is its state.** fat keeps FatFs's
+memory and an undo copy of what each request changes, and holds the
+request's disk writes until it commits. extfs does it the other way
+round: every request that changes the volume is one journal transaction,
+committed on the disk before the answer, so the volume is always whole
+and a successor's start is the recovery a power cut needs (the journal's
+replay, then the orphan list). Its state VMO holds only the request slots
+(each with its transaction id), the open files, views, mapped files,
+directory channels, watches and record locks (inode numbers and
+generations, flags, ids), never the block cache, the directory index or
+a queued event. The request in progress is found by its transaction id:
+if the journal says it committed, its reply, already in the slot, is the
+answer; if not, nothing of it is on the disk but data written to blocks
+the committed bitmaps call free, and it runs again from its slot. There
+is no undo copy and no hold. A restart of an ext mount starts a process
+(the warm spare is a fat). What it does and does not carry over:
+[Storage](#extfs-the-ext4-service).
 
 ### Supervision and the warm spare
 
@@ -1203,9 +1386,10 @@ crafted request can't crash every successor in turn.
   by role (up to 64), its arguments and the time of the kill
   (`struct standby_msg`, `<jam/startup.h>`); from then on it starts as any
   program and its code doesn't know it was a spare. volumes keeps one
-  spare fat (`fat-spare`) for every mount, started 1 s after the first
-  filesystem service and again 50 ms after each promotion, with `/data`'s
-  `block` channel opened in advance; init keeps one spare mixer. Each
+  spare fat (`fat-spare`) for every FAT mount (an ext mount's restart
+  starts a process), started 1 s after the first filesystem service and
+  again 50 ms after each promotion, with `/data`'s `block` channel opened
+  in advance; init keeps one spare mixer. Each
   costs about 100 KiB of its job's memory (`ps`). Boot word `nospare`:
   restarts start a process instead (still handed the state and the keep
   channel), for comparing.
@@ -1225,7 +1409,7 @@ crafted request can't crash every successor in turn.
   `mixer: restart (killed, ...)`): what it found in progress, what became
   of it, and where the time went; the mixer adds the lead left.
 - A supervisor's own death still takes its services with it (volumes'
-  job holds every fat): surviving volumes or init is not built. init
+  job holds every fat and extfs): surviving volumes or init is not built. init
   starts a volumes that died again with fresh channels; every mount went
   with it and comes back once devmgr has told the new one of its disks.
 
@@ -1263,16 +1447,18 @@ forge the state it is handed back:
 `user/services/shell/cmd/storm.c`) copies a file while a thread of its
 own kills services through init's control channel at a fixed rate, by
 default the filesystem service of each side in turn (`fat-usb0`,
-`fat-data`); afterwards it reads both files back and prints the
+`extfs-data`); afterwards it reads both files back and prints the
 throughput, the kills, kill-to-first-answer (median, p99, worst: from
 the clock read before the kill to the answer of one `fs.statfs` on the
 killed mount) and whether the two SHA-256s MATCH. `storm mixer <kills/s>
 <seconds>` kills the mixer while whatever plays plays, then reads the
 mixer's restart lines back from the log: the restarts, the least lead
-left and any late period. `tools/fatcheck.py` checks a stick's FAT32 on
-the Mac afterwards (every chain, every size, lost clusters, the clean
-bit). Measured in QEMU (TESTING.md's `tools/fat-storm-test.sh`, a 32 MiB
-copy, 2 vCPUs on a busy Mac) and to be measured on the PC: [BENCH.md](docs/BENCH.md#m116-qemu-2026-10-05).
+left and any late period. `tools/fatcheck.py` checks a FAT32 stick
+afterwards (every chain, every size, lost clusters, the clean bit), and
+`tools/extcheck.c` and Linux's `e2fsck` an ext volume. Measured in QEMU
+(TESTING.md's `tools/fat-storm-test.sh`, a 32 MiB copy, 2 vCPUs on a busy
+Mac: [BENCH.md](docs/BENCH.md#m116-qemu-2026-10-05)) and on the PC at 10
+and 100 kills a second ([HISTORY: M11.6](docs/HISTORY.md#m116-services-that-outlive-their-process)).
 
 What M11.6 does not cover: the drivers. A driver's restart is still a
 bind from scratch on purpose (the safe rebind above) and its clients
@@ -1780,11 +1966,11 @@ restarts:
   bare name is no want); `tools/checkwants.py` allows that line only
   under `user/services/`, and `allow` refuses it for every program on
   `/data`, approval or not: a program there could pose as one of the
-  system's services on the network (a web or a time server, the ssh M13
-  brings) or take its port before the service starts, and nothing the
-  owner reads at the prompt would make that plain. bin/serve alone has
-  it, so `serve <file> 80` works; a program with `svc net listen` is
-  still refused port 80.
+  system's services on the network (a web or a time server, the ssh
+  server) or take its port before the service starts, and nothing the
+  owner reads at the prompt would make that plain. bin/serve and the SSH
+  server (bin/sshd, port 22) alone have it, so `serve <file> 80` works; a
+  program with `svc net listen` is still refused port 80.
 
 **The address.** `net.address = <address>/<prefix> [<gateway> [<dns>
 [<dns>]]]` in `/data/etc/settings` is a static address, given to netstack
@@ -1938,6 +2124,7 @@ a `make flash`.
 | sntp | `/svc/net-sys`, `/svc/dns-sys`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
 | bin/fetch | `/svc/net`, `/svc/dns`, the file (or pipe) its body goes to, the shell's stop channel | yes: HTTP answers (`<http.h>`) |
 | bin/serve | `/svc/net` and `/svc/net-low`; the files the shell hands it, read-only | yes: HTTP requests (`<http.h>`) |
+| bin/sshd | `/svc/net` and `/svc/net-low` (port 22), `/svc/session`; `/data` read-only through a view that shows `etc/ssh` and `etc/authorized_keys` and nothing else of `etc` | yes: tinyssh's key exchange and packets, in a process of its own for each connection |
 | bin/speed | `/svc/net` and `/svc/net-listen`, `/svc/dns`, the shell's stop channel | its own 16-byte hello and report |
 | init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's), volumes' ESP channel, `volesp` (`update`'s stick write) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
 
@@ -1969,8 +2156,8 @@ at. An entry that is not ready is armed (its event's bits cleared, the
 rings' `waits` flags raised, one more look) and leaves the list; a ready
 one stays on it, so a wait costs the entries that are ready or were
 signalled, not all of them. Hung up (netstack's end of the channel closed,
-a stream closed) and errors are always reported. This is what M13's
-`poll`, `select` and `epoll` will be built on.
+a stream closed) and errors are always reported. libc's `poll`, `select`
+and `epoll` are built on it ([The POSIX layer](#the-posix-layer)).
 
 **The programs on TCP** ([HISTORY: M9.5](docs/HISTORY.md#m95-network-streams);
 the commands are in [NETWORK.md](docs/NETWORK.md)). Each holds only
@@ -2011,8 +2198,8 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   (malloc, the string functions, printf, environ and the call of main),
   for POSIX programs on musl, and `<posixfds.h>` is the POSIX hand-over
   a starter writes after a POSIX program's startup message: its file
-  descriptors and what exec keeps ([M13-PLAN](docs/M13-PLAN.md), sections
-  2 and 5). **libfun** (`user/apps/fun/`): the
+  descriptors and what exec keeps ([The POSIX layer](#the-posix-layer)).
+  **libfun** (`user/apps/fun/`): the
   apps' screen, drawing (premultiplied alpha and anti-aliased shapes in
   `alpha.c`), text (UTF-8: the console font's ASCII and Latin-1 and
   Latin Extended-A glyphs, one box for any other character), smooth
@@ -2038,7 +2225,10 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   device channel: the mixer's sound cards), CONSOLE, NS (the namespace:
   mounts and services, below), AUDIO and AUDIO_CTL (the mixer's server
   ends), STATE, KEEP and STANDBY (a service that outlives its process,
-  below), SIGNALS (a POSIX program's), and the roles a program's starter
+  below), SIGNALS (a POSIX program's), SELF_IMAGE (the program's own
+  executable VMO, which libc's `/proc/self/exe` starts again), ARGS (argv
+  and the environment in a VMO, when the message can't hold them), JIT (the
+  JIT power alone) and the roles a program's starter
   gives it alone, `SR_USER + n`, which `<roles.h>` names for each program
   (`NETSTACK_SR_NET`, `COMP_SR_INITCTL`, `LOGD_SR_CTL`, ...) so that the
   starter and the program say the same name. A program reaches a service by its
@@ -2058,7 +2248,9 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   mixer, the music player, netstack, dhcp (without a static address), dns,
   logd (once `/data` is there), netlog (when `net.host` is set), sntp
   (once `/data` is there, unless `ntp = off`), the file server (`serve`,
-  after netstack) and the shell, restarting
+  after netstack), the named-socket broker (`unix`), the SSH server
+  (`sshd`, when `/data/etc/authorized_keys` holds a key and `ssh` isn't
+  `off`) and the shell, restarting
   any that die (killing devmgr takes its drivers with its job, volumes its
   filesystem services), backing
   off up to 5 s; one that dies more than 10 times in a minute is given up
@@ -2081,8 +2273,11 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   listen permission, `net-low`, the same on ports below 1024 too,
   `net-sys`, the same for the network's services
   ([Networking](#networking)), `dns`, the resolver, `dns-sys`, the same
-  for the network's services, `serve`, the file server, and `wayland`,
-  the compositor, each a channel per opener). The services it starts
+  for the network's services, `serve`, the file server, `wayland`,
+  the compositor, and `unix`, the named-socket broker, each a channel per
+  opener; and two that init serves itself on threads of its own, `exec`
+  (starting an approved program for another program: below) and
+  `session` (a shell on a connection console, for sshd)). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
   mixer, logd `/data` with its top-level `etc` guarded, the splash the
@@ -2119,7 +2314,7 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   replaces only what the starter gave; mounts the program made itself
   (`ns_mount`) stay unless the set has one of the same path
   (`abi/idl/nschan.idl` has the protocol, `user/lib/ns.c` the reader). A
-  namespace holds up to 8 mounts and 32 services, each name up to 31
+  namespace holds up to 16 mounts and 32 services, each name up to 31
   bytes. libos finds a path's mount and calls
   that mount's service (`abi/idl/fs.idl`, `abi/idl/file.idl`; file data
   through a shared buffer VMO); `..` never leaves a mount. `/boot` is the
@@ -2135,7 +2330,9 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   service hands out narrower channels onto the same volume (`fs.view`,
   `<fsview.h>`): read-only (every change refused, `statfs` says so), or
   with the volume's top-level `etc` guarded (no change at or under it,
-  however the name is spelled), and with parts of `etc` hidden (no
+  however the name is spelled), or its top-level `pkg` guarded (the
+  packages' prefix: only `bin/pkg`'s view may change it), and
+  with parts of `etc` hidden (no
   request there at all, reads included: `etc/ssh`, the SSH server's host
   key; `etc/authorized_keys`; the rest of it, the settings, the approvals
   and the history); with all three hidden `etc` doesn't exist (a stat of
@@ -2151,14 +2348,31 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   children and its key check), every
   other stick (`/usb*`), every mount as views (`*:r`, `*:w`), a service;
   the views are made before the child starts. A POSIX `open()` sits on
-  top of the namespace in the POSIX layer's file calls (`user/posix/sys/`,
-  M13, under way: [docs/M13-PLAN.md](docs/M13-PLAN.md)), one writable open
-  of a file per process.
+  top of the namespace in the POSIX layer's file calls
+  ([The POSIX layer](#the-posix-layer)).
+- **The POSIX names.** In shell mode init also gives its namespace the
+  names ported software takes for granted, and every program it starts and
+  every shell it follows has them: `/tmp` (emptied at each boot: a view of
+  `/jam/tmp` while the Jam OS drive's volume is `/jam` and read-write, else
+  of `/data/tmp` on an ext `/data`, else an ext volume in memory that
+  `bin/extfs` serves on a VMO, formatted at its start, an eighth of the
+  memory, 64 MiB to 1 GiB, with a pager of its own so its files can be
+  mapped), `/usr`, `/var` and `/home` (subviews of `/jam`'s directories of
+  those names, made when `/jam` is there: a mount whose root is that
+  directory, so `..` stops there and nothing above it can be named), and
+  `/pkg` (a read-only view of the packages' prefix, `/jam/pkg` or
+  `/data/pkg`). A program asks for `/tmp` with the word `posix` in its
+  list and for `/pkg` with `mount /pkg r`. The choice is made again when
+  `/jam` or `/data` comes or goes (`user/services/init/tmp.c`,
+  `jammounts.c`).
 - **The program's list** (`<wants.h>`, [docs/HISTORY.md, M8.6](docs/HISTORY.md#m86-cleanup-and-polish)):
   a program declares in its source what it wants (`JAM_WANTS("svc
-  music\n" "mount /data r\n")`: services, mounts read-only or writable,
-  the root resource's powers it needs, and `svc net listen` for the
-  network with the permission to listen, [Networking](#networking)); the text is an ELF note
+  music\n" "mount /data r\n")`: services, mounts read-only or writable
+  (`/data`, `/jam`, `/pkg`, `/usb*`), the root resource's powers it needs
+  (`right klog`, `sysinfo`, `clock`, `debug` and `jit`), `posix` for a
+  POSIX program, and `svc net listen` for the network with the permission
+  to listen, [Networking](#networking), `svc unix` for named sockets,
+  `svc exec` for starting a program on a disk, `svc audio` for sound); the text is an ELF note
   under a `PT_NOTE` program header, and `tools/checkwants.py` checks every
   program's list when the boot image is built (that is the build's
   approval; the services that kill drivers and services are for tests
@@ -2173,9 +2387,12 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
 - **Shell** (`user/services/shell/`): `main.c` is the console I/O, the line
   editor and history; `sh_parse.c` splits a line (`; && || |`, quotes),
   `sh_vars.c` holds variables ($NAME, export -> the environment of `run`)
-  and aliases, `sh_exec.c` runs a line (pipes: stages run in turn, each
-  one's output captured in memory as the next one's input, by `sh_io.c`; a
-  program in a pipe gets an SR_STDOUT channel), `sh_program.c` starts
+  and aliases, `sh_exec.c` runs a line (the POSIX programs of a pipeline
+  run at once, joined by pipes, with the redirections `< > >> 2>&1` that
+  `sh_posix.c` turns into their descriptors; the shell's own commands run
+  in turn, each one's output captured in memory as the next one's input,
+  by `sh_io.c`; `prog &` is a background job in a job of its own,
+  `sh_jobs.c`), `sh_program.c` starts
   programs (each with its list, above), `sh_table.c` is the one
   command table (with help), `sh_complete.c` Tab completion, `sh_vfs.c`
   paths and files over libos's namespace (the current directory is the
@@ -2187,38 +2404,373 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   CPU time is counted per thread and CPU at every switch. The kernel tests
   are shell commands too (`ktest`, `stress 600`), so a test run needs no
   reboot; rebooting is only for loading a new kernel from the stick.
-- **Executables**: static ELF64 at 0x400000; no `fork`. `spawn()` loads a
-  program from the bootfs image, from a range of any VMO, or from a file
-  read through the namespace into a VMO; code is mapped executable only
-  from a VMO handle with `RIGHT_EXEC`, which only the bootfs image's has,
-  so a program outside `/boot` is refused (`ERR_ACCESS_DENIED`), but for
-  one on `/data` the owner marked: `allow <file>` in the shell init starts
-  shows the file's list and asks y/n; a yes writes `<sha-256>\t<path>\t
-  <list>` into `/data/etc/allow` (`allow -l` lists, `allow -r <name>`
-  takes back). To run it the shell reads the file into a VMO only it
-  holds, turns that handle into one that may execute and not write
-  (`vmo_make_exec`, which needs `RIGHT_ROOT_VMEX`, refuses a VMO with
-  another handle, a mapping, a pin or a write in progress, and seals it: the
-  VMO itself refuses every later write, even from a call that started
-  before), hashes those bytes, and starts it
-  only if a line has that path and hash, with the list read from the
-  same bytes. No program can mark one: every program's `/data` is a view
-  without `etc`, and none holds `RIGHT_ROOT_VMEX`. A list that
+- **Executables**: static ELF64; there is no dynamic linking (`dlopen`
+  fails, as in a static Linux program). `spawn()` loads a program from the
+  bootfs image, from a range of any VMO, or from a file read through the
+  namespace into a VMO. Code is mapped executable only from a VMO handle
+  with `RIGHT_EXEC`: the bootfs image's, a sealed and verified pager VMO's
+  (below), and a JIT VMO's ([Memory](#memory)). A program outside `/boot`
+  runs only as the owner approved it: `allow <file>` in the shell shows
+  the file's list and asks y/n; a yes writes `<sha-256>\t<path>\t<list>`
+  into `/data/etc/allow` and the file's page table (the SHA-256 of each
+  4 KiB page) into `/data/etc/allow.d/<sha-256>` (`allow -l` lists,
+  `allow -r <name>` takes back). To run it the shell asks the file's
+  service for a VMO of the caller's own (`file.map` with `FILE_MAP_EXEC`),
+  a pager VMO whose pages the service fetches as the program runs, and
+  turns that handle into one that may execute and not write with
+  `vmo_make_exec_verified` (which needs `RIGHT_ROOT_VMEX`, refuses a VMO
+  with another handle or a mapping, and seals it against the approved page
+  table); it starts the program only if a line has that path and the file's
+  hash, with the list read from the same bytes
+  ([Pagers](#pagers-and-mapped-files)). The program is never read whole
+  before it starts, up to 1 GiB of it, and a page that doesn't match the
+  table never runs: the thread that touches it is killed. No program can
+  mark one: every program's `/data` is a view without `etc`, and none holds
+  `RIGHT_ROOT_VMEX`. A list that
   asks for devmgr's or init's channels (`svc devmgr`, `devmgr-ctl`,
   `init`) is refused, approval or not: they reach drivers, devices and
   the filesystems unguarded, past every view; so is one that asks for
   `right debug` (the kernel's debug commands panic and crash the machine
-  on purpose). Whoever holds
+  on purpose), and a few more (`svc session`, the low ports). Whoever holds
   the stick can edit the file on another computer, as they could replace
-  the kernel. User-space pagers (M12.5, [docs/M12.5-PLAN.md](docs/M12.5-PLAN.md);
-  the kernel's half is built, fat is not yet a pager) will be the clean
-  way to map such code. A program that starts another program on `/data`
-  (`posix_spawn`) asks init's `/svc/exec` (`svc exec` in its list;
-  [CR-PLAN's CE1](docs/CR-PLAN.md#ce1-notes)): init checks the approval
-  and its page table, seals the file's pages against them, and starts the
-  child itself with the namespace and powers of the child's own approval,
-  never its parent's; the parent gets its process (wait, no threads) and
-  its job (to kill it).
+  the kernel. A program that starts another program on a disk
+  (`posix_spawn`, or an `execve` of one) asks init's `/svc/exec` (`svc
+  exec` in its list; [CR-PLAN's CE1](docs/CR-PLAN.md#ce1-notes)): init
+  checks the approval and its page table, seals the file's pages against
+  them, and starts the child itself with the namespace and powers of the
+  child's own approval, never its parent's (a child whose grants exceed its
+  caller's starts raised, as `AT_SECURE`: in `/` and without `TMPDIR`); the
+  parent gets its process (wait, no threads) and its job (to kill it). A
+  program in the boot image or the caller's own image (`/proc/self/exe`) is
+  started by the caller's libc without it ([fork, vfork and
+  exec](#fork-vfork-and-exec)).
+
+## The POSIX layer
+
+A POSIX program is an ordinary Jam OS process: a static ELF linked against
+musl 1.2.6 (`third_party/musl`, unmodified but for its dynamic linker and
+the files `user/posix/musl/OVERRIDES` replaces) and libjam. The kernel
+knows nothing of Linux: **the Linux call layer** (`user/posix/sys/`) turns
+what musl asks into Jam OS's calls. musl's system call stub is overridden,
+so every call musl makes arrives at `__jam_syscall` with Linux's number and
+six arguments, and a table (`calls.def`) gives the handler, written over
+libjam. A number with no handler is `-ENOSYS`, as an old Linux kernel
+answers, so musl falls back where it can; `JAMOS_ENOSYS_LOG=1` in the
+environment names each gap (a call, a `prctl` option, an `ioctl`, a `/proc`
+path, a `dlopen`) once in the kernel log. Programs are built on the Mac
+with `tools/jamos-cc` (gcc) or `tools/jamos-clang++` (clang, for
+Chromium) against `build/sysroot`; `posixtest` is the layer's own test
+program, and musl's libc-test runs with a written list of expected
+failures.
+
+- **A program's start** (`user/posix/crt/`): libjam reads the startup
+  message, then the POSIX hand-over that may follow it; the crt builds
+  what a Linux kernel puts on the stack (argv, the environment with `TZ`
+  from the system's zone, the auxiliary vector with `AT_RANDOM`,
+  `AT_SECURE`, the program headers) and musl starts as usual.
+- **The layer's own heap** (`heap.c`): the layer and libjam allocate from a
+  heap of their own, never the program's `malloc`, because a program may
+  replace `malloc` with one that takes a lock and then calls into the layer
+  (Chromium's PartitionAlloc, for its pages), and a signal handler may run
+  inside `malloc` and make a call. `tools/checklayerheap.py` (in `make
+  check`) proves no object of the layer reaches musl's allocator.
+- **The shell's commands as programs.** Its own commands also exist as
+  programs in the boot image (`user/sysbox/`, the same source files built
+  with `SH_BOX`), so a script, a POSIX program or an `ssh` session can
+  run them; sbase's tools and Lua are in `/boot/usr/bin`.
+- **One user**, uid and gid 1000, named `jam`, home `/data`: `getpwnam` and
+  the like read libc's own `/etc` files.
+- **What is libc's alone**, with no service behind it: `/dev`, `/etc`
+  (`passwd`, `group`, `hosts`, `services`, an empty resolver
+  configuration, `shells`, `fonts/fonts.conf`), `/proc` and the few `/sys` files Chromium's base
+  reads. A program sees them in the namespace's place, and only if the
+  namespace has no mount of that name.
+
+### Descriptors and the hand-over
+
+A descriptor is a slot (0 to 1,023) of a table that points to an *open
+file description*, as POSIX has it: the kind, the status flags, the offset
+and the kind's state, shared by `dup` and by a child. Each kind is a file
+of the layer: a file (a `file` channel and a 64 KiB buffer VMO, transfers
+split by the layer), a directory (a channel on extfs, else text; below),
+a pipe or a socketpair end (a channel pair), a socket and a listener
+(netstack's rings), a terminal (`console.open_tty`), a pseudo-terminal
+master, `/dev` and `/etc` and `/proc` files, a memory file (`memfd_create`,
+`shm_open`: a kept VMO), an eventfd, an `epoll` set and an inotify
+descriptor. `poll`, `select` and `epoll` are level-triggered over wait
+sets ([Networking](#networking)): a kind says which handle and signals mean
+readable, writable and hung up, and a kind with none is always ready
+(`epoll` refuses it, as Linux refuses a regular file).
+
+What a starter passes to a program is the **hand-over** (`<posixfds.h>`,
+magic `JPSX`), written on the startup channel right after the startup
+message and before the process starts, so the child reads it without
+waiting: for each descriptor without `FD_CLOEXEC` its number, kind, status
+flags, offset, handles and data, and the state exec keeps (the current
+directory, the umask, the blocked and ignored signals and the pending ones
+of an exec in place, the parent's pid, the process group and session, the
+program's path for `/proc/self/exe`, and whether it starts as `AT_SECURE`).
+The reader takes it whole or not at all. `POSIXFDS_VERSION` is 3 (kind 15,
+`POSIXFDS_DIR_CHANNEL`, and `POSIXFDS_CWD`): it is in the ABI stamp, so a
+program linked before gets no hand-over from a parent linked after, until
+it is relinked. A file given to a child is a fresh open of the same file at
+the description's offset (on extfs any number of writers; on fat the one
+writable open is lent and taken back); a file already unlinked has no path
+to open again, so the sender's own open is moved. The same records cross a
+socketpair as `SCM_RIGHTS` (`fdpass.c`).
+
+**The inotify descriptor** keeps nothing the services don't: it holds a
+*bell* (an event made at `inotify_init`, of which every watcher channel gets
+a duplicate) and a *channel per mount it watches* (`fs.watch` on the mount's
+`fs` channel the first time), and the watches are the services'. Its
+readiness arm is the bell, and a second user bit libc sets while it holds
+records no `read` has taken, so `poll`, `select` and `epoll` wait on one
+handle however many mounts it watches. `read` and `FIONREAD` take records
+from each service and hand out Linux's `struct inotify_event`; `wd`s are
+libc's, cyclic, so an ended watch's number is not handed out again soon. A
+channel that closes (the mount went, the service started fresh) gives
+`IN_UNMOUNT` and `IN_IGNORED` for its watches. The limits are
+`/proc/sys/fs/inotify`'s: 8 descriptors a process (`EMFILE`) and 1,024
+watches a process on a volume, counted across its descriptors (`ENOSPC`
+for a new watch; a call that changes the mask of a watch it holds still
+works). Like an `epoll` set it is absent in a forked child, closed at
+`exec` and never handed to a spawned child. Watches in libc's own trees
+(`/`, `/svc`, `/dev`, `/etc`, `/proc`, `/sys`) and on read-only mounts are
+quiet: accepted, and never fired.
+
+### Paths, files and directories
+
+libc finds a path's mount in the namespace and sends the rest of it to
+that mount's service, which resolves links inside its view and answers
+`ERR_LINK_OUT` for one that leaves it ([extfs](#extfs-the-ext4-service)).
+A mount whose `statfs` says it has links gets the path as written; FAT's and
+the boot image's keep lexical cleaning.
+
+**Directories are channels** where the service allows it. A directory
+description on extfs (`FS_FEAT_DIRS`) holds the directory's own `fs`
+channel (`fs.opendir`), so `openat`, `mkdirat`, `unlinkat`, `fstatat` and
+the rest send one relative path on it however deep the directory is,
+`getdents64` and `fstat` go to it, and a rename of the directory is
+followed (and a service that started fresh is asked again by the
+description's last known text, once, [Storage](#extfs-the-ext4-service)). A directory on FAT, the boot image, `/`, `/svc` and libc's own
+trees stays text (its absolute path), as does one past the service's 64
+channels a process, said once in the log. The **current directory** is a
+description too: `chdir` opens one, `fchdir` shares it, `getcwd` asks the
+service where it lies (and `chdir("..")` out of a removed directory
+works, as on Linux). Directories cross `fork` (a duplicate of the
+channel), `posix_spawn` and `execve` (the channel itself, in the
+hand-over: `POSIXFDS_DIR_CHANNEL`, and `POSIXFDS_CWD` for the current
+directory), `/svc/exec` and a socketpair (the channel by itself, its text
+not believed). Two exceptions narrow the current directory: a child given
+grants starts in it as text, never the channel (a directory descriptor it
+inherits is still the channel, as a file descriptor is), and a raised
+`/svc/exec` child starts in `/`. A rename or a link between two directory descriptors is
+`fs.rename_at` or `fs.link_at` (`EXDEV` across volumes).
+
+A path that leaves a mount's view is continued from libc's own `/`, link by
+link (40 at most); `..` above a mount's root goes to the namespace's `/`.
+`mmap` of a file on a pager's mount is the file's own pages ([Pagers](#pagers-and-mapped-files)).
+Record locks, `inotify` and `fsync` meet the file service as the sections on
+[Storage](#storage) say.
+
+### Memory and JIT
+
+Each `mmap` is a VMO of its own, mapped with `vmar_map` and kept in libc's
+table, which splits with the kernel's mappings: `munmap` of a part, and
+`MAP_FIXED` over libc's own memory (a replace in one step, so another
+thread never sees a hole). A private anonymous part given back, and
+`madvise(MADV_DONTNEED)`, decommit. Reservations of gigabytes cost
+nothing until touched (`PROT_NONE`, `mprotect` commits parts, the kernel's
+VMOs go to 128 TiB), which is what V8's cage and PartitionAlloc's pools
+are. An address hint is taken as Linux takes it, when the range is free;
+otherwise the kernel places the mapping top down. `mincore` is
+`vmar_resident`. Writable memory is never executable, and no anonymous
+memory is executable, with one exception: a program holding the JIT power
+(`SR_JIT`: its list says `right jit` and it is approved) can `mmap` with
+`MAP_JIT` (private and anonymous only), which maps a JIT VMO, and then
+`PROT_EXEC` is allowed on it, alone or with `PROT_WRITE`, in `mmap` and
+`mprotect`, and nowhere else. A forked child gets a duplicate of the power,
+an exec of the same program keeps it, `posix_spawn` and an exec of any other
+program pass none, and `prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN)` gives
+it up for good (every `SR_JIT` handle closed, no new JIT memory, none for
+children). One thing Linux doesn't have: a program that `/svc/exec`
+starts gets its own approval whatever its caller holds. `ps` marks a
+process `[jit]` once it has mapped JIT memory executable.
+
+### fork, vfork and exec
+
+The kernel has no `fork`; libc does ([FORK-PLAN](docs/FORK-PLAN.md)).
+Chromium's launcher runs as written: `fork()`, the child's set-up, `execvp`
+of `/proc/self/exe`.
+
+- **`fork`** (`jam_fork` in libjam, and the layer's steps in
+  `user/posix/sys/fork.c`) takes the layer's locks in a fixed order, makes
+  a new process in a job of its own inside the caller's, has the kernel
+  copy the address space (`vmar_clone`: copy-on-write child VMOs, charged
+  to the job up front, so a fork that succeeds cannot fail later for
+  memory; `ENOMEM` if the job cannot pay), and starts the child's one
+  thread on a trampoline that puts back the forking thread's registers and
+  returns 0. The child's handles are new ones, sent on its startup channel
+  before it runs: libjam's `fork` message (its startup roles, as
+  duplicates, never the root) and the layer's `posixfork` messages (the
+  descriptors' handles, the copy and share keys of its mappings, the
+  current directory). Its pid is the kernel's small id, it is in the
+  parent's table of children (`waitpid`, `SIGCHLD`, `kill`, `/proc/<pid>`),
+  and it has its own signal channel. Only the forking thread exists in the
+  child; every lock is made fresh there. `vfork` is `fork` with the parent
+  waiting until the child execs or exits; `clone` without `CLONE_VM` works;
+  a clone that shares memory without being a thread is `ENOSYS`. No
+  zygote: `--no-zygote` stays.
+- **`execve` in place** (`process_replace`). For the program's own image
+  (`/proc/self/exe`, kept as `SR_SELF_IMAGE`) and a boot-image program,
+  libjam builds the new program in a new process of the caller's job, the
+  hand-over is made last, once nothing but the replace can fail, and the
+  kernel gives the caller's process the new address space: other threads
+  end, every handle closes but the startup channel, and the thread goes on
+  at the new entry. The process keeps its pid, its parent's wait, its
+  signal channel and `/proc/<pid>`; handlers return to the default. A
+  failure before the replace returns its `errno` with the process as it
+  was.
+- **A program on a disk is started by init** (`/svc/exec`, [Executables](#userland)),
+  which the caller may not do itself: so `execve` of one is a spawn, a wait
+  and an exit with the child's status (its pid is not the caller's), and
+  `posix_spawn` of one is a spawn.
+- **`posix_spawn`** copies the descriptor table, applies the file actions
+  to the copy (`close`, `dup2`, `open`, `chdir`, `fchdir`, `closefrom`),
+  and starts the program in the caller's job (one started through
+  `/svc/exec` is in a job of its own inside it), with the caller's
+  namespace (or the grants `posix_spawnattr_setgrants_np` names) and an
+  8 MiB stack.
+
+### Signals and threads
+
+Signals are libc's. A starter makes each program a **signal channel**
+(`signal`, `SR_SIGNALS`) and keeps the client end: holding it is the power
+to signal the program, and `kill(pid, sig)` of a child writes on it (`SIGKILL`
+is `process_kill` instead, which nothing can ignore). The program's signal
+thread reads the channel, a child's notices to its starter (exec, process
+group and session changes) come back on it, checked by the writer's pid.
+A signal is delivered in libc: at a call boundary (every call through the
+layer runs the handlers due before and after it), or, for a thread busy in
+its own code, by `thread_raise`, which enters the process's exception entry
+with the registers where the thread was, so a handler gets Linux's
+`siginfo_t` and `ucontext_t` ([Scheduler](#scheduler), fault upcalls). A
+thread blocked in an interruptible wait is woken with `thread_interrupt`
+and the call returns `EINTR` or starts again (`SA_RESTART`). A fault is a
+signal on the faulting thread only while a handler for it is installed,
+else the kernel kills the process as for any program; `sigaltstack` is
+`thread_exception_stack`. Standard signals pending twice are one, real-time
+ones queue. `alarm`, `setitimer` and POSIX timers are libc's. There is no
+job control yet (no stopped state).
+
+Threads are musl's pthreads, unmodified, on `clone` (`thread_create`) and
+Jam OS's private futexes. A thread's id is Linux's: the first thread's is
+the pid, the others' are distinct and never a pid.
+
+### Pipes, sockets and `AF_UNIX`
+
+- **Pipes and socketpairs** are channel pairs marked `CHANNEL_BYTE_BOUND`
+  (full at 1 MiB queued); the layer holds the bytes a read took off a
+  message and has not returned. `SCM_RIGHTS` on a socketpair carries any
+  descriptor kind the hand-over carries.
+- **`AF_INET`** sockets are netstack's rings ([Networking](#networking)):
+  UDP and TCP, with the listen permission a program's list asks for;
+  loopback works with no network. `AF_INET6` is `EAFNOSUPPORT`.
+- **`AF_UNIX` stream sockets** have two kinds of name. A path in a small
+  table of **service sockets** is a Jam OS service with a framing of its own:
+  today `/svc/wayland` ([Wayland clients](#wayland-clients)). Every other
+  name is a **named socket** through the broker `bin/unix` (`/svc/unix`,
+  `svc unix`): Jam OS has no socket inodes, so a listener is a channel of
+  the broker's and a name leads to it. `bind` creates a socket file
+  (an ordinary file, `O_EXCL`, holding a random key the broker answered
+  with); `connect` opens that file for reading, as any open, so the
+  namespace and its views decide who may reach the socket, and gives the
+  broker the key; an abstract name (a NUL first byte) is a name in the
+  broker's one table. Each connection is a channel pair, the connector's end
+  a socketpair end and the listener's a `conn` event that `accept` makes
+  into one, so descriptors travel. A `connect` never waits for `accept`; a
+  full backlog is `EAGAIN`. A program with `svc unix` in its list has an
+  opener channel of its own, so what it binds counts against that one
+  opener. The broker's shared channel is init's, kept across its restarts;
+  a restart closes every listener, and a program must bind again.
+
+### Terminals, pseudo-terminals and sessions
+
+A terminal is `console.open_tty` ([The terminal windows](#the-terminal-windows)).
+`/dev/ptmx` starts a pseudo-terminal: a connection console of the program's
+own, in a job under the program's, whose master is a socketpair end; its
+slave is a terminal of it, and it ends when the master closes (the
+programs see `SIGHUP`) or when every slave has. **Sessions** are init's
+(`/svc/session`): a Jam OS shell on a connection console, for the SSH
+server. `bin/sshd` (tinyssh, init starts it whenever
+`/data/etc/authorized_keys` holds a key and the settings don't say `ssh = off`)
+listens on port 22 by `svc net listen low`, logs in by key only, and opens a
+session for each connection (`ssh pc 'ls /data'` runs a line and ends
+with its status). init makes the host key on the first boot, in
+`/data/etc/ssh`, which only sshd's own view shows. A session closed
+hangs the shell up and kills what is left of its processes two seconds
+later.
+
+### `/proc`, `/dev`, `/etc` and fonts
+
+`/proc` is libc's, with what Linux programs read about themselves and their
+children: `/proc/self` and `/proc/<pid>` for the process and each child not
+yet reaped (`maps`, `stat`, `statm`, `status`, `smaps_rollup`, `cmdline`,
+`mem` read-only, `fd`, `task`, made from `process_get_maps`,
+`process_info` and `sys_public_info`), `cpuinfo`, `meminfo`, `stat`, the
+`version` and `hostname` files, and `ENOENT` for every other name; a
+`/proc` file crosses a socketpair by its path (`POSIXFDS_PROC`), opened
+again by the receiver. `/proc/self/exe` is the program's own path.
+`/dev` has `null`, `zero`, `full`, `random`, `urandom`, `tty`, `ptmx`,
+`pts/N`, `fd/N`, `stdin`, `stdout`, `stderr` and `shm/`. `/etc/fonts/fonts.conf`
+is fontconfig's default file, which only includes the fonts packages' own
+under `/pkg/share/fonts`: a program with `mount /pkg r` finds the system
+fonts, one without finds none.
+
+### Chromium
+
+The main goal ([ROADMAP.md](docs/ROADMAP.md), [CR-PLAN.md](docs/CR-PLAN.md)).
+Chromium (Alpine's stable, 155) is built from its own Linux source as
+`target_os=linux` against the musl sysroot, with a patch set
+(`ports/chromium/patches/`: musl fixes, and Jam OS's own for the JIT, the
+audio back end and SwiftShader), on the PC's WSL (`tools/cr/build.sh`).
+`content_shell` and `headless_shell` run from `/data`, approved, and
+`base_unittests` passes but for a short written list; the full `chrome`
+target and its package are next. Every layer it stands on is general and
+has tests of its own:
+
+- **The address space**: huge sparse reservations, `MAP_FIXED`, decommit,
+  top-down placement with programs linked above 4 GiB, an exact `mincore`.
+- **Processes**: its launcher unpatched on `fork` and `execve` in place;
+  every process type (the browser, the GPU process, the network, storage
+  and audio services, renderers) started and talking over Mojo, which is
+  `AF_UNIX` socketpairs carrying descriptors: files, directories,
+  `/proc` files and memory files cross. A renderer killed is reaped and
+  its view blank; a reload starts a new one. Quitting stops every child.
+- **Files**: writable shared mappings on ext (persistent histograms),
+  record locks (SQLite), inotify (`FilePathWatcher`), atomic rename,
+  directory descriptors to any depth (`DeleteDeep`'s 26 levels of
+  255-byte names), `fsync` of a directory.
+- **Faults and signals**: V8's WebAssembly trap handler and the crash
+  handler run on the faulting thread with Linux's `ucontext_t`, on
+  `sigaltstack`.
+- **Windows**: its Ozone/Wayland backend and its own libwayland over libc's
+  Wayland socket ([Wayland clients](#wayland-clients)): xdg-shell,
+  subsurfaces, popups with grabs, the clipboard, the system title bar.
+- **Rendering** is in software. The GPU process composites on the CPU into
+  memory files that the browser passes on to the Wayland compositor. WebGL is
+  SwiftShader as ANGLE's Vulkan, an opt-in (`--enable-unsafe-swiftshader`),
+  compiling shaders to code in `MAP_JIT` memory.
+- **The JIT is by capability**: the browser holds the power and every child
+  keeps it across its exec; patch 0914 has every process type but the
+  renderer (and the GPU process under SwiftShader) give it up at its start
+  with `PR_SET_MDWE`, and V8 runs `--jitless` in the others. So `ps` marks
+  the renderers alone `[jit]`.
+- **Sound** and **fonts**: [Audio](#audio) and [Packages](#packages-and-the-ports-system).
+- **Not yet**: Jam OS's own sandbox (a job and a narrowed namespace per
+  renderer, the browser giving up the JIT power it hands on, a kernel flag
+  so `PR_SET_MDWE` crosses `/svc/exec`); the GPU (the iGPU is the
+  plan); `chrome`'s profile on `/jam` and its singleton on a named socket.
 
 ## Graphics
 
@@ -2290,6 +2842,54 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
   the boot protocol. The horizontal wheel is parsed but not sent: the
   `input` protocol has no field for it. Programs get the pointer as
   Wayland's `wl_pointer` (the apps library draws in a window).
+
+### Wayland clients
+
+A client that is not libjwl, such as Chromium's Ozone/Wayland backend with
+its own libwayland, reaches the compositor through libc, and nothing in the
+client is patched (G2):
+
+- **The socket.** `WAYLAND_DISPLAY` is `/svc/wayland` (the shell sets it),
+  and `connect` to that path on an `AF_UNIX` stream socket opens the service
+  and frames the socket's byte stream as JWL2 batches
+  (`user/posix/sys/wlsock.c`; the program's list needs `svc wayland`,
+  else the path is `ENOENT`, as a missing socket file would be). libwayland's
+  bytes are cut at message boundaries into batches, and the descriptors
+  sent with them go as the handles of the batch that carries the message
+  they stand for; received handles come back as descriptors, one batch
+  at a time. A broken batch ends the connection (`ECONNRESET`). Only memfds
+  (as pools the compositor may read and map but not write or duplicate),
+  pipe ends and socketpair ends cross; any other descriptor is `EINVAL`
+  before a byte is taken. libwayland's one byte with descriptors, a full
+  channel and a slow reader behave as on a stream socket.
+- **What the compositor offers** (`display.c`): `wl_compositor` (6),
+  `wl_shm` (2), `wl_output` (4), `wl_seat` (9: a keyboard with the US XKB
+  keymap, a pointer, no touch), `xdg_wm_base` (6), `wp_cursor_shape_manager_v1`,
+  `wl_data_device_manager` (3: the text clipboard), `zxdg_decoration_manager_v1`,
+  `wl_subcompositor` and `jam_window_memory_v1`. No viewporter, no dmabuf:
+  the compositor takes pixels from `wl_shm` pools only.
+- **The decoration rule** (the owner's, per client, `xdgdeco.c`): a client
+  that binds the decoration manager gets server-side decorations on every
+  toplevel, the compositor's title bar and frame, whatever mode it asks for;
+  a client that never binds it draws its own. Chromium's `chrome` binds it
+  and asks for the system title bar.
+- **Subsurfaces** (`subsurface.c`): a surface with the subsurface role is
+  drawn in its parent's tree, the main surface and its children one
+  window, placed, framed, hit and stacked as one; synchronised and
+  desynchronised as the protocol says. Chromium's bubbles and its
+  omnibox list are subsurfaces.
+- **Popups with grabs** (`xdgpopup.c`): placed by the positioner's rules
+  against the parent's window geometry and shown as a window of their own
+  above it, never focused or tiled, following the parent when it moves.
+  A grab is granted for one of the client's last input serials while its
+  toplevel has the keyboard focus; once the compositor dismisses a grab (a
+  press outside, the focus moving), the client may grab again only after
+  its next key or button press, so a client can't keep the mouse. Menus,
+  tooltips and `<select>` lists are popups.
+- **Fonts** are a package, not the compositor's: `fonts-jamos` (Liberation,
+  Noto, Inter, JetBrains Mono, Noto Color Emoji) and `fonts-noto-extra`
+  (CJK and 19 more scripts), with a fontconfig file that libc serves as
+  `/etc/fonts/fonts.conf` ([The POSIX layer](#the-posix-layer)).
 
 ### Smooth text
 
@@ -2454,8 +3054,10 @@ and libjwl uses (`user/lib/jwl_data.c`, `jwl_clip_*` in `<jwl_client.h>`).
   makes one, keeps an end and sends the other; the owner writes the text
   into it as channel messages of bytes (at most 64 KiB each, no handles)
   and closes it, which the reader sees as `ERR_PEER_CLOSED`, a pipe's end
-  of file. A shim for ported Wayland programs (G2) maps `receive(fd)` and
-  `send(fd)` onto the same two ends. The compositor never reads or writes
+  of file. A ported client's pipe is a channel pair too (libc's `pipe`),
+  so a libwayland that passes a pipe's descriptor in `receive(fd)` or
+  `send(fd)` ([Wayland clients](#wayland-clients)) carries the same two
+  ends. The compositor never reads or writes
   the data, so a slow or hostile owner can't hold it up; it checks that
   the handle is a channel end with write and transfer rights
   (`handle_info`: a write-only end, as a pipe's, will do) and passes it on
@@ -2656,7 +3258,10 @@ Each opener of either gets a channel of its own (`svc.connect`), so a
 late answer goes only to the program that asked; init's keeper keeps it
 across the mixer's restarts (below). An opener holds at most 4 of the 16 streams
 (`MIXER_STREAMS_PER_CLIENT` in `user/include/mixer.h`, where the number is
-argued): a program looping over the library can't starve the others.
+argued): a program looping over the library can't starve the others. The
+library keeps one opener a process (`svc_get`'s, empty again in a forked
+child), so the count is four a process; a program that needs more asks
+for openers of its own (`audio_open_on`).
 `open_output` gives a client a stream of its own: a channel (the
 `audio_stream` protocol: start, stop, drain, position, its volume;
 closing it ends the stream), a ring
@@ -2684,6 +3289,46 @@ windowed-sinc filter: flat to 20 kHz, 100 dB down from 22.05 kHz, its
 position kept exactly); `beep` and `play` (WAV files, parsed by
 `<wav.h>`; `play -s` prints underruns, late periods and the least lead
 afterwards) use it.
+
+**The library for a program with a clock of its own** (`<audio.h>`,
+`user/lib/audio.c` and `audio_flow.c`, in libjam too): a program that
+decodes or synthesises sound as it is asked for it, a browser's audio
+service, needs to pace its writes, not block in them. `audio_open_fmt`
+takes the rate, one or two channels and 16-bit integer or 32-bit float
+samples (`audio_s16_from_f32` is the library's rounding, with the
+resampler's dither); `audio_try_write` takes as many frames as the ring
+has room for and never waits; `audio_room`, `audio_queued` and
+`audio_wait_room` (or `audio_arm_room` and `audio_room_event`, for a thread
+that waits on something else too) say when to write more; `audio_start`
+and `audio_pause` are the mixer's start and stop for a writer that has
+pre-rolled (a stream otherwise starts when its ring fills or at a drain);
+`audio_position` says the frames written and heard and the latency to a
+frame written now (the ring ahead of it, the resampler's delay and the
+mixer's lead, 171 ms, with the kernel clock when it was asked). A pause
+loses the lead: when nothing else plays the mixer closes the device at
+once and the frames it had taken ahead of the speaker are not played, so a
+resume skips them. Nothing here is a call per frame.
+
+**Sound in Chromium** (`ports/chromium`'s patch 0916, `use_jamos_audio`,
+`media/audio/jamos`): an `AudioManagerJamOS` and an
+`AudioOutputStreamJamOS` over that library, about 600 lines. One output
+device (there if a probe stream opens), 48 kHz stereo and 10 ms buffers
+preferred, any source rate converted by libjam; input stays Chromium's
+fake until a microphone driver. Chromium's audio service runs in a
+process of its own (its Linux way), forked from the browser with the
+browser's namespace, so `svc audio` is in `content_shell`'s list and in
+every child's namespace. A started stream has a thread that waits on the
+stream's room event, which the mixer raises once a period (43 ms), and
+asks the source for buffers until two periods are queued; `Start`
+pre-rolls the mixer's lead and a period before `audio_start`, `Stop`
+joins the thread and then pauses and discards, and the volume scales the
+samples. The context's output latency is 264 to 272 ms (the mixer's lead,
+the two periods queued, Chromium's own buffer). The back end opens up to
+three more openers once the first is full, because Chromium does not mix
+in the audio service: each AudioContext and each frame's media elements
+are a stream there, so all of a browser's pages share that one process's
+openers, four of them, which hold the mixer's sixteen streams.
+`headless_shell` has no sound.
 
 **The mixer outlives its process** ([Services that outlive their
 process](#services-that-outlive-their-process)). Its numbers (every
@@ -2789,19 +3434,27 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
 
 ## Storage
 
-- The USB stick has two FAT32 partitions: the **ESP** (Limine, kernel,
-  bootfs), which no program ever writes, and a **data partition** mounted
-  at `/data` for everything writable. A bug in a program's file writes
-  can't make the stick unbootable. The Mac writes the ESP: `make usb` lays
-  out a new stick (the data partition grown to the end of it and left
-  blank for Jam OS to format), `make flash` copies a new kernel, boot
+- The boot USB stick has two partitions: the **ESP** (FAT32, as the
+  firmware reads only FAT: Limine, kernel, bootfs), which no program ever
+  writes, and a **data partition** mounted at `/data` for everything
+  writable. The data partition is ext by default (MBR type 0x83, made on
+  the Mac by `tools/jamext`; "every data volume Jam OS makes is ext, and
+  FAT only when asked for"), FAT32 (type 0x0C) when the image was built
+  with `DATA_FS=fat`. A bug in a program's file writes can't make the stick
+  unbootable. The Mac writes the ESP: `make usb` lays out a new stick (the
+  data partition grown to the end of it; for ext, `jamext` makes the volume
+  again at the stick's size and copies in the files a stick needs before
+  its first boot, such as the SSH key, since the Mac can't read an ext
+  stick afterwards: logs come over the network, files over `update` and
+  SSH), `make flash` copies a new kernel, boot
   image and boot menu onto the ESP of one that has the layout
   ([HARDWARE.md](docs/HARDWARE.md#flash-and-boot-the-stick)), keeping the
   stick's kernel and boot image as the previous build
   (`/esp/boot/prev-jamos.elf`, `/esp/boot/prev-bootfs.img`: the boot menu's "Jam OS
   (previous build)").
 - **On the PC only init writes the ESP, and only for `update`** (a
-  build it has checked and loaded, [Networking](#networking)). The power
+  build it has checked and loaded, [Networking](#networking)) **and the
+  installer** ([below](#nvme-drives-and-the-installer)). The power
   is a channel: volumes makes the ESP's partition writable only when asked
   on its ESP channel (`volesp.open_writable`), whose one client end init
   made when it started volumes (volumes' startup role `VOLUMES_SR_ESP`)
@@ -2872,7 +3525,18 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   in its place if it isn't, and removes the temporary files (the spare
   only once a menu is in place); the next `update` first settles what
   a cut left the same way.
-- Write ordering: file data, then both FATs, then the directory entry.
+- **How big a build may be.** `update` takes a kernel and a boot image of
+  at most 64 MiB each (`UPDATE_FILE_MAX`, `<update.h>`), because both must
+  fit the stored kernel's region (128 MiB: [Kexec](#kexec-reboot-and-panic);
+  a 58.7 MiB boot image stored 73.2 MiB with today's kernel) and the ESP
+  keeps three builds (the stick's, the previous one and the one being
+  written). The Makefile packs the boot image against the smaller of that
+  limit and a third of the ESP beside the kernel (`tools/mkbootfs.py`): an
+  image over it is a build error, so a build `update` would refuse is
+  never made. A stick made
+  before the ESP was 256 MiB (63 MiB) is refused by `update` with its
+  files untouched; `make usb` remakes it.
+- FAT's write ordering: file data, then both FATs, then the directory entry.
 - fat keeps a write-through block cache (`user/services/fat/cache.c`):
   a miss reads 4 KiB, and twice as much as the last one when it carries
   on where that one ended, up to a 64 KiB line (one block call); 16 lines
@@ -2955,12 +3619,16 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   a file being written can be opened by others to read, and they see what
   has been written so far. A second writer is refused. fat never maps the
   buffer it shares with a file's client (the client can shrink it).
-- Only the boot disk's blank data partition (no boot signature) is
-  formatted; one that holds another filesystem or a damaged FAT is left
-  alone. fat formats only when it is started with an explicit flag
-  (`FAT_ARG_FORMAT` in `user/include/fatsvc.h`), and volumes gives the flag
-  to that one partition; on any other partition of any disk fat writes
-  nothing it wasn't asked to write through the `fs` protocol.
+- Only a blank partition is ever formatted, and only one volumes names:
+  the boot stick's data partition when it is blank (no boot signature; fat
+  formats it), and the partitions of an NVMe drive while `disk prepare` or
+  the installer makes it a Jam OS disk or formats its data partition again
+  (the ESP by fat, the data partition by extfs when its first 4 KiB are
+  zeros). One that holds another filesystem or a damaged volume is left
+  alone. A service formats only when it is started with an explicit word
+  (`FAT_ARG_FORMAT` in `user/include/fatsvc.h`, `EXTFS_ARG_FORMAT`), which
+  volumes gives to those partitions; on any other partition of any disk it
+  writes nothing it wasn't asked to write through the `fs` protocol.
 - **volumes** (`user/services/volumes/`, `abi/idl/volumes.idl`) owns the
   disks, their filesystem services and the mounts; devmgr holds no
   filesystem and no mount. devmgr asks each running disk driver for a
@@ -2972,7 +3640,10 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   channel. The disk Jam OS
   booted from is the one with partition 1 of type 0xEF holding
   boot/jamos.elf (it looks through a read-only fat service) and partition
-  2 of type 0x0C: they are `/esp` and `/data`. With two Jam OS sticks in,
+  2 of type 0x0C (FAT32) or 0x83 (ext: fs_choose looks for the
+  superblock): they are `/esp` and `/data`; or, on a boot from an
+  installed NVMe drive, the GPT disk that carries Jam OS's mark
+  ([below](#nvme-drives-and-the-installer)). With two Jam OS sticks in,
   the one the machine booted from: Limine names the disk it read the
   kernel from by its MBR disk id, the kernel passes it on to init and
   volumes (`bootdisk=0x<id>`) and to the kernel it kexecs (`bootdisk=N` on
@@ -2982,7 +3653,8 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   disk; if that one never comes (the stick was swapped) it may be after
   all. `make usb` gives every stick a random id (`tools/mkimage.py`); on
   a stick made before, whose id is 0, the first Jam OS disk found is the
-  boot disk, as before. Each mount is a fat service
+  boot disk, as before. Each mount is a filesystem service (fat or
+  extfs, chosen by what the partition holds)
   holding one partition's `block` channel, supervised by volumes (a
   restart is not seen: above); init follows the mounts through a watch
   (`volumes.watch`): `mounted` events carry each mount's `fs` channel,
@@ -2993,14 +3665,17 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   disks (`volumes.test_disk`, a software `storage` channel) mount as
   `/data-test`, `/usb0-test` and so on, which no namespace takes.
 - Any other stick: each partition whose MBR type says FAT (01 04 06 0B 0C
-  0E EF) gets a fat service and the lowest free `/usbN`, one at a time so
+  0E EF) gets a fat service, and each of type 83 that holds an ext
+  superblock gets extfs, read-only
+  (anyone else's ext volume is never written), and the lowest free
+  `/usbN`, one at a time so
   the numbers follow the order found; a stick with no partition table
   whose block 0 is a FAT boot sector is served by usb-storage as one
   partition over the whole disk (a block 0 that holds a partition table
   is never taken for one, whatever else it holds). usb-storage reads an
   MBR and nothing else, so a GPT stick shows its protective partition
-  (type 0xEE), which volumes leaves alone ([M12.7-PLAN](docs/M12.7-PLAN.md)
-  reads GPT for internal drives). A partition that turns
+  (type 0xEE), which volumes leaves alone (drv/nvme reads GPT for internal
+  drives). A partition that turns
   out to hold no FAT volume is left alone and said so in the log.
 - Read-only is enforced below the filesystem: a `/usbN` partition's
   `block` channel is opened read-only, and usb-storage refuses every write
@@ -3034,25 +3709,291 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   taken when either file has it. Without `/data` it waits and tries again; what
   the kernel's 4 MiB ring drops meanwhile, or in a burst faster than the
   stick takes it, is marked in the file as lost.
-- The 4 GiB file limit and the lack of owners/permissions are accepted:
-  authority comes from namespaces, not the filesystem.
-- **File watching** ([docs/INOTIFY-PLAN.md](docs/INOTIFY-PLAN.md),
+- FAT's 4 GiB file limit and its lack of owners and permissions are
+  accepted; ext has files to 16 TiB and stores modes and one user's
+  ownership (uid and gid 1000), and extfs checks the permission bits for
+  that one user. They are a guard against mistakes, not authority: any
+  program with a writable view can `chmod` them back. Authority comes from
+  namespaces, not the filesystem.
+- **File watching** ([docs/HISTORY.md](docs/HISTORY.md#file-watching-inotify),
   reviewed in [docs/INOTIFY-REVIEW.md](docs/INOTIFY-REVIEW.md)): there is
   no kernel file system, so the service that serves a volume makes the
-  events, the one place every change to it is seen. `fs.watch` gives a
-  watcher channel on the view it was asked through (`abi/idl/fswatch.idl`:
-  `add`, `remove`, `take`; its first message is the client's bell, an
-  event the service rings when the channel's queue gets a first record).
-  extfs keeps the watches by inode (user/lib/fswatch.c, the library any
-  service links), queues Linux's events at each request's commit, handles
-  a close made before a request ahead of it, never names an entry the
-  channel's view hides and ends a watch a rename takes out of its view's
-  reach; the watches outlive a restart in its state, with an
-  `IN_Q_OVERFLOW` for what died. fat and the boot image answer
-  `ERR_NOT_SUPPORTED`. libc's inotify descriptor (user/posix/sys/inotify.c)
-  is one event over every mount it watches, a channel per mount and the
-  records in Linux's form; it is absent after `fork` and closed at
-  `exec`.
+  events, the one place every change to it, through every view and by
+  every process, is seen. `fs.watch` (method 17 of `fs`) gives a watcher
+  channel on the view it was asked through; the `fswatch` protocol (id 49,
+  `abi/idl/fswatch.idl`) adds, removes and takes watches on it, and its
+  first message is the client's bell (`fswatch_bell`, id 52), an event
+  with a user signal that the service rings when the channel's queue stops
+  being empty. The watches, queues, merge and overflow rules and ids are
+  one library any service links (`user/lib/fswatch.c`). extfs makes the
+  events (`user/services/extfs/watch.c`): every row of Linux's table,
+  held until the request's transaction commits (so a watcher never hears
+  of a change that is not on the disk), on inodes, so a change through
+  `/jam` reaches a watch made through `/tmp`'s view of the same volume. A
+  close made before a request is handled before that request's events (the
+  order rule, which relies on a port delivering in order). A channel never
+  sees more than its view does: hidden names never appear in an event, and
+  a watch whose inode a rename takes out of its view's reach ends
+  (`IN_MOVE_SELF`, then `IN_IGNORED`). The watches and watcher records are
+  in the state VMO and each channel and bell with the keeper, so a successor
+  puts them back and queues an `IN_Q_OVERFLOW` for what died; a keeper that
+  gives a service up rings the bells itself (`keepch.put` carries a ring), so
+  `poll` and `epoll` wake when extfs is gone. fat and the boot image answer
+  `ERR_NOT_SUPPORTED`: libc then makes a watch on a read-only mount quiet
+  (the path is checked and the watch never fires) and refuses one on a
+  writable FAT mount with `EOPNOTSUPP`. A service holds 8,192 watches and 32
+  watcher channels (8 from one process) a volume and queues 16 KiB of
+  records for a channel before an `IN_Q_OVERFLOW`. The libc side is in
+  [The POSIX layer](#descriptors-and-the-hand-over).
+
+### extfs: the ext4 service
+
+A volume's format is a subset of ext4's, read and written by Jam OS's own
+code (`user/services/extfs/ext/`: pure code with no Jam OS calls, built
+unchanged into the service, the Mac's `tools/jamext` and
+`tools/extcheck.c`, and the tests): extents, jbd2's journal (checksum v3,
+asynchronous commit), metadata checksums (CRC32C), flex groups, files to
+16 TiB. Every structure is checked when it is read, its checksum and
+every field against the volume's bounds, so a hostile volume gets
+`ERR_IO` and a reason, never a read outside the volume. An incompatible
+feature the code doesn't read refuses the mount; a compatible one it
+doesn't know makes the volume read-only, since a writer must not change
+what it doesn't know. A volume Jam OS makes passes Linux's `e2fsck -fn`,
+and one made by `mke2fs` with the same features is read and written by Jam
+OS. A checksum that fails is `ERR_IO` for that request, and the volume is
+marked as having errors and read-only (`errors=remount-ro`); nothing is
+repaired in place. `bin/extfs` is one process a volume, one thread and one
+port as fat's service is, serving the `fs` and `file` protocols, and a
+pager for the volume's mapped files.
+
+- **The disk is the state.** Every request that changes the volume is one
+  journal transaction, committed before its answer, and the same recovery
+  serves a power cut and a restart ([Services that outlive their
+  process](#services-that-outlive-their-process)). New blocks' data goes to
+  the disk first, to blocks the committed bitmaps still call free (ordered
+  mode); overwrites go in place. What "on the disk" means depends on the
+  disk: drv/nvme writes with FUA (volumes starts extfs on an NVMe drive
+  with `EXTFS_ARG_FUA`), so an answered write is on the medium; a USB
+  stick's writes land in its volatile cache in any order, so there extfs
+  flushes (`block.sync`, SCSI SYNCHRONIZE CACHE) before the commit block,
+  before the log's tail moves, before the log is marked empty and before
+  an answer, only if something was written since the last flush.
+- **What POSIX gains over FAT.** Symbolic links (to 4,095 bytes) and hard
+  links; the inode's mode, link count, owner and three nanosecond times
+  (`fs.getattr`, `fs.setattr`; reads don't update the access time);
+  `umask` applied at every create; atomic `rename`, with
+  `RENAME_NOREPLACE` and `RENAME_EXCHANGE` (one transaction; the inode
+  number is `st_ino` and survives a rename); `open` with `O_EXCL` that
+  doesn't follow a dangling link; any number of opens of a file, and
+  `unlink` of an open file, whose inode goes on the orphan list on the disk
+  and is freed at its last close (a mapped file or a held directory keeps
+  it the same way); files over 4 GiB; `statfs` magic `0xEF53`, names of
+  255 bytes. The permission bits are checked for the one user (the owner
+  bits for uid 1000, the others' for anything else, no root bypass) and
+  are a guard against mistakes, not authority; the execute bit is
+  necessary for running a program and far from sufficient
+  ([Executables](#userland)).
+- **Paths and links.** libc sends the path after the mount as written, and
+  extfs resolves each name, `..` physically and each relative link whose
+  target stays inside the view. It never follows an absolute link or
+  climbs above the view's root: it answers `ERR_LINK_OUT`, libc asks
+  `fs.resolve` how much of the path was consumed and what to continue
+  with, and continues in its own namespace, counting links (40 at most,
+  `ELOOP`). A link therefore reaches only what the caller's own namespace
+  and views reach, and `..` above a mount's root is the namespace's `/`.
+- **Views.** `fs.view` as fat's, with the guarded `etc` and `pkg` judged
+  where a path *resolves* (a link into `etc` is refused like `etc`
+  itself, and so is a hard link whose source resolves there); and
+  `fs.subview`, a view rooted at a subdirectory, whose `..` stops at the
+  root: init's `/usr`, `/var`, `/home` and `/tmp` are such mounts. 128 views,
+  256 open files and 256 mapped files at once, for the whole volume (on a
+  drive boot one extfs serves `/data`, `/jam`, `/tmp` and every program's
+  views of them).
+- **Directory channels** (`fs.opendir`, [history](docs/HISTORY.md#directory-handles),
+  reviewed in [docs/DIRHANDLE-REVIEW.md](docs/DIRHANDLE-REVIEW.md)). A
+  directory is a channel of the `fs` protocol whose paths start at that
+  directory, so a call sends one relative path of at most 4,095 bytes
+  however deep the directory lies; paths that start with `/` still start at
+  the view's root. The channel keeps a copy of the view it was opened
+  through, so it never sees or changes more than a path through its mount
+  could, and its `..` climbs to the view's root and stops; `view`,
+  `subview` and `watch` on it are `ERR_NOT_SUPPORTED`. `fs.rename_at` and
+  `fs.link_at` name a second directory by its id, placed in the first
+  channel's view. extfs judges the views' hiding rules on a *region* (the
+  depth below the volume's root and the class of the first two names)
+  rather than on the path's text, and pins a directory while a channel
+  holds it: one removed meanwhile stays on the orphan list with no name, and
+  its channels answer `""` and `.`, `..` as the parent it had, and
+  `ERR_NOT_FOUND` to the rest; a renamed one is followed; one moved where
+  the view cannot reach it (above a subview's root, or into a hidden
+  directory) is `ERR_NOT_FOUND` while it lies there. 256 channels a
+  volume, 64 from one process (the writer of the `opendir` request, also
+  for a channel it hands on). The state and the keeper carry them across
+  a restart, as views; a fresh start closes them, and libc then opens the
+  directory again by its last known text, once, keeping the new channel only
+  if it is the same inode on the same volume. A change made on a directory's
+  own channel (`futimens` on the descriptor) is heard by its parent's watch
+  too: the service finds the name from the directory's `..` entry at the
+  event. fat and the boot image answer `ERR_NOT_SUPPORTED` (libc keeps
+  those directories as text).
+- **Record locks** (`file.lock`, `file.getlock`, `file.lockowner`, behind
+  `fcntl`'s `F_SETLK` family, the `F_OFD_` ones and `flock`). The service
+  keeps the table, so every process meets the same locks; the rules are
+  Linux's (`<rlock.h>`: three kinds of owner, the conflict and replace
+  rules, `EDEADLK`). A POSIX lock's owner is the process that wrote the
+  request, by the kernel's pid stamp on the message, so no process can
+  speak for another; an OFD or `flock` lock belongs to a lock owner, a
+  random number and a token channel whose peer libc keeps in the
+  description (a forked child shares it), and goes with the description's
+  last close in whichever process. A wait (`F_SETLKW`) gets a wake channel
+  that the service closes when the file's locks change, and asks again.
+  The table is in the state and changes by one store, so a restart finds
+  it whole. A service without locks (fat, the boot image) leaves libc
+  checking and keeping nothing.
+- **Write-back errors.** A file's `file.sync` reports an error that a
+  write-back of its mapped pages met since the open last heard of one,
+  once ([Pagers](#pagers-and-mapped-files)); the mark and the request that
+  moved it are in the state, so a `file.sync` run again after a death
+  reports what the first run did.
+- **One cache for mapped files.** extfs keeps one writable VMO per file,
+  keyed by the inode and found again while it lives, so a mapping, `read`
+  and `write` see one file: `file.write` stays write-through (an answered
+  write is on the medium) and also writes the bytes into the pages that
+  are present, and `read` takes dirty pages' bytes over the disk's.
+  Write-back (`wback.c`) is a journal transaction of its own, a batch of
+  dirty runs clipped to the file's size, holes and unwritten extents filled
+  in ordered mode, begun by age (once a second, for pages older than the
+  `files.writeback` setting), by `file.sync`, `fs.sync`, the dirty limit
+  and an orderly stop; a death before its commit has the successor write
+  the pages again, after it the pages are written again before the request
+  is answered.
+- **In memory.** `bin/extfs` can serve an ext volume on a VMO instead of a
+  disk (`EXTFS_SR_RAM`): init's `/tmp` when nothing better is there.
+- **Tools.** `tools/jamext` makes a volume's image from a directory and
+  puts files into one, and `tools/extcheck.c` checks one (the PC compares
+  it with `e2fsck -fn`), so the Mac needs no e2fsprogs and the stick's
+  `/data` is built, not formatted, before its first boot.
+
+### NVMe drives and the installer
+
+`drv/nvme` is the NVM Express driver: one admin queue, one I/O queue pair
+on MSI-X vector 0, up to 32 requests in flight, every command bounded. It
+reads the drive's partition table itself and decides from it, per drive,
+what may be written: only a Jam OS drive's two partitions (an ESP and a
+data partition with Jam OS's GPT type GUIDs), and a blank drive's table
+when `storage.create_table` asks (or an erased drive's, with the owner's
+confirmation checked in the driver too). Every other drive, Windows' among
+them, is read-only whatever any other process says, and `diskro` (the
+driver's `ro`) makes every drive so. Writes are FUA, and `block.sync` is
+a flush. `tools/checknvme.py` holds the write commands to the gated files.
+
+A drive is called `nvme<unit>` by its place among the machine's NVMe
+functions in PCI order (bus, device, function: `disks.attach` carries the
+`unit`), so it keeps its name on every boot whichever driver answers first;
+a USB stick takes the lowest free number in the order sticks come.
+
+volumes mounts a drive's partitions read-only as `/nvmeN`, except that the
+first Jam OS drive's ext data partition is `/jam`, read-write when its
+driver reads the drive as Jam OS's. On a boot from the installed drive,
+that data partition is `/data` and `/jam` both (one volume, one extfs, one
+channel under two names), no other Jam OS drive's is `/jam`, and the
+drive's ESP is `/esp`.
+
+- **`disk prepare`** (the shell, through init to volumes' `volinstall`)
+  makes a drive a Jam OS disk in one task. It makes a plan (refused for the
+  boot disk, a drive that is not NVMe or a volume mounted read-write; a
+  blank drive gets the table, a Jam OS drive cut short is finished, a drive
+  that is not empty is erased only after the owner types the last four
+  characters of its serial number and `erase`, which the driver checks
+  again), makes three random GUIDs and `create_table`, then has the ESP
+  formatted by fat and the data partition by extfs, each only if blank. A
+  cut leaves a blank drive, one blank in progress, or a Jam OS disk with a
+  partition not yet formatted; the next `prepare` finishes it.
+- **The installer** (`install <disk>`; init's `install.c`, on a thread of
+  its own) writes Jam OS to a prepared drive so the PC boots from it. volumes
+  opens the drive's partitions writable for init's install channel alone,
+  in no namespace, and refuses anything that is not a Jam OS disk. The
+  steps are ordered so that a cut leaves a drive that does not boot
+  (Limine finds no menu) rather than one that boots half a build, and the
+  next `install` finishes it: the sources read and hashed (the boot disk's
+  Limine, boot menu, `jamos.elf` and `bootfs.img`), `/data/etc` copied to
+  the new data partition if it has none, then the ESP written (the menu
+  removed, Limine, the build and a copy of it as the previous one, the
+  menu last), each file synced, read back and compared with its SHA-256.
+  The partitions go back to read-only at the end, failed or not.
+- **Booting from it.** Limine names the disk it read the kernel from by
+  its GPT disk GUID (`bootdisk=gpt:<GUID>`), the kernel passes that to init
+  and volumes, and volumes calls that disk the boot disk. `update` writes
+  the disk the PC booted from.
+
+### Packages and the ports system
+
+Ported software is built on the Mac from recipes (`ports/<name>/recipe`:
+name, version, revision, sources with their sizes and SHA-256, licence,
+dependencies, overrides and patches, and where it goes) by `tools/ports.py`
+(`tools/portslib/`), in dependency order, static, with `tools/jamos-cc`
+against the musl sysroot. A recipe's `place` is `boot` (sbase, Lua and
+libc-test are in the boot image under `/boot/usr/bin`), `package` or `host`
+(a build tool that runs on the Mac). A package is a signed archive, not a
+file the system trusts by where it is.
+
+- **The package** (`<name>-<version>-r<revision>.jpk`, a ustar archive):
+  a signed `+MANIFEST` first (name, version, revision, the ABI stamp it
+  was built for, licence, a `file` line for every file with its mode, size
+  and SHA-256, a `program` line for each program with the list it asks
+  for, a `table` line with its page table's hash, `built-with`, and an
+  Ed25519 signature over every byte before it), then the files, then each
+  program's page table. The index and the advisories (`VULNS`) are signed
+  the same way. The ports key's public half is in the boot image
+  (`/boot/ports.pub`); a build without one installs nothing. At most 4,096
+  files a package, 1 GiB a file, 2 GiB a package.
+- **Delivery.** The Mac serves the repository over HTTP
+  (`tools/ports-server.py`; `pkg.repo` in the settings, port 8080 of
+  `net.host` by default). The shell's `pkg install|upgrade|remove|list|info|files|audit|check|update`
+  starts `bin/pkg`, which holds the network, the boot image (the key and the
+  ABI stamp, read-only) and the packages' prefix writable, nothing else. It
+  shows each package's licence and each program's list and asks once.
+  `pkg install` refuses a package built for another ABI stamp (a hash of
+  the syscall table, the IDL the POSIX layer speaks and the hand-over's
+  header) unless forced, and an `update` that moves the stamp says which
+  installed packages need a `pkg upgrade`.
+- **The prefix.** Packages go under `/jam/pkg` when the Jam OS drive's
+  volume is `/jam` and read-write, else under `/data/pkg`. Every program
+  sees them as `/pkg`, init's read-only view of the prefix (a program asks
+  for it with `mount /pkg r`), and ports bake `/pkg` in, so they are right
+  wherever the prefix is. The shell's `PATH` is
+  `/boot/bin:/boot/usr/bin:/pkg/bin`. `FS_VIEW_GUARD_PKG` keeps every
+  program's writable view from changing the prefix; only `bin/pkg`'s
+  (`mount /jam rw pkg`, which the build allows to the system's own
+  programs only) can.
+- **Approval is init's.** `bin/pkg` writes the files as `<path>.new`,
+  syncs and reads them back against their hashes, then asks init on its
+  `pkgctl` channel to approve the programs (`pkgctl.approve`, with the signed
+  manifest). init trusts nothing `bin/pkg` says: it checks the manifest's
+  signature with `/boot/ports.pub` itself, reads each program back from
+  the prefix in 128 KiB pieces (a 300 MB program is never in memory),
+  hashes it and makes its page table, checks both against the manifest and
+  the program's own list against its `program` line, and applies the
+  refusals `allow` applies (no `svc init`, `svc session`, `devmgr`,
+  `right debug`). Only then does it write the page tables
+  (`/data/etc/allow.d/`) and the approval lines in `/data/etc/allow`, each
+  tagged with its package, which `allow -r` refuses to remove. The
+  approvals are `/data`'s whichever volume holds the packages. So the trust
+  is the ports key's signature and the owner's one answer, and the kernel
+  then checks each page of the program against its table as it runs.
+- **All or nothing.** The transaction is a journal in `<prefix>/db/journal`
+  with steps (begin, staged, approved, swapped, revoked, removed,
+  recorded), replaced whole by a write, a sync and a rename. A cut leaves
+  the old version or the new one, never a mix: before the commit point (the
+  approval) it is undone, after it finished, by the next `pkg` or by init
+  when the volume comes at boot. A file a program runs from can't be
+  replaced (`ERR_BUSY`): an upgrade leaves its `.new` in the journal and
+  finishes when the program ends.
+- **Fonts** are packages: `fonts-jamos` (Liberation, Noto, Inter,
+  JetBrains Mono, Noto Color Emoji) and `fonts-noto-extra` (Noto Sans CJK
+  and 19 more scripts, symbols and math), with fontconfig files under
+  `/pkg/share/fonts`; libc serves `/etc/fonts/fonts.conf`, which includes
+  them, to every program ([The POSIX layer](#the-posix-layer)).
 
 ## Time and settings
 
@@ -3091,10 +4032,12 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   one `key = value` a line, `#` comments (`<settings.h>` has the format
   and the keys: `timezone`, `rtc`, `volume`, `music.volume`,
   `music.folder`, and the network's `net.address`, `net.host`,
-  `netlog`, `ntp` and `ntp.server`: [Networking](#networking); the
-  packages' `pkg.repo` ([the ports system](docs/M13.7-PLAN.md#po6-notes)); the
+  `netlog`, `ntp` and `ntp.server`: [Networking](#networking); `ssh`
+  (`off` keeps the SSH server from starting); the
+  packages' `pkg.repo` ([the ports system](#packages-and-the-ports-system)); the
   compositor's `display.layout` and `display.hz`; the terminals'
-  `terminal.font`). init reads them when `/data`
+  `terminal.font`; extfs's `files.writeback`, how many seconds a store
+  into a mapped file may wait before it is written back). init reads them when `/data`
   comes (the clock, the network's address, the window layout, the
   terminals' font) and when the mixer, the music
   player, netstack, netlog and the compositor start; the shell's
@@ -3316,6 +4259,11 @@ decisions, is in [docs/HISTORY.md, M8.5](docs/HISTORY.md#audio-a1-a2-as-and-m85-
   and adds user-space load): a test must pass on any run and in any order.
   Every panic names the loop, the seed and the test that was running (its
   note line, in the log and in the panic screen's details).
+- **Where threads wait.** The kernel notes what each thread is waiting for
+  (a channel, a futex, a port, a mutex, a pager request); the shell's
+  `ps -t <pid|name>` lists a process's threads with their states and
+  waits into the kernel log (`debug_command threads`), and
+  `tools/symbolize-threads.py` names the addresses on the host.
 - **DBG_HOOK** injection points (`kernel/include/jam/dbghook.h`) let race
   regression tests stop a thread at an exact line.
 - The RESULTS box: every run ends with a box of the lines that matter

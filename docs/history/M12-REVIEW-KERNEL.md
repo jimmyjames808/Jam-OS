@@ -1,7 +1,7 @@
 # M12 review K: the system calls
 
 Stage A's review of the system call interface, for
-[M12-PLAN.md](../M12-PLAN.md#stage-a-the-reviews-findings-first). Docs only:
+[M12's plan](../HISTORY.md#m12-the-interface-review) (since deleted, see git history). Docs only:
 no code changed, no QEMU run. Read at main 56aa8904.
 
 Read in full: `abi/syscalls.def`; the kernel headers user code sees

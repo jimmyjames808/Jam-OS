@@ -1,6 +1,7 @@
 # DR: the directory handles review
 
-Track DR of [DIRHANDLE-PLAN.md](DIRHANDLE-PLAN.md) ("Tracks"): the
+Track DR of the directory handles' plan (joined into
+[HISTORY.md](HISTORY.md#directory-handles)): the
 directory handles (DP, DE0, DE1, DE2 in extfs; DL0, DL1, DL2 in libc,
 init's `/svc/exec` and the hand-over) read by an agent that wrote none of
 it, at local main bcc76f8c (DC merged; line numbers are main's). WQ's
@@ -324,4 +325,17 @@ too) and with no fix to make in what they test:
 - posixtest dirfd's `replaced` (L1 above): DL1's reopen after
   `ERR_PEER_CLOSED`.
 
-Runs: see the DR notes in [DIRHANDLE-PLAN.md](DIRHANDLE-PLAN.md#dr-notes).
+Runs (the PC; what was built is in
+[HISTORY.md](HISTORY.md#directory-handles)): without the three fixes (a
+branch with them reverted) batch 20084227: `extfs_watch_nameless`, posixtest
+inotify's `dir_fd_events` and dirfd's `replaced` FAIL, as they should. With
+them, batch 20085357 (17 runs): `make check`, the eight
+`tools/extfs-test.sh` cases, posix-dirfd, posix-inotify, posix-files,
+posix-fork and posix-run PASS; the init run, `tools/extfs-svc-test.sh` and
+sh-basic FAIL on `extfs_restart_deep`, a fault of the test's own keeper (it
+took 64 keep messages a poll: N7; the init run's first try also met
+`ns_changes_stay_bounded`, which passed on its try again: load); after the
+supervisor's fix batch
+20090927: `make check`, the init run, `tools/extfs-svc-test.sh` (53 passed,
+every disk clean) and sh-basic PASS; batch 20091345 with
+`JAMOS_DATA_FS=fat`: posix-dirfd PASS. No kernel change, so no ktest.
