@@ -28,7 +28,9 @@
  *                       bound (one IN_Q_OVERFLOW, the rest dropped, events
  *                       again after a take); 8 watcher channels for this
  *                       process and the ninth refused (fs.watch's writer
- *                       pid), a second process's still taken
+ *                       pid), a second process's still taken; (IR's 5)
+ *                       1,024 watches across this process's channels and
+ *                       the next refused, a second process's taken
  *   extfs_watch_hidden  (IE2) no event names what the watcher's view hides
  *                       from a listing (etc/ssh, the root's etc and an
  *                       "ETC"); adds on hidden places refused
@@ -535,6 +537,23 @@ static int cap_child(void)
     return st == OK ? 0 : st == ERR_NO_RESOURCES ? 2 : 3;
 }
 
+/* The second process (mode xwatch-add, the mount's channel as SR_USER): a
+ * watcher channel of its own and a watch on /c/128, while the first
+ * process holds its whole share of the volume's watches (IR's 5). */
+static int add_child(void)
+{
+    handle_t fs = startup_handle(SR_USER), give;
+    struct wat x;
+    uint32_t id = 0;
+    uint8_t existed = 0;
+    if (!fs || fs_watch_until(fs, dl(), &x.ch) != OK || jam_event_create(&x.bell) != OK ||
+        jam_handle_duplicate(x.bell, RIGHT_SIGNAL | RIGHT_TRANSFER, &give) != OK ||
+        fswatch_bell_give(x.ch, give) != OK)
+        return 1;
+    status_t st = fswatch_add_until(x.ch, dl(), "/c/128", 6, IN(CREATE), &id, &existed);
+    return st == OK && id ? 0 : st == ERR_NO_SPACE ? 2 : 3;
+}
+
 int extfs_watch_child(int argc, char **argv)
 {
     const char *m = argc >= 2 ? argv[1] : "";
@@ -542,6 +561,8 @@ int extfs_watch_child(int argc, char **argv)
         return change_child();
     if (!strcmp(m, "xwatch-cap"))
         return cap_child();
+    if (!strcmp(m, "xwatch-add"))
+        return add_child();
     return 127;
 }
 
@@ -773,6 +794,33 @@ bool t_extfs_watch_limits(void)
     CHECK(run("xwatch-cap", r.fs));
     unwatcher(&more[0]);
     CHECK(watcher(r.fs, &more[0]));
+
+    /* FSW_PROCESS_WATCHES on all of this process's channels (IR's 5: one
+     * process can't take the volume's): 128 directories on each of the 7
+     * more channels and 127 on a (with its /q), the next refused on any,
+     * a second process's taken; one removed makes room. */
+    _Static_assert(FSW_PROCESS_WATCHES == 1 + 128 * FSW_PER_PROCESS - 1, "the share filled");
+    CHECK_ST(t_mkdir(&r, "/c"), OK);
+    for (unsigned j = 0; j <= 128; j++) {
+        snprintf(path, sizeof(path), "/c/%u", j);
+        CHECK_ST(t_mkdir(&r, path), OK);
+    }
+    uint32_t first = 0;
+    for (unsigned i = 0; i < FSW_PER_PROCESS; i++) {
+        const struct wat *x = i + 1 < FSW_PER_PROCESS ? &more[i] : &a;
+        for (unsigned j = 0; j < (x == &a ? 127u : 128u); j++) {
+            snprintf(path, sizeof(path), "/c/%u", j);
+            uint32_t id = add(x, path, IN(CREATE));
+            CHECK(id);
+            first = first ? first : id;
+        }
+    }
+    uint32_t id = 0;
+    CHECK_ST(add_st(&a, "/c/127", IN(CREATE), &id, NULL), ERR_NO_SPACE);
+    CHECK_ST(add_st(&more[0], "/c/128", IN(CREATE), &id, NULL), ERR_NO_SPACE);
+    CHECK(run("xwatch-add", r.fs));
+    CHECK_ST(fswatch_remove_until(more[0].ch, dl(), first), OK);
+    CHECK_ST(add_st(&a, "/c/127", IN(CREATE), &id, NULL), OK);
     for (unsigned i = 0; i + 1 < FSW_PER_PROCESS; i++)
         unwatcher(&more[i]);
 

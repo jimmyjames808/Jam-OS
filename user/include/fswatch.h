@@ -53,11 +53,16 @@
 
 #define FSW_CHANNELS     32u     /* watcher channels on a volume */
 #define FSW_PER_PROCESS  8u      /* ... from one process (fs.watch's writer) */
-#define FSW_WATCHES      4096u   /* watches on a volume */
+#define FSW_WATCHES      8192u   /* watches on a volume */
 #define FSW_PER_CHANNEL  1024u   /* ... on one channel */
-#define FSW_SLOT_BITS    12u     /* an id: its slot below these bits, its count above */
-#define FSW_COUNT_MAX    0xfffffu
-#define FSW_TABLE_VERSION 1u
+#define FSW_PROCESS_WATCHES 1024u   /* ... on all of one process's channels (IR's 5: one
+                                     * process can't take a volume's; pid 0, not known,
+                                     * has the channel's alone) */
+#define FSW_SLOT_BITS    13u     /* an id: its slot below these bits, its count above */
+#define FSW_COUNT_MAX    0x7ffffu
+#define FSW_TABLE_VERSION 2u
+_Static_assert(FSW_WATCHES == 1u << FSW_SLOT_BITS && FSW_COUNT_MAX == 0xffffffffu >> FSW_SLOT_BITS,
+               "an id's slot and count fill its 32 bits");
 
 /* An inode as the service names it: ext's number and generation (a
  * service without generations says 0). */
@@ -190,7 +195,9 @@ void     fsw_chan_close(struct fsw *w, uint32_t c);
  * not IN_*'s, or IN_MASK_ADD with IN_MASK_CREATE. */
 status_t fsw_mask_check(uint32_t mask);
 /* add, once the service walked the path to inode key (a directory if dir)
- * and found it may be read: fswatch.add's results and errors. */
+ * and found it may be read: fswatch.add's results and errors (ERR_NO_SPACE:
+ * FSW_WATCHES on the volume, FSW_PER_CHANNEL on c, or FSW_PROCESS_WATCHES
+ * on c's process's channels). */
 status_t fsw_add(struct fsw *w, uint32_t c, const struct fsw_key *key, bool dir, uint32_t mask,
                  uint32_t *out_id, uint8_t *out_existed);
 status_t fsw_remove(struct fsw *w, uint32_t c, uint32_t id);

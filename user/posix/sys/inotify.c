@@ -40,10 +40,11 @@
  * watches (fat: the owner's Q1) is EOPNOTSUPP.
  *
  * **Limits** (kinds.h, and the three files of /proc/sys/fs/inotify say the
- * same): a descriptor holds INOTIFY_MAX_WATCHES watches (ENOSPC past
- * that, as a service's refusal is) and a process INOTIFY_MAX_INSTANCES
+ * same): a process holds INOTIFY_MAX_WATCHES watches, all its descriptors
+ * (ENOSPC past that, as a service's refusal is: each volume's service
+ * holds a process to the same number there), and INOTIFY_MAX_INSTANCES
  * descriptors (EMFILE at inotify_init). Linux's are a user's, not a
- * descriptor's or a process's.
+ * process's.
  *
  * **Locks.** The description's lock guards everything here but the bell
  * and is held across a service call, as a file's is, never across the
@@ -107,7 +108,8 @@ struct ino_watch {
 struct ino {
     handle_t         bell;              /* FSWATCH_BELL (the services) and INO_HELD (ours) */
     struct ino_chan  chans[INO_CHANS];
-    struct ino_watch *w;                /* nw of them, room for room */
+    struct ino_watch *w;                /* nw of them, room for room (nw stored
+                                         * atomically: others_watches reads it) */
     uint32_t         nw, room;
     int              next_wd;           /* where the next wd is looked for */
     uint8_t         *buf;               /* records: [head, len) unread; cap bytes */
@@ -201,11 +203,13 @@ static struct ino_watch *by_path(struct ino *n, const char *path)
     return NULL;
 }
 
-/* Room for one more watch: 0, or -ENOSPC (the most: max_user_watches),
- * -ENOMEM. Held wds count, a removed one's until its IN_IGNORED. */
-static long watch_room_locked(struct ino *n)
+/* Room for one more watch, with `others` held by the process's other
+ * descriptions (others_watches): 0, or -ENOSPC (the most:
+ * max_user_watches), -ENOMEM. Held wds count, a removed one's until its
+ * IN_IGNORED. */
+static long watch_room_locked(struct ino *n, uint32_t others)
 {
-    if (n->nw >= INOTIFY_MAX_WATCHES)
+    if (n->nw + others >= INOTIFY_MAX_WATCHES)
         return -ENOSPC;
     if (n->nw < n->room)
         return 0;
@@ -226,15 +230,17 @@ static int watch_new_locked(struct ino *n, unsigned c, uint32_t id, uint32_t mas
         wd = n->next_wd;
         n->next_wd = wd == INT32_MAX ? 1 : wd + 1;   /* an int's most */
     } while (by_wd(n, wd));
-    n->w[n->nw++] = (struct ino_watch){ .wd = wd, .chan = (uint8_t)c, .id = id, .mask = mask,
-                                        .path = path };
+    n->w[n->nw] = (struct ino_watch){ .wd = wd, .chan = (uint8_t)c, .id = id, .mask = mask,
+                                      .path = path };
+    __atomic_store_n(&n->nw, n->nw + 1, __ATOMIC_RELAXED);   /* others_watches reads it */
     return wd;
 }
 
 static void forget_locked(struct ino *n, struct ino_watch *w)
 {
     jam_free(w->path);
-    *w = n->w[--n->nw];
+    __atomic_store_n(&n->nw, n->nw - 1, __ATOMIC_RELAXED);
+    *w = n->w[n->nw];
 }
 
 /* Channel c is gone (its peer closed): every watch on it ends, IN_UNMOUNT
@@ -493,13 +499,14 @@ const struct fd_ops inotify_ops = {
 /* ---- the calls ------------------------------------------------------------------- */
 
 /* The inotify descriptions this process holds, up to INOTIFY_MAX_INSTANCES
- * (a dup shares its description). Counted from the descriptor table, not
- * a counter, which a forked child would inherit with no descriptors:
- * threads racing in inotify_init1 may pass the limit by a few, and the
- * services' own (8 channels from a process on a volume) hold anyway. */
-static unsigned instances(void)
+ * (a dup shares its description), into seen[] with a reference each (the
+ * caller puts them). From the descriptor table, not a counter, which a
+ * forked child would inherit with no descriptors: threads racing in
+ * inotify_init1 may pass the limit by a few, and the services' own (8
+ * channels from a process on a volume) hold anyway. */
+static unsigned descriptions(struct fd_desc *seen[INOTIFY_MAX_INSTANCES])
 {
-    struct fd_desc *seen[INOTIFY_MAX_INSTANCES], *d;
+    struct fd_desc *d;
     unsigned n = 0;
     bool cloexec;
     for (long fd = fd_next(0, &d, &cloexec); fd >= 0; fd = fd_next(fd + 1, &d, &cloexec)) {
@@ -511,9 +518,34 @@ static unsigned instances(void)
         else
             fd_put(d);
     }
+    return n;
+}
+
+static unsigned instances(void)
+{
+    struct fd_desc *seen[INOTIFY_MAX_INSTANCES];
+    unsigned n = descriptions(seen);
     for (unsigned i = 0; i < n; i++)
         fd_put(seen[i]);
     return n;
+}
+
+/* The watches the process's inotify descriptions other than mine hold
+ * (max_user_watches is the process's, all its descriptors), read without
+ * their locks before mine is taken: threads adding through two
+ * descriptions at once may pass the limit by a few, and each volume's
+ * service holds the process to it there anyway (FSW_PROCESS_WATCHES). */
+static uint32_t others_watches(const struct fd_desc *mine)
+{
+    struct fd_desc *seen[INOTIFY_MAX_INSTANCES];
+    unsigned n = descriptions(seen);
+    uint32_t sum = 0;
+    for (unsigned i = 0; i < n; i++) {
+        if (seen[i] != mine)
+            sum += __atomic_load_n(&ino_of(seen[i])->nw, __ATOMIC_RELAXED);
+        fd_put(seen[i]);
+    }
+    return sum;
 }
 
 long lx_inotify_init1(long flags, long b, long c, long d, long e, long f)
@@ -562,6 +594,7 @@ static long quiet_add(struct fd_desc *d, const struct path *p, uint32_t mask)
 {
     struct ino *n = ino_of(d);
     long r = 0;
+    uint32_t others = others_watches(d);
     lock_take(&d->lock);
     struct ino_watch *w = by_path(n, p->abs);
     if (w && (mask & IN_MASK_CREATE)) {
@@ -569,7 +602,7 @@ static long quiet_add(struct fd_desc *d, const struct path *p, uint32_t mask)
     } else if (w) {
         w->mask = (mask & IN_MASK_ADD ? w->mask : 0) | mask;
         r = w->wd;
-    } else if (!(r = watch_room_locked(n))) {
+    } else if (!(r = watch_room_locked(n, others))) {
         char *path = jam_strdup(p->abs);
         r = path ? watch_new_locked(n, INO_QUIET, 0, mask, path) : -ENOMEM;
     }
@@ -655,6 +688,7 @@ static long mount_add(struct fd_desc *d, struct path *p, uint32_t mask, bool *no
     uint64_t koid = hi.koid;
     uint32_t len;
     const char *rel = path_rel(p, &len);
+    uint32_t others = others_watches(d);
     lock_take(&d->lock);
     for (int tries = 0;; tries++) {
         long c = chan_locked(n, p, fs, koid);
@@ -667,7 +701,7 @@ static long mount_add(struct fd_desc *d, struct path *p, uint32_t mask, bool *no
             r = -EOPNOTSUPP;
             break;
         }
-        if ((r = watch_room_locked(n)))
+        if ((r = watch_room_locked(n, others)))
             break;
         uint32_t id = 0;
         uint8_t existed = 0;
