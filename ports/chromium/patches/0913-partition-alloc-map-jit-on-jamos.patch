@@ -1,0 +1,39 @@
+Description: PartitionAlloc's page allocator asks for JIT memory (MAP_JIT) for V8's code on Jam OS
+ Jam OS keeps memory never both writable and executable, but in JIT
+ memory: a mapping mmap makes with MAP_JIT (macOS's flag name, Jam OS's own
+ value, in its <sys/mman.h>) in a process holding the JIT power (the
+ program's `right jit`, docs/CR-PLAN.md section 12). Linux lets any
+ anonymous memory become executable, so nothing on its path says which
+ reservation will hold code, and a layer can't tell V8's code range from
+ PartitionAlloc's own pools (making every reservation JIT memory would
+ also keep it out of a forked child, which gets no writable JIT mapping).
+ V8 says it already: its code range and its WebAssembly code space are
+ reserved kNoAccessWillJitLater, which gin passes to PartitionAlloc as
+ kInaccessibleWillJitLater, and PartitionAlloc turns into MAP_JIT on
+ macOS. This hunk does the same on Jam OS. Decommits need nothing: Jam OS's
+ mmap keeps a MAP_FIXED of private anonymous memory over JIT memory JIT
+ memory (Linux's decommit by remap, DecommitAndZeroSystemPages).
+Forwarded: not-needed (Jam OS's: its W^X rule)
+---
+--- a/base/allocator/partition_allocator/src/partition_alloc/page_allocator_internals_posix.h
++++ b/base/allocator/partition_allocator/src/partition_alloc/page_allocator_internals_posix.h
+@@ -94,6 +94,19 @@
+   }
+ #endif
+ 
++#if defined(__jamos__)
++  // Jam OS (docs/CR-PLAN.md section 12) lets a program make memory
++  // executable only in JIT memory, which mmap makes when told so with
++  // MAP_JIT (macOS's flag, Jam OS's own value) in a process holding the JIT
++  // power. Linux lets any anonymous memory become executable, so its path
++  // never says which reservation will hold code; V8's code range and its
++  // WebAssembly code space say it here, as on macOS.
++  if (accessibility.permissions ==
++      PageAccessibilityConfiguration::kInaccessibleWillJitLater) {
++    map_flags |= MAP_JIT;
++  }
++#endif
++
+   void* ret = mmap(reinterpret_cast<void*>(hint), length, access_flag,
+                    map_flags, fd, 0);
+   if (ret == MAP_FAILED) {

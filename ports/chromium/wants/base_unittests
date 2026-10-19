@@ -1,3 +1,4 @@
 posix
 mount /data rw
 svc exec
+right jit
