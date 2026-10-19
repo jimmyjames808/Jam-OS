@@ -5125,7 +5125,8 @@ browser cases run on the new programs.
   | ext, DC | 8,901 | 37 | 18 |
 
   Per shard (of 8,956): 1,234 + 3 + 1 of 1,238; 1,470 + 0 + 6 of 1,476;
-  2,010 + 4 + 0 of 2,015 and **one failure** (below); 1,543 + 9 + 3 of 1,555;
+  2,010 + 4 + 1 of 2,015 (the one listed is `RecursiveWatch`, a **new failure**
+  in batch 20070609 and listed for batch 20073615: below); 1,543 + 9 + 3 of 1,555;
   1,330 + 17 + 2 of 1,349; 1,314 + 4 + 5 of 1,323 (pass + self-skip + listed).
   Against IC: +11 (taken off the list between IC and DC: CR-e's seven
   FileLockingTest and three JIT cases, and one more) +17 (this track's) -1
@@ -5165,8 +5166,10 @@ browser cases run on the new programs.
   case and a posixtest one (`futimens` on a directory descriptor, a watch on
   the parent). Until then the test is on the skip list ("[posix] DL1
   regression") and the counts above have it as the 18th.
-- **Shard 2 again** with `RecursiveWatch` listed: see the TESTING row's
-  batch ids.
+- **Shard 2 again** with `RecursiveWatch` listed (batch 20073615, 479 s, with
+  `make check`): 2,010 OK, 4 self-skip, 1 listed, no new failure, none missing.
+  The final count is the five other shards of 20070609 and this one:
+  8,901 pass, 37 self-skip, 18 listed, 8,956 in all.
 
 ## Later
 
