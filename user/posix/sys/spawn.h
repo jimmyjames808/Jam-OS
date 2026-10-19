@@ -17,7 +17,11 @@ struct spawnfd_slot {
  * its descriptors are, and its current directory. Made by spawnfd_begin,
  * freed by spawnfd_end. */
 struct spawnfd {
-    char                cwd[PATH_MAX];           /* the child's directory: absolute */
+    struct fd_desc     *cwd;                     /* the child's directory, a directory
+                                                  * description (a reference); NULL: "/" */
+    char               *cwd_text;                /* its text, asked at the first need
+                                                  * (spawnfd_absolute), or NULL */
+    struct fd_given     cwd_given;               /* what the hand-over got of it */
     struct spawnfd_slot slot[FD_MAX];            /* the child's descriptors */
     unsigned            nslots;
     /* What spawnfd_export made (one each per descriptor sent). */
@@ -38,6 +42,16 @@ long     spawnfd_apply(struct spawnfd *t, const struct jam_spawn_op *ops, unsign
  * A descriptor with FD_CLOEXEC is left out, and so is one whose kind no
  * child gets. 0 or -errno (nothing left to discard then). */
 long     spawnfd_export(struct spawnfd *t, struct posixfds_out *ho);
+/* The copy's directory as the hand-over's (ho->cwd, or ho->cwd_dir and
+ * its data): a directory channel itself, unless text (a child whose
+ * namespace is narrowed, posix_spawnattr_setgrants_np: a channel would
+ * reach past its grants), then its text now; "/" when no text names it
+ * (too deep, or a gone channel with none). 0 or -ENOMEM. */
+long     spawnfd_export_cwd(struct spawnfd *t, struct posixfds_out *ho, bool text);
+/* The absolute, cleaned path for path from the copy's directory (its
+ * text, asked of its service once: a relative one from a directory deeper
+ * than PATH_MAX is ENAMETOOLONG) into out (PATH_MAX bytes). 0 or -errno. */
+long     spawnfd_absolute(struct spawnfd *t, const char *path, char *out);
 /* Free t (its references dropped) and what spawnfd_export made for ho
  * (not its handles: they were consumed). t may be NULL. */
 void     spawnfd_end(struct spawnfd *t, struct posixfds_out *ho);

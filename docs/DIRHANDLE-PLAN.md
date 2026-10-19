@@ -606,7 +606,7 @@ numbers).
 | **DE1. extfs: directory channels** (built: [DE1 notes](#de1-notes)) | 2.1 to 2.4 and 3.1: `opendir`, the table (records, keeper slots, `XF_MADE_*`, port keys and channel ids, the per-process share), the walk from a directory and its `..`, `""`, the epoch and the cut-off, the dispatch's flags, `fs.resolve`'s place by climbing, `rename_at` and `link_at` with the reach check, `view`/`subview`/`watch` refused | a new user/services/extfs/dirs.c, `user/services/extfs/walk.c`, `user/services/extfs/fsops.c`, `user/services/extfs/views.c` (`views_lexical`), `user/services/extfs/request.c`, `user/services/extfs/main.c`, `user/services/extfs/extfs.h`, a new utest file user/tests/utest/extfs_dirs.c, `tools/shell-tests/extfs-svc.txt` (its count) | DE0 and DP merged | utest `extfs_dirs`: 26 levels of 255-byte names made, listed and removed through channels (no path over 300 bytes sent), a 4,095-byte relative path, `..` up to the view's root and `ERR_LINK_OUT` above it, links inside and out; each view flag through a channel (read-only, the guards, `HIDE_KEYS`, `NO_ETC`: `readdir("..")` at the root without `etc`); a channel opened from a channel keeps the narrower view; a subview's channel cut off when its directory moves above the root, a `HIDE_KEYS` one when moved into `etc/ssh`; `rename_at`/`link_at` (another directory, one the view doesn't reach refused, a removed one); 256 channels and the 257th `ERR_NO_RESOURCES`, 64 from one process; `tools/extfs-svc-test.sh`; init run | 1.5 | **Opus** |
 | **DE2. extfs: removal and restarts** (built: [DE2 notes](#de2-notes)) | 3.3 and 2.5: a held directory removed (orphan, `..` remembered, `ERR_NOT_FOUND` rules), replaced by a rename, renamed; orphan directories across a restart and at a mount; the records in the state (`XF_STATE_LAYOUT` bumped), adopt, a fresh start closing the channels; test powers that kill extfs between a `rmdir` of a held directory and its answer | user/services/extfs/dirs.c, `user/services/extfs/fsops.c`, `user/services/extfs/files.c` (`files_held` with the directories), `user/services/extfs/request.c` (`defer_drop`), `user/services/extfs/state.c`, `user/services/extfs/adopt.c`, `user/services/extfs/keeper.c`, `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, `user/tests/utest/extfs_restart.c`, user/tests/utest/extfs_dirs.c | DE1 merged; beside DL1 | utest `extfs_dirs`' removal cases (made again at the same name: the channel stays on the removed one; `..` from a removed one and from one whose parent went too; a rename over a held empty directory), `extfs_restart` (killed at each point with channels open, deep ones too: the same directories after; a held removed directory across a restart; a fresh start: the channels closed); `tools/extfs-svc-test.sh`; `tools/extfs-test.sh` basic (e2fsck after a deep tree and held removed directories); `tools/layout-test.sh` drive; init run | 1 | **Opus** |
 | **DL1. libc: descriptions and the *at calls** (built: [DL1 notes](#dl1-notes)) | 4.1 to 4.3: the channel in `struct dir`, `openat`'s directory by `fs.opendir`, `getdents`, `fstat`, `fsync`, `fstatfs`, the text fallback and the replacement after `ERR_PEER_CLOSED`, every *at call through `at`, `rename_at`/`link_at`, the `path` hook's replacement, files opened relative keeping their directory and name | `user/posix/sys/dir.c`, `user/posix/sys/path.c`, `user/posix/sys/files.h`, `user/posix/sys/file.c`, `user/posix/sys/meta.c`, `user/posix/sys/fobj.c`, `user/posix/sys/fd.h`, `user/posix/sys/spawnfd.c` (the hook), a new posixtest file user/posix/test/dirfd.c (section `dirfd`) and a new tools/shell-tests/posix-dirfd.txt, `user/posix/test/files2.c` (`deep_names`: 26 levels on ext, 15 on FAT) | DL0 and DE1 merged; beside DE2; not beside LH, PR or FF's libc part | posixtest `dirfd` on ext `/data`, on `/tmp`, and with `JAMOS_DATA_FS=fat` (today's answers): DeleteDeep copied (26 levels, `up`, the file, `DeletePathRecursively`'s calls); a rename of an open directory followed; a directory removed and made again; `renameat`/`linkat` across two descriptors; `O_PATH`; `AT_EMPTY_PATH`; 300 directories open (the fallback); posixtest `files`; posix-files; shell scripts basic, cmds, commands, files; init run | 1 | **Opus** |
-| **DL2. libc: the current directory, fork, exec, /proc** | 4.4 to 4.6: the current directory as a description, `chdir`, `fchdir`, `getcwd`, `chdir("..")` out of a removed one; the fork hook and the current directory's fork key; kind 15 and Q4's hand-over; `/proc/self/fd` and `cwd` | `user/posix/sys/path.c`, `user/posix/sys/dir.c`, `user/posix/sys/fd.c` (fork keys), `user/posix/sys/procfs.c`, `user/posix/sys/spawn.c`, `user/include/posixfds.h`, `user/lib/fdmsg.c`, `user/posix/crt/start.c`, `user/tests/utest/posixfds.c`, `user/tests/utest/posixfds_bad.c`, `user/posix/test/forkfd.c`, user/posix/test/dirfd.c | DL1 and DE2 merged; IL1, IL2 and PR merged (kinds, `procfs.c`, `forkfd.c`); not beside TP or LH | utest `posixfds` (kind 15, the version's cases); posixtest `dirfd`'s current-directory cases (deep, renamed, removed: `getcwd`, `..`; `fchdir`; a forked child's descriptors and directory; an exec'd child's; `/proc/self/fd` names), `fork`, `procfs`; `tools/shell-tests/posix-fork.txt`, posix-run; shell scripts basic, cmds, commands, files; kdump save; init run; one ktest pass at 4 CPUs | 1 | **Opus** |
+| **DL2. libc: the current directory, fork, exec, /proc** (built: [DL2 notes](#dl2-notes)) | 4.4 to 4.6: the current directory as a description, `chdir`, `fchdir`, `getcwd`, `chdir("..")` out of a removed one; the fork hook and the current directory's fork key; kind 15 and Q4's hand-over; `/proc/self/fd` and `cwd` | `user/posix/sys/path.c`, `user/posix/sys/dir.c`, `user/posix/sys/fd.c` (fork keys), `user/posix/sys/procfs.c`, `user/posix/sys/spawn.c`, `user/include/posixfds.h`, `user/lib/fdmsg.c`, `user/posix/crt/start.c`, `user/tests/utest/posixfds.c`, `user/tests/utest/posixfds_bad.c`, `user/posix/test/forkfd.c`, user/posix/test/dirfd.c | DL1 and DE2 merged; IL1, IL2 and PR merged (kinds, `procfs.c`, `forkfd.c`); not beside TP or LH | utest `posixfds` (kind 15, the version's cases); posixtest `dirfd`'s current-directory cases (deep, renamed, removed: `getcwd`, `..`; `fchdir`; a forked child's descriptors and directory; an exec'd child's; `/proc/self/fd` names), `fork`, `procfs`; `tools/shell-tests/posix-fork.txt`, posix-run; shell scripts basic, cmds, commands, files; kdump save; init run; one ktest pass at 4 CPUs | 1 | **Opus** |
 | **DC. Chromium's tests** | `FileUtilTest.DeleteDeep` off `tools/cr/base_unittests.skip` (and any `getcwd` entry CBF6 left), the stage relinked; what still fails listed with its reason | `tools/cr/base_unittests.skip`, `docs/CR-PLAN.md`'s rows | DL2 merged; no other agent running `base` | `CR_BASE_ONLY='FileUtilTest*:ScopedTempDir*:FileEnumerator*'` through `tools/cr-test.sh` on ext `/data` and once on `/tmp` | 0.5 | Sonnet 5.5 |
 | **DR. Independent review and fix** | everything above, findings first (a new docs/DIRHANDLE-REVIEW.md), then High and Medium fixed with a test each: can a channel reach past its view (a climb, an id, a hidden `etc` through `..`, a cut-off missed after a restart), can channels or orphans leak (a process that dies, a fork, a failed exec), can a removed directory's inode be reused while held, is a hand-over's channel ever dropped or doubled | the files its fixes need | DC | its own; hostile: 8 threads renaming directories in and out of a subview while others walk through channels, extfs killed every 200 ms during a deep `DeletePathRecursively`, a process holding 64 channels killed, a directory removed while 4 processes stand in it; full init run; the extfs and posix scripts | 1.5 | **Opus** |
 | **DJ. The join** | ARCHITECTURE (Storage: directory channels; the POSIX layer: the description), TESTING's rows, CR-PLAN, ROADMAP, HISTORY; this plan deleted when HISTORY covers it | the docs | DR | `make check` | 0.5 | Sonnet 5.5 |
@@ -1103,6 +1103,114 @@ the PC, all 19 passed: `make check`, the init run, ktest at 4 CPUs, the
 shell scripts basic, cmds, commands, files and posix-files, kdump save,
 `tools/extfs-svc-test.sh` (49 passed, every disk clean), the eight
 `tools/extfs-test.sh` cases, `tools/layout-test.sh` drive.
+
+### DL2 notes
+
+Built (2026-10-20), 4.4 to 4.6 and Q4 (A), with DL0's call that a
+directory crosses as its channel everywhere it crosses.
+- **The format** (`user/include/posixfds.h`, `user/lib/fdmsg.c`):
+  `POSIXFDS_VERSION` 3. Kind 15, `POSIXFDS_DIR_CHANNEL`: one channel; data
+  `struct posixfds_dirch` (id, volume), the mount's name and its NUL, the
+  last known text or nothing and its NUL (none when the whole passes
+  `POSIXFDS_DATA_MAX`). The first message's flag `POSIXFDS_CWD`: the
+  current directory is a directory channel, the message's first handle,
+  and its `cwd_len` bytes are that same data. `posixfds_dirch_parse` is
+  the one check (reader, writer, `fdpass.c`, the adopters, init); the
+  sink's new `cwd_dir` gets the channel, a sink without it has it closed,
+  and the reader's `cwd` text is the hint ("" for none). **The ABI stamp
+  moves** (posixfds.h is in it): a static program linked before reads no
+  hand-over (no descriptors, "/"), so every program, Chromium's included,
+  is relinked once (DC).
+- **The current directory** (path.c, dir.c): a directory description
+  under `cwd_lock` (NULL is "/"), made by a constructor at the start from
+  the hand-over's channel or its path (cleaned with `fs_path_clean`, no
+  request: a program that never uses it pays nothing). A path from the
+  hand-over (a native starter's: the shell, utest) stays a text
+  description until the program's own `chdir` (**my call**: opening its
+  channel at every start would cost a statfs and an opendir per program;
+  4.4's "a text current directory works as today"). `path_get` with
+  `AT_FDCWD` starts from it as from a descriptor (`base_in`), so every
+  *at call DL1 taught a descriptor works from it. `chdir` is `cwd_open`:
+  `fs.opendir` without `FS_READ` on a mount with directory channels, else
+  (FAT, the boot image, `/`, `/proc`, a full service) a text one once it
+  is found to be a directory. `fchdir` shares the descriptor's description
+  (Linux's takes the directory, not the listing; the plan said a duplicate
+  of the channel: sharing is the same directory without a handle).
+  `getcwd` is `dir_where`: `fs.resolve("")` on the channel (removed or cut
+  off: `ENOENT`; past `PATH_BYTES`: `ENAMETOOLONG`), a text one's text
+  checked as before. `chdir("..")` out of a removed directory goes on its
+  channel to DE2's remembered parent. `fchdir` past 4,095 bytes works now
+  (DL1's interim `ENAMETOOLONG` is gone; posixtest checks the new
+  answers).
+- **fork:** DL1's hook for the kind is **kept** (the child gets a
+  duplicate of each channel). The current directory is met after the
+  terminal under `POSIXFORK_CWD` (1025, `<posixfork.h>`), as a
+  descriptor's description is: after `fchdir` it is the descriptor's own,
+  kept with it.
+- **spawn and exec** (spawnfd.c, spawn.c): the copy's directory is a
+  description too (posix_spawn's `chdir` action opens one as chdir does,
+  `fchdir` shares); the hand-over gets its channel (`POSIXFDS_CWD`) or a
+  text one's path. **My call:** a child given grants
+  (`posix_spawnattr_setgrants_np`) gets the text, never the channel: the
+  channel reaches what the parent's view does, past the child's grants
+  (Chromium's narrowed children). A relative program and a relative open
+  action use the directory's text, asked of the service at the first need
+  (`ENAMETOOLONG` past 4,095 bytes); a gone channel's description is left
+  out of a child (no channel is the directory, and its text may name
+  another).
+- **/svc/exec** (`user/services/init/exec.c`, outside the row's files:
+  init reads and rewrites every hand-over): the caller's directory
+  channel goes to the child when it isn't raised and its list gives the
+  mount the data names; else the text rule as before (a raised child
+  starts in "/": **my call**, SX's fail-safe kept). A descriptor's
+  directory channel is kept like a file, without its text: a reopen of
+  that text after its service's fresh start would be the child's
+  authority steered by the caller's name.
+- **SCM_RIGHTS** (`fdpass.c`, `fdpass.h`): a directory with a channel
+  crosses as kind 15 (DL0's recommendation, the main session's call);
+  the receiver doesn't believe its text (dropped, as a file's path is), so
+  after a fresh start of extfs it is gone rather than reopened by the
+  sender's name. A text one crosses as its path, as before.
+- **/proc** (procfs.c): `/proc/self/cwd` is a link, listed; its `readlink`
+  and a directory's `/proc/self/fd/N` are `dir_where` with " (deleted)"
+  for a removed one (its last known text), `ENAMETOOLONG` past
+  `PATH_BYTES`; `stat` and `open` of it are "."'s; opening
+  `/proc/self/fd/N` of a directory is "." from it (any depth). A name
+  under `/proc/self/cwd/` is `ENOTDIR`, as under `/proc/self/fd/N`
+  (through a link: not built).
+- **Found on the way:** `inotify_add_watch` with a relative path would have
+  sent `fs.watch` to the current directory's channel, which refuses it:
+  `path_whole` makes such a path whole first (its directory's text now).
+- **Not done, on purpose:** the hint isn't refreshed by `getcwd`'s answer
+  (4.4 says it is): `x->path` is read without a lock by many callers
+  (`ops->path`, `hint_of`, `dir_copy`), so it stays what the description
+  was opened (or handed) with; `getcwd` asks the service every time
+  anyway, and only the reopen after a fresh start and a removed
+  directory's /proc text use the hint.
+- **Outside the row's files** (each forced or named by DL0): `files.h`,
+  `layer.h` (declarations), `fdpass.c`, `fdpass.h`, `inotify.c` (one call),
+  `spawnfd.c`, `spawn.h`, `<posixfork.h>` (the key), init's `exec.c`,
+  `tools/checkpathdone.py` (`path_get_at` is a maker), posixtest's
+  `main.c`, `pt.h` (the `--child-dirfd` mode), `scm.c`, `procfs.c`,
+  `procinfo.c`, `proc.c` (a sink's new field), utest's `pfdtest.h`.
+
+Tests: utest `posixfds_round_trip` (kind 15 there and back; the current
+directory's channel with and without a text, a reader without `cwd_dir`,
+a writer refusing bad data), `posixfds_many_handles` (the directory's
+channel before 180 handles), `posixfds_malformed` (59 forms: version 2,
+`POSIXFDS_CWD` past the first message or over a path, the data's mount,
+text and length, the kind's handle), `posixfds_writer_refuses` (the
+directory's channel closed when a later message fails); posixtest dirfd
+(the current directory at the deep bottom with a spawned child there,
+renamed and removed with `getcwd`, `..` and the `/proc` links, a forked
+child's and its execve's), scm (an ext directory as its channel follows a
+rename), procfs and procinfo (`/proc/self/cwd` listed, no longer missing).
+Batch 20063714 on the PC, all 12 passed first time: `make check`, the
+init run (126 s; posixtest dirfd about 14 s of it), ktest at 4 CPUs,
+`tools/shell-tests/posix-dirfd.txt`, posix-fork (utest posixfds), posix-run,
+posix-files, the shell scripts basic, cmds, commands and files, kdump
+save; batch 20064324 with `JAMOS_DATA_FS=fat`: posix-dirfd (`/data` text,
+`/tmp` channels) and the init run passed.
 
 ## 8. Tests
 

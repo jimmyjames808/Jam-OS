@@ -9,13 +9,20 @@
  *     6.6 KB of path), a file and a link `up` to ".." at the bottom, the
  *     *at calls there, then the tree removed as DeletePathRecursively
  *     removes one: fstatat, openat with O_NOFOLLOW, fdopendir and unlinkat
- *     on descriptors only (FAT: 15 levels, then ENAMETOOLONG);
- *   - renamed: a directory renamed while open is followed (FAT: not);
+ *     on descriptors only (FAT: 15 levels, then ENAMETOOLONG); on ext the
+ *     current directory goes to the bottom too (fchdir; DL2): relative
+ *     paths work, getcwd and the /proc links are ENAMETOOLONG, a spawned
+ *     child starts there, chdir("..") climbs;
+ *   - renamed: a directory renamed while open is followed (FAT: not), as
+ *     the current directory, by getcwd, /proc/self/cwd and the
+ *     descriptor's /proc/self/fd link;
  *   - removed: a directory removed and made again: the old descriptor
  *     names the removed one, an orphan (fstat says no links, fstatfs,
  *     fsync and ".." to the parent it had answer; ENOENT to a create and
- *     to getdents), never the new one; a whole path from it goes through
- *     the mount (FAT: the new one, by its name);
+ *     to getdents; its /proc link "(deleted)"), never the new one; a whole
+ *     path from it goes through the mount (FAT: the new one, by its
+ *     name); the current directory removed: getcwd ENOENT,
+ *     /proc/self/cwd "(deleted)", nothing made there, chdir("..") out;
  *   - across: renameat, renameat2's exchange and linkat between two
  *     descriptors and between one and a whole path; EXDEV to the other
  *     mount;
@@ -24,7 +31,9 @@
  *   - up: ".." from a mount's root goes on from the mount point in our
  *     namespace ("/"; on FAT it stops at the root, M13's rule);
  *   - forked: a forked child makes a file through a directory descriptor,
- *     and writes one opened from it (its open made again there);
+ *     and writes one opened from it (its open made again there), and one
+ *     in the current directory it shares, then execs: the new image's
+ *     directory and descriptor 3 are the same (the hand-over's channels);
  *   - many: 100 directories open at once, more than the 64 channels a
  *     process has of a volume: the rest are text descriptions (the log
  *     says so once), so a rename is followed by the first, not by the
@@ -35,7 +44,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <spawn.h>
 #include <string.h>
+#include <sys/inotify.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/syscall.h>
@@ -48,6 +59,8 @@
 #define LEVELS     26       /* DeleteDeep's */
 #define MANY       100      /* directories open at once: past the 64 channels */
 #define TOP_MAX    64       /* "/data/ptdirfd" and the names under it */
+
+extern char **environ;
 
 static char long_name[256];   /* NAME_MAX bytes of 'a' */
 
@@ -126,6 +139,35 @@ static bool lists(int dfd, const char *name, ino_t up)
     return found && dots;
 }
 
+/* posixtest --child-dirfd mode [path] spawned in our directory, fd its 3:
+ * its exit status (pt_child_dirfd's 0 when all held), or -1. */
+static int spawn_kid(const char *mode, const char *path, int fd)
+{
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, fd, 3);
+    char *argv[] = { "posixtest", "--child-dirfd", (char *)mode, (char *)path, NULL };
+    pid_t pid = -1;
+    int status = -1;
+    int e = posix_spawn(&pid, "/bin/posixtest", &fa, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (e || waitpid(pid, &status, 0) != pid || !WIFEXITED(status))
+        return -1;
+    return WEXITSTATUS(status);
+}
+
+/* readlink of link is want, or want and " (deleted)". */
+static bool link_is(const char *link, const char *want, bool deleted)
+{
+    char buf[PATH_MAX];
+    ssize_t n = readlink(link, buf, sizeof(buf) - 1);
+    if (n < 0)
+        return false;
+    buf[n] = '\0';
+    size_t w = strlen(want);
+    return !strncmp(buf, want, w) && !strcmp(buf + w, deleted ? " (deleted)" : "");
+}
+
 /* The bottom of the deep tree: the *at calls there, then a file and a
  * link (ext) left for the removal. */
 static void deep_bottom(int fd, bool ext)
@@ -156,11 +198,25 @@ static void deep_bottom(int fd, bool ext)
     CHECK(p >= 0 && fstat(p, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 4);
     if (p >= 0)
         close(p);
-    errno = 0;
-    if (ext)   /* the current directory is text until DL2: past PATH_BYTES */
-        CHECK(fchdir(fd) == -1 && errno == ENAMETOOLONG);
-    else
+    if (!ext) {
         CHECK(fchdir(fd) == 0 && chdir("/") == 0);
+        return;
+    }
+    /* The current directory there too (DL2: a channel): getcwd and its
+     * /proc links can't name it (past PATH_MAX), every relative path works,
+     * and a spawned child starts there with the descriptor as its 3. */
+    char cwd[PATH_MAX], link[32];
+    errno = 0;
+    CHECK(fchdir(fd) == 0 && getcwd(cwd, sizeof(cwd)) == NULL && errno == ENAMETOOLONG);
+    CHECK(access("file", R_OK) == 0 && put_file(AT_FDCWD, "here", "h") &&
+          faccessat(fd, "here", F_OK, 0) == 0);
+    errno = 0;
+    CHECK(readlink("/proc/self/cwd", cwd, sizeof(cwd)) == -1 && errno == ENAMETOOLONG);
+    snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+    errno = 0;
+    CHECK(readlink(link, cwd, sizeof(cwd)) == -1 && errno == ENAMETOOLONG);
+    CHECK(spawn_kid("deep", NULL, fd) == 0);
+    CHECK(chdir("..") == 0 && faccessat(AT_FDCWD, long_name, F_OK, 0) == 0 && chdir("/") == 0);
 }
 
 /* base's FileUtilTest.DeleteDeep. */
@@ -212,6 +268,20 @@ static void renamed(const char *top, bool ext)
     if (ext) {
         CHECK(made && there(f));
         CHECK(fchdir(dfd) == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, b));   /* asked now */
+        /* The current directory follows a rename too, and so do its /proc
+         * links and the descriptor's. */
+        char link[32];
+        struct stat s1, s2;
+        snprintf(link, sizeof(link), "/proc/self/fd/%d", dfd);
+        CHECK(rename(b, a) == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, a));
+        CHECK(link_is("/proc/self/cwd", a, false) && link_is(link, a, false));
+        CHECK(stat("/proc/self/cwd", &s1) == 0 && stat(".", &s2) == 0 && s1.st_ino == s2.st_ino &&
+              S_ISDIR(s1.st_mode));
+        int in = inotify_init1(IN_CLOEXEC);   /* a watch by a path from it: on the mount */
+        CHECK(in >= 0 && inotify_add_watch(in, ".", IN_CREATE) >= 0);
+        if (in >= 0)
+            close(in);
+        CHECK(rename(a, b) == 0);
         CHECK(chdir("/") == 0);
         CHECK(renameat(dfd, "f", dfd, "g") == 0 && faccessat(dfd, "g", F_OK, 0) == 0);
         CHECK(unlinkat(dfd, "g", 0) == 0);
@@ -252,6 +322,9 @@ static void removed(const char *top, bool ext)
             close(up);
         /* a whole path ignores the descriptor (it goes through the mount, not the orphan) */
         CHECK(put_file(dfd, g, "whole") && there(g) && unlink(g) == 0);
+        char link[32];   /* its /proc link: the removed one's name, "(deleted)" */
+        snprintf(link, sizeof(link), "/proc/self/fd/%d", dfd);
+        CHECK(link_is(link, c, true));
     } else {
         CHECK(made && there(g));   /* a text description: the new one, by its name */
         CHECK(unlink(g) == 0);
@@ -259,6 +332,19 @@ static void removed(const char *top, bool ext)
     if (dfd >= 0)
         close(dfd);
     CHECK(rmdir(c) == 0);
+
+    /* The current directory removed under us: getcwd ENOENT, its /proc
+     * link "(deleted)", nothing made there, and ".." gets out (on ext
+     * through the channel: DE2's remembered parent). */
+    char cwd[PATH_MAX];
+    CHECK(mkdir(c, 0755) == 0 && chdir(c) == 0 && rmdir(c) == 0);
+    errno = 0;
+    CHECK(getcwd(cwd, sizeof(cwd)) == NULL && errno == ENOENT);
+    CHECK(link_is("/proc/self/cwd", c, true));
+    errno = 0;
+    CHECK(open("x", O_WRONLY | O_CREAT | O_CLOEXEC, 0644) == -1 && errno == ENOENT);
+    CHECK(chdir("..") == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, top));
+    CHECK(chdir("/") == 0);
 }
 
 /* renameat, renameat2 and linkat between two descriptors, and between
@@ -406,16 +492,32 @@ static void forked(const char *top, bool ext)
     int dfd = open(d, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     int w = dfd >= 0 ? openat(dfd, "w", O_RDWR | O_CREAT | O_CLOEXEC, 0644) : -1;
     CHECK(w >= 0 && write(w, "parent", 6) == 6);
+    /* In it as the current directory too: the child's is the same (its
+     * fork key), and so is the new image's after the child's execve (the
+     * hand-over's), with the descriptor as its 3. */
+    CHECK(chdir(d) == 0);
     pid_t pid = fork();
     if (pid == 0) {
-        bool ok = put_file(dfd, "kid", "kid") && (!ext || write(w, "+kid", 4) == 4);
-        _exit(ok ? 0 : 1);
+        char cwd[PATH_MAX];
+        int why = !put_file(dfd, "kid", "kid")               ? 2
+                  : ext && write(w, "+kid", 4) != 4          ? 3
+                  : !put_file(AT_FDCWD, "kidcwd", "c")       ? 4
+                  : !getcwd(cwd, sizeof(cwd)) || strcmp(cwd, d) ? 5
+                  : dup2(dfd, 3) != 3 || fcntl(3, F_SETFD, 0) ? 6 : 0;   /* dfd may be 3 */
+        char *argv[] = { "posixtest", "--child-dirfd", "here", d, NULL };
+        if (!why)
+            execv("/bin/posixtest", argv);
+        _exit(why ? why : 7);
     }
     int status = -1;
-    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
-          WEXITSTATUS(status) == 0);
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status));
+    if (WEXITSTATUS(status))   /* the child's (2 to 7) or the new image's (10 on) */
+        printf("posixtest: dirfd: forked: the child ended with %d\n", WEXITSTATUS(status));
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(chdir("/") == 0);
     CHECK(there(c) && (!ext || (pread(w, buf, sizeof(buf), 0) == 10 &&
                                 !memcmp(buf, "parent+kid", 10))));
+    CHECK(faccessat(dfd, "kidcwd", F_OK, 0) == 0 && faccessat(dfd, "exec", F_OK, 0) == 0);
     if (w >= 0)
         close(w);
     if (dfd >= 0)
@@ -471,6 +573,34 @@ static void many(const char *top, bool ext)
     CHECK(gone == MANY);
     if (tfd >= 0)
         close(tfd);
+}
+
+/* posixtest --child-dirfd <mode> [path], its 3 a directory: "deep" (the
+ * bottom of the deep tree: getcwd ENAMETOOLONG, "file" there from both)
+ * or "here" (getcwd says path, "kid" under 3, "exec" made in the current
+ * directory). 0, or the number of the check that failed. */
+int pt_child_dirfd(int argc, char **argv)
+{
+    char cwd[PATH_MAX];
+    struct stat st;
+    if (fstat(3, &st) || !S_ISDIR(st.st_mode))
+        return 10;
+    if (argc >= 3 && !strcmp(argv[2], "deep")) {
+        errno = 0;
+        if (getcwd(cwd, sizeof(cwd)) || errno != ENAMETOOLONG)
+            return 11;
+        if (access("file", R_OK) || faccessat(3, "file", R_OK, 0))
+            return 12;
+        return 0;
+    }
+    if (argc >= 4 && !strcmp(argv[2], "here")) {
+        if (!getcwd(cwd, sizeof(cwd)) || strcmp(cwd, argv[3]))
+            return 13;
+        if (faccessat(3, "kid", F_OK, 0) || !put_file(AT_FDCWD, "exec", "e"))
+            return 14;
+        return 0;
+    }
+    return 15;
 }
 
 void pt_dirfd(char **argv)

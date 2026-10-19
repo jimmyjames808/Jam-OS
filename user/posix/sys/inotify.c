@@ -779,6 +779,8 @@ long lx_inotify_add_watch(long fd, long pathname, long mask_l, long d, long e, l
         r = -ENOMEM;
     if (!r)
         r = path_get(AT_FDCWD, (const char *)(uintptr_t)pathname, p);
+    if (!r)
+        r = path_whole(p);   /* fs.watch is the mount's: not on the current directory's channel */
     if (!r) {
         p->nofollow = (mask & IN_DONT_FOLLOW) != 0;
         r = add_path(desc, p, mask);

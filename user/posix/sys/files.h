@@ -211,13 +211,26 @@ unsigned path_perm(uint32_t mode, uint32_t uid);
 /* *st for p as path_info found it (fstat's and stat's shared part). */
 void path_fill_stat(const struct path *p, const struct path_info *i, struct stat *st);
 
-/* The current directory: copied into out (PATH_BYTES); and set (an
- * absolute clean path, already checked to be a directory). */
-void path_cwd(char out[PATH_BYTES]);
-void path_cwd_set(const char *abs);
-/* Has the current directory been removed since we went there (the service
- * says it is not there; Linux's getcwd is ENOENT then)? */
-bool path_cwd_removed(void);
+/* p (path_get's) as a whole path from "/" if it starts from a directory
+ * channel: that directory's text now (getcwd's question) joined with the
+ * path as written; for the requests a directory channel doesn't take
+ * (fs.watch: inotify_add_watch's relative path). 0, or -ENOENT (the
+ * directory removed), -ENAMETOOLONG, -errno. */
+long path_whole(struct path *p);
+/* path_get from base (a directory description, or a /proc directory's;
+ * NULL: "/") in place of a descriptor: posix_spawn's file actions start
+ * from the child's directory, which is no descriptor of ours. */
+long path_get_at(struct fd_desc *base, const char *in, struct path *out);
+/* The current directory (docs/DIRHANDLE-PLAN.md 4.4): a directory
+ * description (dir.c's kind) with a reference for the caller to fd_put,
+ * or NULL for "/"; and set to d (a directory description: its reference
+ * goes to the current directory, the old one's is dropped). */
+struct fd_desc *path_cwd(void);
+void            path_cwd_set(struct fd_desc *d);
+/* fork's walk (fd.c's fd_fork_walk, after the terminal): the current
+ * directory's description under POSIXFORK_CWD, met as a descriptor's is
+ * (the same one as a descriptor's after fchdir: kept with it). */
+void            path_fork_cwd(struct lx_fork_io *io);
 
 /* ---- fobj.c: a file's one open in this process -------------------------------- */
 
@@ -442,7 +455,8 @@ long dir_channel(struct fd_desc *d, handle_t *out);
 struct fd_desc *dir_copy(struct fd_desc *d);
 /* d's absolute text now (PATH_BYTES): a channel's asked of its service
  * (fs.resolve of ""), else, or failing that, the last known; 0 or -errno
- * (-ENAMETOOLONG: deeper than PATH_BYTES from "/"). fchdir's, spawn's. */
+ * (-ENAMETOOLONG: deeper than PATH_BYTES from "/"). spawn's, where a
+ * child gets text (a narrowed one's directory, a relative program). */
 long dir_text_now(struct fd_desc *d, char *out);
 /* A rename (fs.rename's flags) or a link of a to b, two paths on one
  * mount whose `at` differ (two directory channels, or one and a whole
@@ -451,8 +465,27 @@ long dir_text_now(struct fd_desc *d, char *out);
  * when their volumes differ or the service can't place b's from a's view
  * (b's still there through its own channel). 0 or -errno. */
 long dir_meet(const struct path *a, const struct path *b, uint32_t flags, bool link);
-/* The kind's adopter (fd_adopters' POSIXFDS_DIR line). */
+/* The kind's adopters (fd_adopters' POSIXFDS_DIR and POSIXFDS_DIR_CHANNEL
+ * lines: a path opened again, or the channel itself, its text a hint). */
 fd_adopt_fn dir_adopt_fd;
+fd_adopt_fn dir_adopt_ch;
+/* The hand-over's current directory as a description: its channel
+ * (consumed) and data (a POSIXFDS_DIR_CHANNEL's), or its path (cleaned).
+ * 0 and *out, or -errno. */
+long dir_adopt_cwd(handle_t ch, const void *data, uint32_t len, struct fd_desc **out);
+long dir_new_text(const char *abs, struct fd_desc **out);
+/* chdir's directory: in (the program's string) from base (path_get_at's)
+ * opened as the current directory is kept: a channel's description
+ * without FS_READ, or a text one (found to be a directory). 0 and *out,
+ * or -errno. */
+long dir_cwd_open(struct fd_desc *base, const char *in, struct fd_desc **out);
+/* getcwd's question of directory d: its absolute text now into out
+ * (PATH_BYTES; a channel's asked of its service, fs.resolve of ""). 0, or
+ * -ENOENT (removed, or cut off from its view: Linux's getcwd says so),
+ * -ENAMETOOLONG (deeper than PATH_BYTES from "/"), -errno. deleted: a
+ * removed one's last known text with " (deleted)" instead of ENOENT, as
+ * Linux's /proc links name one. */
+long dir_where(struct fd_desc *d, char *out, bool deleted);
 /* One getdents64 record (Linux's linux_dirent64, padded to 8 bytes) for
  * name at the caller's buf, d_off next: its length, 0 if it doesn't fit
  * in room bytes (nothing written then), or -EFAULT. */

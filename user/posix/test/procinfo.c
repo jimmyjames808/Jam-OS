@@ -744,7 +744,7 @@ static void check_gone(void)
     static const char *const gone[] = {
         "/proc/self/ns/user", "/proc/self/ns", "/proc/uptime", "/proc/loadavg",
         "/proc/self/smaps", "/proc/self/environ", "/proc/self/limits",
-        "/proc/self/cwd", "/proc/self/oom_score_adj", "/proc/diskstats",
+        "/proc/self/oom_score_adj", "/proc/diskstats",
         "/proc/sys/vm/max_map_count", "/proc/sys/kernel/random", "/proc/self/auxv",
     };
     struct stat st;

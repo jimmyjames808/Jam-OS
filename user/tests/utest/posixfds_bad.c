@@ -20,20 +20,27 @@ static struct pfd_raw msgs[3];       /* the hand-over being sent */
 static struct pfd_collect col;       /* the sink */
 
 /* The good hand-over: message 0 with "/data", a pipe (0), a file (1) and
- * a directory (2); message 1, the last, with a socket (5) and /dev/null (6). */
+ * a directory (2); message 1, the last, with a socket (5), /dev/null (6)
+ * and a directory channel (7: "/data", "/data/d"). */
 static status_t good(void)
 {
     status_t st;
+    uint8_t dirch[64];
+    uint32_t dl = pfd_dirch(dirch, 9, "/data", "/data/d");
     msgs[2].nh = 0;
     pfd_raw_begin(&msgs[0], 0, false, "/data");
     pfd_raw_begin(&msgs[1], 1, true, NULL);
     if ((st = pfd_raw_fd(&msgs[0], 0, POSIXFDS_PIPE, 0, 0, NULL, 0)) != OK ||
         (st = pfd_raw_fd(&msgs[0], 1, POSIXFDS_FILE, 2, 10, "f", 2)) != OK ||
         (st = pfd_raw_fd(&msgs[0], 2, POSIXFDS_DIR, 0, 0, "/boot", 6)) != OK ||
-        (st = pfd_raw_fd(&msgs[1], 5, POSIXFDS_SOCKET, 2048, 0, NULL, 0)) != OK)
+        (st = pfd_raw_fd(&msgs[1], 5, POSIXFDS_SOCKET, 2048, 0, NULL, 0)) != OK ||
+        (st = pfd_raw_fd(&msgs[1], 6, POSIXFDS_DEV, 2, 0, "null", 5)) != OK)
         return st;
-    return pfd_raw_fd(&msgs[1], 6, POSIXFDS_DEV, 2, 0, "null", 5);
+    return pfd_raw_fd(&msgs[1], 7, POSIXFDS_DIR_CHANNEL, 0, 3, dirch, dl);
 }
+
+/* The directory channel's data in good()'s message 1: byte off of it. */
+#define DIRCH(off) rec_data(1, 2, sizeof(struct posixfds_dirch) + (off))
 
 static struct posixfds_fd *rec(unsigned m, unsigned i)
 {
@@ -108,6 +115,20 @@ static bool breaks(unsigned which, unsigned *nmsg)
     case 47: h1->exe_len = 2; break;                      /* a path past the first */
     case 48: h0->state.sigpending |= POSIXFDS_SIG(9); break;
     case 49: h0->version = 1; break;                      /* the format before FL3's */
+    case 50: h0->version = 2; break;                      /* ... and before DL2's */
+    case 51: h1->flags |= POSIXFDS_CWD; break;            /* a directory channel past the first */
+    case 52: h0->flags |= POSIXFDS_CWD; break;            /* "/data" is no channel's data */
+    case 53: *DIRCH(0) = 'd'; break;                      /* a mount "data" */
+    case 54: *DIRCH(5) = '/'; break;                      /* a mount "/data//data/d" */
+    case 55: *DIRCH(6) = 'x'; break;                      /* a relative text */
+    case 56: *DIRCH(13) = 'x'; break;                     /* the text without its NUL */
+    case 57: rec(1, 2)->data_len = POSIXFDS_DIRCH_MIN - 1; break;
+    case 58: rec(1, 2)->nhandles = 0; break;              /* its channel left out */
+    case 59:                                              /* an event, not a channel */
+        jam_handle_close(msgs[1].h[4]);
+        if (jam_event_create(&msgs[1].h[4]) != OK)
+            msgs[1].h[4] = HANDLE_INVALID;
+        break;
     default:
         return false;
     }
@@ -135,7 +156,7 @@ bool t_posixfds_malformed(void)
     uint64_t before = pfd_handles();
     CHECK_ST(good(), OK);
     CHECK_ST(send_and_read(a, b, 2), OK);   /* the good one is good */
-    CHECK_EQ(col.n, 5u);
+    CHECK_EQ(col.n, 6u);
     pfd_collect_close(&col);
     unsigned tried = 0;
     for (unsigned which = 0; which < 64; which++) {
@@ -156,7 +177,7 @@ bool t_posixfds_malformed(void)
         if (which == 22 && col.resets != 1)
             FAIL("break 22: the first message's descriptors were not reset");
     }
-    CHECK_EQ(tried, 49u);
+    CHECK_EQ(tried, 59u);
 
     /* A sink that refuses: its error, everything closed. */
     CHECK_ST(good(), OK);
@@ -387,7 +408,13 @@ bool t_posixfds_writer_refuses(void)
         d[i] = (struct posixfds_desc){ .fd = (int32_t)i, .kind = POSIXFDS_FILE, .handles = hs[i] };
     }
     d[N - 1].fd = 0;   /* in the second message (80 handles) */
-    struct posixfds_out out = { .cwd = "/", .fds = d, .nfds = N };
+    static uint8_t dirch[64];   /* and the directory's channel in the first: closed too */
+    handle_t dir, peer;
+    CHECK_ST(jam_channel_create(&dir, &peer), OK);
+    jam_handle_close(peer);
+    struct posixfds_out out = { .cwd_dir = dir, .cwd_data = dirch,
+                                .cwd_data_len = pfd_dirch(dirch, 1, "/data", NULL),
+                                .fds = d, .nfds = N };
     CHECK_ST(posixfds_write(a, &out), ERR_INVALID_ARGS);
     CHECK_EQ(pfd_queued(b), 1u);
     CHECK_ST(posixfds_read(b, &sink, &s, cwd), ERR_INVALID_ARGS);

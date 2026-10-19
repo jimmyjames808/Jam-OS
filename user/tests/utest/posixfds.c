@@ -44,6 +44,20 @@ void pfd_collect_close(struct pfd_collect *c)
         for (unsigned j = 0; j < c->got[i].rec.nhandles; j++)
             jam_handle_close(c->got[i].hs[j]);
     c->n = 0;
+    if (c->cwd)
+        jam_handle_close(c->cwd);
+    c->cwd = HANDLE_INVALID;
+}
+
+static void collect_cwd(void *ctx, const void *data, uint32_t len, handle_t ch)
+{
+    struct pfd_collect *c = ctx;
+    c->cwds++;
+    if (c->cwd)
+        jam_handle_close(c->cwd);
+    c->cwd = ch;
+    c->cwd_len = len;
+    memcpy(c->cwd_data, data, len < PFD_DATA ? len : PFD_DATA);
 }
 
 static void collect_reset(void *ctx)
@@ -63,7 +77,7 @@ struct posixfds_sink pfd_sink(struct pfd_collect *c)
 {
     memset(c, 0, sizeof(*c));
     return (struct posixfds_sink){ .ctx = c, .fd = collect_fd, .reset = collect_reset,
-                                   .secure = collect_secure };
+                                   .secure = collect_secure, .cwd_dir = collect_cwd };
 }
 
 uint64_t pfd_handles(void)
@@ -112,6 +126,34 @@ void pfd_raw_begin(struct pfd_raw *m, uint16_t seq, bool last, const char *cwd)
         memcpy(m->b + m->n, cwd, h->cwd_len);
         m->n += (h->cwd_len + 7) & ~7u;
     }
+}
+
+void pfd_raw_begin_dir(struct pfd_raw *m, bool last, const void *data, uint32_t len,
+                       handle_t ch)
+{
+    pfd_raw_begin(m, 0, last, "/");
+    struct posixfds_msg *h = pfd_hdr(m);
+    m->n = sizeof(*h);   /* the directory again: its data in place of "/" */
+    h->flags |= POSIXFDS_CWD;
+    h->cwd_len = len;
+    memset(m->b + m->n, 0, (len + 7) & ~7u);
+    memcpy(m->b + m->n, data, len);
+    m->n += (len + 7) & ~7u;
+    m->h[m->nh++] = ch;
+    h->nhandles = m->nh;
+}
+
+uint32_t pfd_dirch(uint8_t *out, uint64_t id, const char *m, const char *path)
+{
+    const struct posixfds_dirch ids = { id, id + 1 };
+    uint32_t n = sizeof(ids), ml = (uint32_t)strlen(m) + 1;
+    memcpy(out, &ids, n);
+    memcpy(out + n, m, ml);
+    n += ml;
+    if (!path)
+        path = "";
+    memcpy(out + n, path, strlen(path) + 1);
+    return n + (uint32_t)strlen(path) + 1;
 }
 
 status_t pfd_raw_fd(struct pfd_raw *m, int32_t fd, uint16_t kind, uint32_t status,
@@ -177,15 +219,21 @@ static status_t test_desc(struct posixfds_desc *d, handle_t *hs, uint64_t *koids
     };
     const char *s = data[kind] ? data[kind] : "xyz";
     static uint32_t dup_target;   /* a DUP's data: the descriptor sent just before (fd + 3) */
+    static uint8_t dirch[64];     /* a directory channel's */
     *d = (struct posixfds_desc){
         .fd = fd, .kind = kind, .status = kind == POSIXFDS_FILE ? 2 | POSIXFDS_O_APPEND : 0,
-        .offset = kind == POSIXFDS_FILE ? 123456789 : kind == POSIXFDS_DIR ? 7 : 0,
+        .offset = kind == POSIXFDS_FILE ? 123456789 : kind == POSIXFDS_DIR ? 7
+                  : kind == POSIXFDS_DIR_CHANNEL ? 9 : 0,
         .data = s, .data_len = (uint32_t)strlen(s) + (*s ? 1 : 0), .handles = hs,
     };
     if (kind == POSIXFDS_DUP) {
         dup_target = (uint32_t)fd + 3;
         d->data = &dup_target;
         d->data_len = sizeof(dup_target);
+    }
+    if (kind == POSIXFDS_DIR_CHANNEL) {
+        d->data = dirch;
+        d->data_len = pfd_dirch(dirch, 0x1234, "/data", "/data/a/b");
     }
     status_t st = pfd_make(kind, hs);
     for (int i = 0; st == OK && i < posixfds_kind_handles(kind, NULL); i++)
@@ -262,6 +310,40 @@ bool t_posixfds_round_trip(void)
     CHECK_EQ(col.n, 0u);
     CHECK_EQ(col.secures, 1u);
     CHECK(!strcmp(cwd, "/"));
+
+    /* The current directory as a directory channel (POSIXFDS_CWD,
+     * version 3): the sink's cwd_dir gets the channel and its data, cwd
+     * its text, "" when it has none; a reader without cwd_dir closes it;
+     * a writer given bad data refuses, the channel closed. */
+    static uint8_t data[64];
+    handle_t dir, peer;
+    out.secure = false;
+    out.cwd = NULL;
+    for (unsigned round = 0; round < 4; round++) {
+        CHECK_ST(jam_channel_create(&dir, &peer), OK);
+        uint64_t dir_koid = koid_of(dir);
+        out.cwd_dir = dir;
+        out.cwd_data = data;
+        out.cwd_data_len = pfd_dirch(data, 77, "/data", round == 1 ? NULL : "/data/deep/er");
+        if (round == 3)
+            data[16] = 'd';   /* the mount "data": not one */
+        struct posixfds_sink plain = sink;
+        plain.cwd_dir = NULL;
+        CHECK_ST(posixfds_write(a, &out), round == 3 ? ERR_INVALID_ARGS : OK);
+        if (round < 3)
+            CHECK_ST(posixfds_read(b, round == 2 ? &plain : &sink, &got, cwd), OK);
+        if (round < 2) {
+            CHECK(col.cwds == round + 1 && koid_of(col.cwd) == dir_koid);
+            CHECK(col.cwd_len == out.cwd_data_len && !memcmp(col.cwd_data, data, col.cwd_len));
+            CHECK(!strcmp(cwd, round ? "" : "/data/deep/er"));
+            pfd_collect_close(&col);
+        } else {   /* closed by the reader, or by the writer that refused */
+            CHECK_ST(jam_object_wait_one(peer, SIG_PEER_CLOSED, 0, NULL), OK);
+        }
+        jam_handle_close(peer);
+    }
+    out.cwd_dir = HANDLE_INVALID;
+    CHECK_EQ(pfd_queued(b), 0u);
     jam_handle_close(a);
     CHECK_ST(posixfds_read(b, &sink, &got, cwd), ERR_NOT_FOUND);   /* closed, nothing queued */
     jam_handle_close(b);
@@ -285,15 +367,24 @@ bool t_posixfds_many_handles(void)
     for (unsigned i = 0; i < N; i++)
         CHECK_ST(test_desc(&d[i], hs[i], koids[i], (int32_t)(i * 13 % POSIXFDS_FD_MAX),
                            i < FILES ? POSIXFDS_FILE : POSIXFDS_SOCKET), OK);
-    struct posixfds_out out = { .cwd = "/boot", .fds = d, .nfds = N };
+    /* The directory's channel too: the first message's first handle. */
+    static uint8_t data[64];
+    handle_t dir, peer;
+    CHECK_ST(jam_channel_create(&dir, &peer), OK);
+    uint64_t dir_koid = koid_of(dir);
+    struct posixfds_out out = { .cwd_dir = dir, .cwd_data = data,
+                                .cwd_data_len = pfd_dirch(data, 5, "/tmp", "/tmp/x"),
+                                .fds = d, .nfds = N };
     CHECK_ST(posixfds_write(a, &out), OK);
-    CHECK(pfd_queued(b) >= 3u);   /* 180 handles: at least three messages */
+    CHECK(pfd_queued(b) >= 3u);   /* 181 handles: at least three messages */
     struct posixfds_sink sink = pfd_sink(&many);
     struct posixfds_state got;
     char cwd[POSIXFDS_PATH_MAX];
     CHECK_ST(posixfds_read(b, &sink, &got, cwd), OK);
     if (!same_fds(&many, d, N, koids))
         return false;
+    CHECK(many.cwds == 1 && koid_of(many.cwd) == dir_koid && !strcmp(cwd, "/tmp/x"));
+    jam_handle_close(peer);
     CHECK_EQ(pfd_queued(b), 0u);
     pfd_collect_close(&many);
     jam_handle_close(a);

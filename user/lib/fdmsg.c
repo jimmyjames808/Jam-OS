@@ -26,7 +26,7 @@ _Static_assert(POSIXFDS_MSG_MAX <= CHANNEL_MAX_BYTES, "a message fits a channel 
 #define PAD8(n) (((n) + 7u) & ~7u)
 
 /* What a kind is (posixfds.h's enum). */
-enum data_rule { DATA_ANY, DATA_PATH, DATA_NAME, DATA_FD };
+enum data_rule { DATA_ANY, DATA_PATH, DATA_NAME, DATA_FD, DATA_DIRCH };
 static const struct {
     uint8_t  nhandles;                        /* exactly this many */
     uint8_t  data;                            /* enum data_rule */
@@ -47,6 +47,7 @@ static const struct {
     [POSIXFDS_DUP] = { 0, DATA_FD, false, { 0 } },
     [POSIXFDS_SEQPACKET] = { 1, DATA_ANY, false, { OBJ_CHANNEL } },
     [POSIXFDS_PROC] = { 0, DATA_PATH, false, { 0 } },
+    [POSIXFDS_DIR_CHANNEL] = { 1, DATA_DIRCH, true, { OBJ_CHANNEL } },
 };
 
 static lock_t   buf_lock;                              /* guards everything below */
@@ -85,6 +86,29 @@ static bool zeros(const uint8_t *p, uint32_t from, uint32_t n)
 static bool string_ok(const char *s, uint32_t len)
 {
     return len >= 2 && s[len - 1] == '\0' && strnlen(s, len) == len - 1;
+}
+
+bool posixfds_dirch_parse(const void *data, uint32_t len, struct posixfds_dirch *ids,
+                          const char **mount, const char **path)
+{
+    const uint32_t head = sizeof(struct posixfds_dirch);
+    if (len < POSIXFDS_DIRCH_MIN || len > POSIXFDS_DATA_MAX)
+        return false;
+    const char *m = (const char *)data + head;
+    uint32_t ml = (uint32_t)strnlen(m, len - head);   /* the mount's name, its NUL not counted */
+    if (ml == len - head || ml < 2 || ml + 1 > NS_NAME_MAX || m[0] != '/' || strchr(m + 1, '/'))
+        return false;
+    const char *p = m + ml + 1;
+    uint32_t pl = len - head - ml - 1;                 /* the path's bytes, its NUL counted */
+    if (!pl || p[pl - 1] != '\0' || strnlen(p, pl) != pl - 1 || (pl > 1 && p[0] != '/'))
+        return false;
+    if (ids)
+        memcpy(ids, data, head);
+    if (mount)
+        *mount = m;
+    if (path)
+        *path = p;
+    return true;
 }
 
 static bool state_ok(const struct posixfds_state *s)
@@ -134,6 +158,8 @@ static bool record_ok(const struct posixfds_fd *r, const uint8_t *data)
         return string_ok(s, r->data_len) && s[0] == '/';
     case DATA_NAME:
         return string_ok(s, r->data_len) && !strchr(s, '/');
+    case DATA_DIRCH:
+        return posixfds_dirch_parse(data, r->data_len, NULL, NULL, NULL);
     }
     return true;
 }
@@ -163,12 +189,23 @@ static bool path_ok(uint32_t len, uint32_t n, uint32_t *at)
     return true;
 }
 
+/* A directory channel's data of len bytes (the current directory's) at
+ * *at in buf (n bytes), zero-padded; *at moves past it. */
+static bool dirch_ok(uint32_t len, uint32_t n, uint32_t *at)
+{
+    if (len > n - *at || PAD8(len) > n - *at ||
+        !posixfds_dirch_parse(buf + *at, len, NULL, NULL, NULL) || !zeros(buf + *at, len, PAD8(len)))
+        return false;
+    *at += PAD8(len);
+    return true;
+}
+
 /* The header of message seq (n bytes in buf, nh handles); *at: where the
  * records start. */
 static bool header_ok(const struct posixfds_msg *m, uint32_t n, uint32_t nh, uint16_t seq,
                       uint32_t *at)
 {
-    uint16_t may = (uint16_t)(POSIXFDS_LAST | (seq ? 0u : POSIXFDS_SECURE));
+    uint16_t may = (uint16_t)(POSIXFDS_LAST | (seq ? 0u : POSIXFDS_SECURE | POSIXFDS_CWD));
     if (n < sizeof(*m) || m->txid || m->magic != POSIXFDS_MAGIC ||
         m->version != POSIXFDS_VERSION || (m->flags & ~may) || m->seq != seq ||
         m->nhandles != nh || m->reserved)
@@ -176,8 +213,9 @@ static bool header_ok(const struct posixfds_msg *m, uint32_t n, uint32_t nh, uin
     *at = sizeof(*m);
     if (seq)
         return !m->cwd_len && !m->exe_len && state_zero(&m->state) && m->nfds;
-    return path_ok(m->cwd_len, n, at) && (!m->exe_len || path_ok(m->exe_len, n, at)) &&
-           state_ok(&m->state);
+    bool dir = m->flags & POSIXFDS_CWD;
+    return (dir ? nh >= 1 && dirch_ok(m->cwd_len, n, at) : path_ok(m->cwd_len, n, at)) &&
+           (!m->exe_len || path_ok(m->exe_len, n, at)) && state_ok(&m->state);
 }
 
 /* The message in buf (n bytes) and hbuf (nh handles) is message seq of a
@@ -191,6 +229,11 @@ static bool check_msg(uint32_t n, uint32_t nh, uint16_t seq, bool types)
     memcpy(&m, buf, sizeof(m));
     if (!header_ok(&m, n, nh, seq, &at))
         return false;
+    if (!seq && (m.flags & POSIXFDS_CWD)) {   /* the directory's channel, before the records' */
+        if (types && !types_ok(POSIXFDS_DIR_CHANNEL, hbuf))
+            return false;
+        h = 1;
+    }
     for (unsigned i = 0; i < m.nfds; i++) {
         struct posixfds_fd r;
         if (n - at < sizeof(r))
@@ -212,6 +255,8 @@ static bool check_msg(uint32_t n, uint32_t nh, uint16_t seq, bool types)
 
 void posixfds_discard(const struct posixfds_out *out)
 {
+    if (out && out->cwd_dir)
+        jam_handle_close(out->cwd_dir);
     for (unsigned i = 0; out && i < out->nfds; i++) {
         int k = posixfds_kind_handles(out->fds[i].kind, NULL);
         for (int j = 0; k > 0 && j < k && out->fds[i].handles; j++)
@@ -231,15 +276,27 @@ static uint32_t add_string(const char *s, uint32_t *n)
 }
 
 /* Start message seq in buf: its header (the first message's state,
- * directory and program's path too); *n: its length so far. */
-static void begin_msg(const struct posixfds_out *out, uint16_t seq, uint32_t *n)
+ * directory and program's path too, and the directory's channel as its
+ * first handle); *n: its length so far, *nh its handles. */
+static void begin_msg(const struct posixfds_out *out, uint16_t seq, uint32_t *n, uint32_t *nh)
 {
     struct posixfds_msg m = { .magic = POSIXFDS_MAGIC, .version = POSIXFDS_VERSION, .seq = seq };
     *n = sizeof(m);
+    *nh = 0;
     if (!seq) {
         m.flags = out->secure ? (uint16_t)POSIXFDS_SECURE : 0;
         m.state = out->state;
-        m.cwd_len = add_string(out->cwd, n);
+        if (out->cwd_dir) {
+            m.flags |= POSIXFDS_CWD;
+            m.cwd_len = out->cwd_data_len;
+            memcpy(buf + *n, out->cwd_data, m.cwd_len);
+            memset(buf + *n + m.cwd_len, 0, PAD8(m.cwd_len) - m.cwd_len);
+            *n += PAD8(m.cwd_len);
+            hbuf[(*nh)++] = out->cwd_dir;
+            m.nhandles = *nh;
+        } else {
+            m.cwd_len = add_string(out->cwd, n);
+        }
         if (out->exe)
             m.exe_len = add_string(out->exe, n);
     }
@@ -273,8 +330,11 @@ static status_t descs_ok(const struct posixfds_out *out)
 {
     if (out->nfds > POSIXFDS_FD_MAX)
         return ERR_OUT_OF_RANGE;
-    if (!out->cwd || strnlen(out->cwd, POSIXFDS_PATH_MAX) == POSIXFDS_PATH_MAX ||
-        (out->exe && strnlen(out->exe, POSIXFDS_PATH_MAX) == POSIXFDS_PATH_MAX))
+    if (out->cwd_dir ? !out->cwd_data || !posixfds_dirch_parse(out->cwd_data, out->cwd_data_len,
+                                                               NULL, NULL, NULL)
+                     : !out->cwd || strnlen(out->cwd, POSIXFDS_PATH_MAX) == POSIXFDS_PATH_MAX)
+        return ERR_INVALID_ARGS;
+    if (out->exe && strnlen(out->exe, POSIXFDS_PATH_MAX) == POSIXFDS_PATH_MAX)
         return ERR_INVALID_ARGS;
     for (unsigned i = 0; i < out->nfds; i++) {
         const struct posixfds_desc *d = &out->fds[i];
@@ -308,9 +368,9 @@ static status_t send_msg(handle_t ch, uint32_t n, uint32_t nh, bool last)
  * *next on were in no message (their handles are still to close). */
 static status_t write_all(handle_t ch, const struct posixfds_out *out, unsigned *next)
 {
-    uint32_t n, nh = 0;
+    uint32_t n, nh;
     uint16_t seq = 0;
-    begin_msg(out, seq, &n);
+    begin_msg(out, seq, &n, &nh);
     for (*next = 0; *next < out->nfds; (*next)++) {
         const struct posixfds_desc *d = &out->fds[*next];
         uint32_t size = sizeof(struct posixfds_fd) + PAD8(d->data_len);
@@ -320,8 +380,7 @@ static status_t write_all(handle_t ch, const struct posixfds_out *out, unsigned 
             status_t st = send_msg(ch, n, nh, false);
             if (st != OK)
                 return st;
-            begin_msg(out, ++seq, &n);
-            nh = 0;
+            begin_msg(out, ++seq, &n, &nh);
         }
         add_record(d, &n, &nh);
     }
@@ -341,9 +400,11 @@ status_t posixfds_write(handle_t ch, const struct posixfds_out *out)
     st = write_all(ch, out, &next);
     lock_give(&buf_lock);
     /* The descriptors in the message that failed went with it (sent or
-     * closed); the ones from `next` on were never added to one. */
+     * closed), and the directory's channel with the first; the ones from
+     * `next` on were never added to one. */
     if (st != OK && next < out->nfds) {
         struct posixfds_out rest = *out;
+        rest.cwd_dir = HANDLE_INVALID;
         rest.fds = out->fds + next;
         rest.nfds = out->nfds - next;
         posixfds_discard(&rest);
@@ -391,12 +452,14 @@ static bool nothing_after(handle_t ch)
     return jam_handle_info(ch, &info) == OK && info.queued == 0;
 }
 
-/* Give the checked message in buf to the sink, record by record. A
- * refusal closes the handles of the records after it. */
+/* Give the checked message in buf to the sink, record by record (the
+ * first message's directory channel, its first handle, is the caller's).
+ * A refusal closes the handles of the records after it. */
 static status_t deliver(const struct posixfds_sink *sink)
 {
     const struct posixfds_msg *m = (const struct posixfds_msg *)buf;
-    uint32_t at = sizeof(*m) + PAD8(m->cwd_len) + PAD8(m->exe_len), h = 0;
+    uint32_t at = sizeof(*m) + PAD8(m->cwd_len) + PAD8(m->exe_len);
+    uint32_t h = !m->seq && (m->flags & POSIXFDS_CWD) ? 1 : 0;
     status_t st = OK;
     for (unsigned i = 0; i < m->nfds; i++) {
         struct posixfds_fd r;
@@ -414,11 +477,12 @@ static status_t deliver(const struct posixfds_sink *sink)
 }
 
 /* The messages from the first to the last, each checked then delivered;
- * the first's state, directory, program's path (empty: none) and secure
- * mark into *state, cwd, exe and *secure. */
+ * the first's state, directory (its bytes: a path, or a directory
+ * channel's data, *cwd_len of them, its channel into *cwd_ch), program's
+ * path (empty: none) and secure mark into *state, cwd, exe and *secure. */
 static status_t read_all(handle_t ch, const struct posixfds_sink *sink,
-                         struct posixfds_state *state, char *cwd, char *exe, bool *secure,
-                         bool *given)
+                         struct posixfds_state *state, char *cwd, uint32_t *cwd_len,
+                         handle_t *cwd_ch, char *exe, bool *secure, bool *given)
 {
     for (uint16_t seq = 0;; seq++) {
         uint32_t n, nh;
@@ -437,6 +501,9 @@ static status_t read_all(handle_t ch, const struct posixfds_sink *sink,
         if (seq == 0) {
             *state = m->state;
             *secure = m->flags & POSIXFDS_SECURE;
+            if (m->flags & POSIXFDS_CWD)
+                *cwd_ch = hbuf[0];   /* ours until the end: closed if the hand-over fails */
+            *cwd_len = m->cwd_len;
             memcpy(cwd, buf + sizeof(*m), m->cwd_len);
             exe[0] = '\0';
             if (m->exe_len)
@@ -454,24 +521,36 @@ static status_t read_all(handle_t ch, const struct posixfds_sink *sink,
 status_t posixfds_read(handle_t ch, const struct posixfds_sink *sink,
                        struct posixfds_state *state, char cwd[POSIXFDS_PATH_MAX])
 {
+    _Static_assert(POSIXFDS_DATA_MAX <= POSIXFDS_PATH_MAX, "a directory channel's data fits dir");
     struct posixfds_state s;
     static char dir[POSIXFDS_PATH_MAX], exe[POSIXFDS_PATH_MAX];   /* under buf_lock */
     bool given = false, secure = false;
+    uint32_t dir_len = 0;
+    handle_t dir_ch = HANDLE_INVALID;
     lock_take(&buf_lock);
     memset(seen, 0, sizeof(seen));
-    status_t st = read_all(ch, sink, &s, dir, exe, &secure, &given);
+    status_t st = read_all(ch, sink, &s, dir, &dir_len, &dir_ch, exe, &secure, &given);
     if (st != OK && st != ERR_NOT_FOUND) {
         if (given)
             sink->reset(sink->ctx);
+        if (dir_ch)
+            jam_handle_close(dir_ch);
         drain(ch);
     }
     if (st == OK) {
+        const char *text = dir;
         *state = s;
-        memcpy(cwd, dir, strnlen(dir, POSIXFDS_PATH_MAX - 1) + 1);
+        if (dir_ch)
+            (void)posixfds_dirch_parse(dir, dir_len, NULL, NULL, &text);   /* checked */
+        memcpy(cwd, text, strnlen(text, POSIXFDS_PATH_MAX - 1) + 1);
         if (exe[0] && sink->exe)
             sink->exe(sink->ctx, exe);
         if (secure && sink->secure)
             sink->secure(sink->ctx);
+        if (dir_ch && sink->cwd_dir)
+            sink->cwd_dir(sink->ctx, dir, dir_len, dir_ch);
+        else if (dir_ch)
+            jam_handle_close(dir_ch);
     }
     lock_give(&buf_lock);
     return st;

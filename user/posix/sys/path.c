@@ -3,8 +3,10 @@
  * itself, and what the layer asks a mount about a path: stat, read-only
  * or not, and the errno of its answers.
  *
- * The current directory is a string under cwd_lock, set from the
- * hand-over's at the first use (else "/"). Whether a mount is read-only,
+ * The current directory is a directory description (dir.c's kind) under
+ * cwd_lock, made from the hand-over's at the start (else "/": NULL), and
+ * a relative path with AT_FDCWD starts from it as from a descriptor: on
+ * its channel, or from its text. Whether a mount is read-only,
  * and what it is (its FS_FEAT_*: links or not), is asked with fs.statfs
  * and remembered per mount (ro_cache, under ro_lock: the read-only flag
  * for a second, the features, which change only with the mount, for a
@@ -32,6 +34,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fs_idl.h>
+#include <posixfork.h>
 #include <string.h>
 #include "files.h"
 
@@ -45,9 +48,8 @@
 #define ONE_USER   1000u       /* the one user's uid and gid (M13 Q7) */
 #define LINKS_MAX  40u         /* links a path may follow out of mounts (Linux's ELOOP) */
 
-static char   cwd[PATH_BYTES] = "/";   /* cwd_lock */
-static bool   cwd_ready;               /* cwd_lock: the hand-over's was looked at */
-static lock_t cwd_lock;
+static struct fd_desc *cwd;   /* cwd_lock: the current directory, a reference; NULL: "/" */
+static lock_t          cwd_lock;
 
 static struct {
     char     mount[NS_NAME_MAX];   /* "" for a free entry */
@@ -193,42 +195,70 @@ static long resolve_abs(const char *in, size_t n, struct path *out)
     return resolve(in, n, out);
 }
 
-/* The directory relative path in (n bytes) starts from: 0 with its text
- * in out->abs, or 1 with out made from a directory channel (dir_from). */
-static long base_of(long dirfd, const char *in, size_t n, struct path *out)
+/* The directory relative path in (n bytes) starts from, d (a directory
+ * description, or a /proc directory's; NULL: "/"): 0 with its text in
+ * out->abs, or 1 with out made from a directory channel (dir_from). */
+static long base_in(struct fd_desc *d, const char *in, size_t n, struct path *out)
 {
-    if (dirfd == AT_FDCWD) {
-        path_cwd(out->abs);
+    if (!d) {
+        memcpy(out->abs, "/", 2);
         return 0;
     }
-    struct fd_desc *d = fd_get(dirfd);
-    if (!d)
-        return -EBADF;
-    long r = -ENOTDIR;
     if (dir_is(d))
-        r = dir_from(d, in, n, out);
-    else if (proc_dir_base(d, out->abs))
-        r = 0;
-    fd_put(d);
+        return dir_from(d, in, n, out);
+    return proc_dir_base(d, out->abs) ? 0 : -ENOTDIR;
+}
+
+/* ... and from dirfd (AT_FDCWD: the current directory). */
+static long base_of(long dirfd, const char *in, size_t n, struct path *out)
+{
+    struct fd_desc *d = dirfd == AT_FDCWD ? path_cwd() : fd_get(dirfd);
+    if (!d && dirfd != AT_FDCWD)
+        return -EBADF;
+    long r = base_in(d, in, n, out);
+    if (d)
+        fd_put(d);
     return r;
 }
 
-long path_get(long dirfd, const char *in, struct path *out)
+/* path_get's checks of in: 0 and its length in *n, or -errno. */
+static long given(const char *in, struct path *out, size_t *n)
 {
     out->at = NULL;
     long len = in ? uc_strnlen(in, PATH_BYTES) : -EFAULT;   /* the caller's string */
     if (len < 0)
         return len;
-    size_t n = (size_t)len;
-    if (!n)
+    *n = (size_t)len;
+    if (!*n)
         return -ENOENT;
-    if (n == PATH_BYTES)
+    if (*n == PATH_BYTES)
         return -ENAMETOOLONG;
     out->nofollow = false;
     out->hops = 0;
+    return 0;
+}
+
+long path_get(long dirfd, const char *in, struct path *out)
+{
+    size_t n;
+    long r = given(in, out, &n);
+    if (r)
+        return r;
     if (in[0] == '/')
         return resolve_abs(in, n, out);
-    long r = base_of(dirfd, in, n, out);
+    r = base_of(dirfd, in, n, out);
+    return r < 0 ? r : r ? 0 : resolve(in, n, out);
+}
+
+long path_get_at(struct fd_desc *base, const char *in, struct path *out)
+{
+    size_t n;
+    long r = given(in, out, &n);
+    if (r)
+        return r;
+    if (in[0] == '/')
+        return resolve_abs(in, n, out);
+    r = base_in(base, in, n, out);
     return r < 0 ? r : r ? 0 : resolve(in, n, out);
 }
 
@@ -280,6 +310,28 @@ long path_set(const char *abs, struct path *out)
     out->nofollow = false;
     out->hops = 0;
     return resolve_abs(abs, n, out);
+}
+
+long path_whole(struct path *p)
+{
+    if (!p->at)
+        return 0;
+    char *text = jam_malloc(2 * PATH_BYTES);
+    if (!text)
+        return -ENOMEM;
+    uint32_t len;
+    const char *rel = path_rel(p, &len);
+    long r = dir_where(p->at, text, false);   /* asked now: removed or cut off, ENOENT */
+    if (!r && snprintf(text + PATH_BYTES, PATH_BYTES, "%s/%s", text, rel) >= (int)PATH_BYTES)
+        r = -ENAMETOOLONG;
+    if (!r) {
+        bool nofollow = p->nofollow;
+        path_done(p);
+        r = path_set(text + PATH_BYTES, p);
+        p->nofollow = nofollow;
+    }
+    jam_free(text);
+    return r;
 }
 
 void path_done(struct path *p)
@@ -704,56 +756,47 @@ void path_fill_stat(const struct path *p, const struct path_info *i, struct stat
 
 /* ---- the current directory ------------------------------------------------------ */
 
-/* At the first use: the hand-over's, if it is a clean absolute path. */
-static void cwd_start_locked(void)
+/* At the start, before the program's constructors: the hand-over's
+ * directory channel, else its path (cleaned: dir_new_text), else "/".
+ * Nothing is asked of a service here, so a program that never uses its
+ * directory pays nothing for it. */
+__attribute__((constructor(101))) static void cwd_start(void)
 {
-    cwd_ready = true;
-    const char *given = NULL;
-    if (lx_handover(&given) && given && given[0] == '/') {
-        struct path p;
-        if (!path_set(given, &p))
-            memcpy(cwd, p.abs, strlen(p.abs) + 1);
-        path_done(&p);
+    const void *data;
+    uint32_t len;
+    const char *text = NULL;
+    struct fd_desc *d = NULL;
+    handle_t ch = lx_handover_dir(&data, &len);
+    if (ch) {
+        if (dir_adopt_cwd(ch, data, len, &d))
+            d = NULL;   /* no memory: "/" */
+    } else if (lx_handover(&text) && text && text[0] == '/' && strcmp(text, "/")) {
+        if (dir_new_text(text, &d))
+            d = NULL;
     }
-}
-
-void path_cwd(char out[PATH_BYTES])
-{
     lock_take(&cwd_lock);
-    if (!cwd_ready)
-        cwd_start_locked();
-    memcpy(out, cwd, strlen(cwd) + 1);
+    cwd = d;
     lock_give(&cwd_lock);
 }
 
-bool path_cwd_removed(void)
-{
-    struct { char text[PATH_BYTES]; struct path p; } *w = jam_malloc(sizeof(*w));
-    if (!w)
-        return false;
-    path_cwd(w->text);
-    bool gone = false;
-    char m[NS_NAME_MAX];
-    /* Only a mount of ours can say: a program started without the mount its
-     * directory is on (the shell's cd, then a program that has no /data)
-     * keeps the name. */
-    if (!path_set(w->text, &w->p) && w->p.where == PATH_MOUNT && path_libc(&w->p) == LIBC_NONE &&
-        mount_name(&w->p, m) && path_is_mount(m)) {
-        struct path_info i;
-        long r = path_info(&w->p, &i);
-        gone = r == -ENOENT || r == -ENOTDIR;   /* a service that's slow or refuses doesn't count */
-    }
-    path_done(&w->p);
-    jam_free(w);
-    return gone;
-}
-
-void path_cwd_set(const char *abs)
+struct fd_desc *path_cwd(void)
 {
     lock_take(&cwd_lock);
-    cwd_ready = true;
-    memcpy(cwd, abs, strlen(abs) + 1);
+    struct fd_desc *d = cwd;
+    if (d)
+        fd_ref(d);
     lock_give(&cwd_lock);
+    return d;
+}
+
+void path_cwd_set(struct fd_desc *d)
+{
+    lock_take(&cwd_lock);
+    struct fd_desc *old = cwd;
+    cwd = d;
+    lock_give(&cwd_lock);
+    if (old)
+        fd_put(old);   /* outside the lock: its close may ask its service */
 }
 
 void path_fork(int step)
@@ -762,12 +805,24 @@ void path_fork(int step)
         lock_take(&cwd_lock);
     } else if (step == LX_FORK_GIVE) {
         lock_give(&cwd_lock);
-    } else {   /* the child: the directory is ours; the cache asks again */
+    } else {   /* the child: the directory is ours (path_fork_cwd); the cache asks again */
         cwd_lock = (lock_t){ 0 };
         ro_lock = (lock_t){ 0 };
         memset(ro_cache, 0, sizeof(ro_cache));
         ro_next = 0;
     }
+}
+
+void path_fork_cwd(struct lx_fork_io *io)
+{
+    struct fd_desc *d = cwd;   /* the parent's: cwd_lock held since before the clone */
+    if (!d)
+        return;
+    bool keep = fd_fork_met(io, d, POSIXFORK_CWD);
+    if (lx_fork_child(io) && keep)
+        d->refs++;   /* the current directory's own reference */
+    else if (lx_fork_child(io))
+        cwd = NULL;   /* its channel didn't come and it has no text: "/" */
 }
 
 /* ---- libc's own trees -------------------------------------------------------- */

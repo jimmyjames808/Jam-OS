@@ -73,6 +73,10 @@ const char *lx_handover_exe(void);
 /* This image started as AT_SECURE (the hand-over's POSIXFDS_SECURE: a
  * raised program, init's /svc/exec's word), as a forked copy of it did. */
 bool        lx_handover_secure(void);
+/* The hand-over's current directory as a directory channel
+ * (POSIXFDS_CWD), taken once: the channel (the caller's from now on) and
+ * its data (len bytes, checked by the reader), or HANDLE_INVALID: none. */
+handle_t    lx_handover_dir(const void **data, uint32_t *len);
 
 /* ---- fork (fork.c) ----------------------------------------------------------------
  * fork's step in each module whose state a forked child goes on using
