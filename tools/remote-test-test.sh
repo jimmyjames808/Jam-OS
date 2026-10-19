@@ -12,7 +12,11 @@
 #   - the session has keepalives, and its script has the run id;
 #   - a cancel (SIGTERM) ends the session's ssh and asks the PC, in one more ssh,
 #     to end the run by its pid file; a script with parts to run a few at a time
-#     (init-test.sh) passes remote-slots.py its --shrink spec.
+#     (init-test.sh) passes remote-slots.py its --shrink spec;
+#   - a call that would copy the checkout is refused (exit 2, naming the batch,
+#     no copy) while a pc-batch of it runs, here or detached on the PC (one ssh
+#     asks it); JAMOS_REMOTE_FORCE_COPY=1 copies anyway; a batch that is over, or
+#     a call that doesn't copy (JAMOS_REMOTE_NOSYNC=1), is no hindrance.
 # Usage: tools/remote-test-test.sh; exit 0 on PASS.
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -57,6 +61,8 @@ ok)          echo "remote-test: running with 3 of 26 CPUs in use" >&2; echo "the
 rc5)         echo "remote-test: running with 3 of 26 CPUs in use" >&2; exit 5 ;;
 hang)        echo "remote-test: waiting: 24 of 26 CPUs in use by 6 run(s) (this run needs 2 CPUs, 1.0 GB)" >&2; exec sleep 30 ;;
 cancelled)   exit 0 ;;
+pcbusy)      echo 77; exit 0 ;;   # the answer to "which batches of this checkout run on the PC?"
+pcfree)      exit 0 ;;
 *)           echo "fake-ssh: no outcome left" >&2; exit 99 ;;
 esac
 EOF
@@ -137,6 +143,66 @@ rm -f "$tmp/sessions" "$tmp"/script.*
 INIT_TEST_JOBS=2 tools/remote-test.sh tools/init-test.sh build/test/x > /dev/null 2>&1
 grep -q '^exec python3 tools/remote-slots.py --shrink INIT_TEST_JOBS:4:2048:2 8 4096 ' "$tmp/script.1" || fail "no --shrink in the script: $(tail -2 "$tmp/script.1")"
 grep -q "INIT_TEST_JOBS=2" "$tmp/script.1" || fail "INIT_TEST_JOBS is not forwarded to the PC"
+
+# A copy while a batch of this checkout runs is refused. rsync is a stand-in that
+# records its call (the copy); the batch is a directory with the driver.pid of a
+# live process, as pc-batch.sh leaves it.
+mkdir "$tmp/bin"
+cat > "$tmp/bin/rsync" <<'EOF'
+#!/bin/bash
+echo copy >> "$FAKE_DIR/rsync.log"
+exit 0
+EOF
+chmod +x "$tmp/bin/rsync"
+export PC_BATCH_DIR=$tmp/batch
+mkdir -p "$PC_BATCH_DIR/5"
+sleep 60 &
+kid=$!
+trap 'kill $kid 2> /dev/null; rm -rf "$tmp"' EXIT
+echo $kid > "$PC_BATCH_DIR/5/driver.pid"
+copy() {   # copy <outcomes...>: a run that asks for the copy; copies= how often rsync ran
+    rm -f "$tmp/rsync.log"
+    PATH=$tmp/bin:$PATH JAMOS_REMOTE_NOSYNC=0 run "$@"
+    copies=0
+    [ -f "$tmp/rsync.log" ] && copies=$(wc -l < "$tmp/rsync.log" | tr -d ' ')
+}
+copy ok
+expect "a copy while a batch of the checkout runs" 2 0
+[ "$copies" = 0 ] || fail "the refused call copied"
+echo "$err" | grep -q "remote-test: batch 5 of this checkout still runs" && echo "$err" | grep -q "tools/pc-batch.sh wait 5" &&
+    echo "$err" | grep -q "tools/pc-batch.sh cancel 5" && echo "$err" | grep -q "JAMOS_REMOTE_FORCE_COPY=1" ||
+    fail "the refusal doesn't name the batch and the ways out: $err"
+JAMOS_REMOTE_FORCE_COPY=1 copy ok
+expect "JAMOS_REMOTE_FORCE_COPY=1" 0 1
+[ "$copies" = 1 ] || fail "the forced call copied $copies times"
+run ok   # JAMOS_REMOTE_NOSYNC=1 (as everywhere above): no copy, no hindrance
+expect "a call that doesn't copy" 0 1
+touch "$PC_BATCH_DIR/5/done"   # over, though its driver still lives
+copy ok
+expect "a batch that is over" 0 1
+[ "$copies" = 1 ] || fail "a call with no batch running copied $copies times"
+rm -f "$PC_BATCH_DIR/5/done"
+kill $kid
+wait $kid 2> /dev/null
+copy ok
+expect "a batch whose driver is gone" 0 1
+# A detached batch is on the PC long after its driver here is gone: one ssh asks
+# the PC (about this checkout's batches) until the batch is collected.
+rm -rf "$PC_BATCH_DIR/5"
+mkdir -p "$PC_BATCH_DIR/6"
+: > "$PC_BATCH_DIR/6/handed"
+copy pcbusy ok
+expect "a detached batch running on the PC" 2 1
+[ "$copies" = 0 ] || fail "copied while a detached batch runs on the PC"
+echo "$err" | grep -q "remote-test: batch 77 of this checkout still runs" || fail "the PC's batch isn't named: $err"
+grep -q "\.batch/$(basename "$PWD")/" "$tmp/script.1" || fail "the question isn't about this checkout's batches: $(cat "$tmp/script.1")"
+copy pcfree ok
+expect "a detached batch that is over on the PC" 0 2
+[ "$copies" = 1 ] || fail "a call with no batch on the PC copied $copies times"
+: > "$PC_BATCH_DIR/6/collected"
+copy ok
+expect "a collected batch" 0 1   # and no question to the PC
+unset PC_BATCH_DIR
 
 [ -z "$(ls "$tmp/t")" ] || fail "temp files left: $(ls "$tmp/t")"
 

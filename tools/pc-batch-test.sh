@@ -53,6 +53,7 @@ if [ "${JAMOS_REMOTE_SCRIPT_ONLY:-}" = 1 ]; then   # start --detach: what the PC
 fi
 echo "$* NOSYNC=${JAMOS_REMOTE_NOSYNC:-} KTESTS=${KTESTS:-}" >> "$FAKE_DIR/calls"
 if [ "$1" = --prepare ]; then
+    echo "${JAMOS_REMOTE_NOSYNC:-0}:${JAMOS_REMOTE_FORCE_COPY:-0}" >> "$FAKE_DIR/prepares"
     [ "${JAMOS_REMOTE_COPY_ONLY:-}" = 1 ] && echo "${PWD##*/}" >> "$FAKE_DIR/copyonly"
     [ -n "${FAKE_HOME:-}" ] && mkdir -p "$FAKE_HOME/work/${PWD##*/}"
     exit "${FAKE_PREPARE_RC:-0}"
@@ -101,6 +102,9 @@ echo "$out" | grep -q "exit 1 (and the first try: exit 1); log $PC_BATCH_DIR/$id
 echo "$out" | grep -q "first try: exit 1 in [0-9]* s, $PC_BATCH_DIR/$id/flaky.try1.log" || fail "flaky's first try: $out"
 [ "$(grep -c -- '--prepare' "$tmp/calls")" = 1 ] || fail "prepares: $(grep -c -- '--prepare' "$tmp/calls")"
 [ "$(grep -c 'NOSYNC=1' "$tmp/calls")" = 8 ] || fail "runs without a copy: $(cat "$tmp/calls")"
+# The batch's own copy is made with JAMOS_REMOTE_FORCE_COPY=1: it has checked (or --force
+# overridden) that no other batch runs, and remote-test.sh would refuse the copy under its own driver.
+[ "$(cat "$tmp/prepares")" = "0:1" ] || fail "the batch's copy isn't made with JAMOS_REMOTE_FORCE_COPY=1: $(cat "$tmp/prepares")"
 out2=$($B report "$id")
 [ $? = 1 ] && [ "$out2" = "$out" ] || fail "report differs from wait's table"
 [ "$($B report > /dev/null; echo $?)" = 1 ] || fail "report with no id isn't the newest batch"
@@ -108,7 +112,7 @@ out2=$($B report "$id")
 # ---- --rerun-failed keeps the first try's output directories ----
 # A checkout of its own: the stand-in runs the commands where it is, and they write build/t/<run>.
 mkdir -p "$tmp/co3/tools" "$tmp/co3/build/t/flaky3.try1"
-cp tools/pc-batch.sh tools/pc-batch-driver.sh "$tmp/co3/tools/"
+cp tools/pc-batch.sh tools/pc-batch-busy.sh tools/pc-batch-driver.sh "$tmp/co3/tools/"
 echo old > "$tmp/co3/build/t/flaky3.try1/old"   # an earlier batch's
 cat > "$tmp/co3/list" <<EOF
 ok3     sh -c 'mkdir -p build/t/ok3 && echo fine > build/t/ok3/f' build/t/ok3
@@ -334,7 +338,7 @@ trap 'kill $keeper $(cat "$tmp"/kid* 2> /dev/null) 2> /dev/null; rm -rf "$tmp"' 
 keeper_start
 for c in co co2; do
     mkdir -p "$tmp/$c/tools"
-    cp tools/pc-batch.sh tools/pc-batch-driver.sh tools/pc-detach.sh "$tmp/$c/tools/"
+    cp tools/pc-batch.sh tools/pc-batch-busy.sh tools/pc-batch-driver.sh tools/pc-detach.sh "$tmp/$c/tools/"
 done
 D() { local c=$1; shift; (cd "$tmp/$c" && PC_BATCH_DIR= tools/pc-batch.sh "$@"); }
 row2() { echo "$out" | grep -qE "^  $1 +$2( |\$)" || fail "no row \"$1 $2\" in: $out"; }   # no seconds
