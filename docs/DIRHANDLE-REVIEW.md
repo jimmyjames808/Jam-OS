@@ -23,13 +23,16 @@ got), **Medium** is wrong behaviour the system or a test tier will meet,
 **Low** is a wart or a mismatch with the documented rule that nothing
 relies on yet.
 
-Counts: **0 High, 1 Medium, 3 Low, 8 notes.** No channel reached past its
+Counts: **0 High, 2 Medium, 3 Low, 8 notes.** No channel reached past its
 view by any path tried, by reading or by the hostile runs (climbs, ids,
 `..` through hidden places, places across renames and restarts: 15,000
 moves in and out of a subview under walkers, nothing from outside); no
 held inode is freed; every hand-over path gives each channel once. The
-Medium (DC's lead) is a missing inotify event. It and two Lows are fixed,
-each with a case that fails without its fix; one Low is left, with why.
+first Medium (DC's lead) is a missing inotify event; the second, found by
+the deep removal under kills on a loaded PC, is a kill in an open's
+window that made extfs's successor give its whole state up. Both and two
+Lows are fixed, each with a case that fails without its fix; one Low is
+left, with why.
 
 ## Findings
 
@@ -72,6 +75,41 @@ FAILED ... the directory itself: not the events wanted" and "a directory
 descriptor's change unheard by its parent's watch: futimens fchmod
 fchown". `FilePathWatcherTest.RecursiveWatch` is off
 `tools/cr/base_unittests.skip`; it needs a base run to confirm.
+
+### M2. A kill while an open takes its slot gives the whole state up (fixed)
+
+`user/services/extfs/files.c:507` (`files_open`) and
+`user/services/extfs/dirs.c:217` (`dirs_open`) marked their slot used in
+the state, made its handles (a VMO, a channel, the keeper's put, the
+port), and only then recorded the slot as the request's (`op_made`). A
+death in between left the slot used under a mark that named an earlier
+request, so a successor running the request again (adopt.c's `unmake`,
+which forgets only the slot the mark names) kept it. For an `fs.open`
+with `FS_CREATE` the slot names the new file's inode, which the journal
+never committed: `files_check` says "an open file that isn't on the
+volume" and the successor starts fresh, closing every client's open
+files, directory channels and watchers.
+
+*Failure:* found by this review's own hostile run, `extfs_restart_deep`,
+under the merged-main check's load (batch 20091617, both tries: the 4th
+or 5th kill landed in the window; "starting fresh (an open file that
+isn't on the volume)", then `ERR_PEER_CLOSED` at a file made). On a real
+volume, extfs killed or crashed while a program creates a file: every
+program using that volume loses its descriptors at once. Not a directory
+handle bug (the file window is M13.6's), but directory channels went the
+same way (harmless there: the directory is on the volume).
+
+*Fix:* `op_made` before the slot is taken, in both. A request that then
+fails leaves a mark adopt.c acts on only for an OK reply (`reply_again`)
+or a rerun (`unmake`, which forgets the slot either way). Test: a test
+power `die=slot` (extfs's test.c) at the window, and utest
+`extfs_restart_slot` (extfs ended there at an open with `FS_CREATE`, then
+at an opendir: each runs again and every channel carries on). Without the
+fix (batch 20092748): "extfs_restart_slot: FAILED ... t_open(&a, "new",
+FS_WRITE | FS_CREATE, &f) is ERR_PEER_CLOSED", the successor "starting
+fresh (an open file that isn't on the volume)". views.c and watch.c take
+their slots the same way; a slot left there has no inode to miss (the
+successor closes what the keeper didn't bring back), so they are left.
 
 ### L1. A replaced channel is kept on another volume's inode of the same number (fixed)
 

@@ -1243,7 +1243,15 @@ numbers per shard, is [CR-PLAN's DC notes](CR-PLAN.md#dc-notes).
 ### DR notes
 
 Built (2026-10-20): the review is [DIRHANDLE-REVIEW.md](DIRHANDLE-REVIEW.md),
-findings first: 0 High, 1 Medium, 3 Low, 8 notes.
+findings first: 0 High, 2 Medium, 3 Low, 8 notes.
+- **Fixed after the merge:** M2, found by `extfs_restart_deep` in the
+  merged-main check under load (batch 20091617): `fs.open` and
+  `fs.opendir` took their slot before naming it the request's
+  (`op_made`), so a kill between kept the slot at a rerun, and for a new
+  file the successor found its inode missing and started fresh (every
+  client's channels closed). The mark comes first now; test power
+  `die=slot` and utest `extfs_restart_slot` (fails without: batch
+  20092748).
 - **Fixed:** M1, DC's `RecursiveWatch`: a path-less change of a directory
   (`fs.setattr` of `""` on its channel, a path ending in `.` or `..`) now
   tells its parent's watch, by the name found from its `..` entry at the
