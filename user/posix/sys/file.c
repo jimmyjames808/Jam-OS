@@ -27,7 +27,16 @@
  * resolved (the mount's part as written: files.h), and open follows a
  * link out of the mount as every path call does; O_NOFOLLOW on a link is
  * ELOOP, O_CREAT | O_EXCL never follows one. A new file gets the mode
- * asked for less the umask. fstat there is file.getattr's. */
+ * asked for less the umask. fstat there is file.getattr's.
+ *
+ * A file opened from a directory channel (docs/DIRHANDLE-PLAN.md 4.5)
+ * keeps that directory (a description of its own: dir_copy, one more
+ * handle) and the name it was opened by (struct file_where), not a joined
+ * text, which may be too long or go stale: a child's open of it, its
+ * open taken back after a fork, and its stat as O_PATH open that name on
+ * that channel. Its text (the directory's last known one joined with the
+ * name, if that fits) is only a hint, for log lines and /proc. A
+ * directory opened here is dir.c's (dir_open). */
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -48,8 +57,9 @@
 
 struct file {
     struct fobj *o;          /* the file's open here; NULL for O_PATH */
-    char        *path;       /* absolute; NULL if adopted without one */
-    bool         nofollow;   /* O_PATH | O_NOFOLLOW: path names a link itself */
+    struct file_where where; /* where it is: its absolute text (NULL if adopted without one),
+                              * or its directory and name (files.h) */
+    bool         nofollow;   /* O_PATH | O_NOFOLLOW: where names a link itself */
     bool         given;      /* given to a child on a mount with many writers, at the end of the
                               * file (given_end), and not used since: follow_given_locked */
     uint64_t     given_end;
@@ -81,15 +91,64 @@ static bool write_alone_may(uint32_t s, long r)
     return r == -EACCES && (s & FD_ACCMODE) == O_WRONLY;
 }
 
+long file_where_path(const struct file_where *w, struct path *out)
+{
+    out->at = NULL;
+    if (w->dir)
+        return path_in_dir(w->dir, w->name, strlen(w->name), out);
+    if (w->path)
+        return path_set(w->path, out);
+    long r = path_set("/", out);   /* nothing: "/", which holds nothing */
+    return r ? r : 1;
+}
+
+/* Where path p (just opened) is, into *w: its text, or from a directory
+ * channel a copy of the directory and the name as written, the text then
+ * the directory's last known one joined, if that fits. 0 or -ENOMEM. */
+static long where_of(const struct path *p, struct file_where *w)
+{
+    *w = (struct file_where){ 0 };
+    if (!p->at) {
+        w->path = jam_strdup(p->abs);
+        return w->path ? 0 : -ENOMEM;
+    }
+    uint32_t len;
+    const char *rel = path_rel(p, &len);
+    const char *base = p->at->ops->path(p->at);   /* the directory's last known text */
+    size_t bl = base ? strlen(base) : PATH_BYTES;
+    w->dir = dir_copy(p->at);
+    w->name = jam_strdup(rel);
+    if (bl + 1 + len < PATH_BYTES && (w->path = jam_malloc(bl + 1 + len + 1))) {
+        memcpy(w->path, base, bl);
+        w->path[bl] = '/';
+        memcpy(w->path + bl + 1, rel, len + 1);
+    }
+    if (w->dir && w->name)
+        return 0;
+    if (w->dir)
+        fd_put(w->dir);
+    jam_free(w->name);
+    jam_free(w->path);
+    *w = (struct file_where){ 0 };
+    return -ENOMEM;
+}
+
+static void where_drop(struct file_where *w)
+{
+    if (w->dir)
+        fd_put(w->dir);
+    jam_free(w->name);
+    jam_free(w->path);
+}
+
 /* errno for a service's answer about f (EROFS needs its mount). */
 static long file_err(const struct file *f, status_t st)
 {
     if (st != ERR_ACCESS_DENIED)
         return path_err(NULL, st);
-    if (!f->path)
-        return -EACCES;
     struct path p;
-    long r = path_set(f->path, &p) ? -EACCES : path_err(&p, st);
+    long r = file_where_path(&f->where, &p);
+    r = r ? -EACCES : path_err(&p, st);
     path_done(&p);
     return r;
 }
@@ -214,7 +273,7 @@ static long xfer(struct fd_desc *d, const struct iovec *iov, int n, int64_t pos,
     lock_take(&f->o->lock);
     bool was_lent = f->o->lent;
     uint64_t was_end = f->o->lent_end;
-    status_t back = fobj_back_locked(f->o, f->path);   /* lent to a child: ours again */
+    status_t back = fobj_back_locked(f->o, &f->where);   /* lent to a child: ours again */
     if (back == OK && was_lent)
         follow_end_locked(d, was_end, f->o->size);
     if (back == OK)
@@ -262,18 +321,17 @@ static long size_now(const struct file *f, uint64_t *size)
     if (!f->o) {
         struct path p;
         struct path_info i;
-        long r = -EBADF;
-        if (f->path) {
-            r = path_set(f->path, &p);
-            if (!r)
-                r = path_info_follow(&p, &i);
-            path_done(&p);
-        }
+        long r = file_where_path(&f->where, &p);
+        if (r > 0)
+            r = -EBADF;   /* no path to ask */
+        if (!r)
+            r = path_info_follow(&p, &i);
+        path_done(&p);
         *size = r ? 0 : i.size;
         return r;
     }
     lock_take(&f->o->lock);
-    status_t st = fobj_back_locked(f->o, f->path);
+    status_t st = fobj_back_locked(f->o, &f->where);
     if (st == OK && (f->o->jf.flags & FS_WRITE) && !f->o->multi)
         *size = f->o->size;
     else if (st == OK)
@@ -331,15 +389,19 @@ static long kind_seek(struct fd_desc *d, int64_t off, int whence)
 static long kind_stat(struct fd_desc *d, struct stat *st)
 {
     const struct file *f = d->priv;
-    struct path p = { .abs = "/", .where = PATH_MOUNT };   /* no path: a plain file */
+    struct path p;
     struct path_info i = { 0 };
-    long r = f->path ? path_set(f->path, &p) : 0;
+    long r = file_where_path(&f->where, &p);
+    if (r > 0) {   /* no path: a plain file */
+        p.where = PATH_MOUNT;
+        r = 0;
+    }
     p.nofollow = f->nofollow;
     if (!r && !f->o)
         r = path_info_follow(&p, &i);
     if (!r && f->o) {
         lock_take(&f->o->lock);
-        status_t s = fobj_back_locked(f->o, f->path);
+        status_t s = fobj_back_locked(f->o, &f->where);
         if (s == OK && !f->o->jf.ch)
             s = ERR_IO;
         if (s == OK && f->o->attrs) {   /* the inode's own */
@@ -355,7 +417,7 @@ static long kind_stat(struct fd_desc *d, struct stat *st)
     }
     if (!r) {
         path_fill_stat(&p, &i, st);
-        if (!f->path && !i.has_attr)
+        if (!f->where.path && !f->where.dir && !i.has_attr)
             st->st_mode = S_IFREG | 0644;
     }
     path_done(&p);
@@ -369,7 +431,7 @@ static long sync_or_cut(struct fd_desc *d, int64_t len)
     if (!f->o)
         return -EBADF;
     lock_take(&f->o->lock);
-    status_t st = fobj_back_locked(f->o, f->path);
+    status_t st = fobj_back_locked(f->o, &f->where);
     if (st == OK)
         st = !f->o->jf.ch ? ERR_IO
              : len < 0    ? file_sync_within(f->o->jf.ch, FILE_TIMEOUT)
@@ -405,7 +467,18 @@ static long kind_ioctl(struct fd_desc *d, unsigned long req, long arg)
 static const char *kind_path(struct fd_desc *d)
 {
     const struct file *f = d->priv;
-    return f->path;
+    return f->where.path;
+}
+
+/* The file as a path: its directory and name, or its text (an O_PATH
+ * descriptor's names the link itself when it was opened so).
+ * (path_done: the caller's) */
+static long kind_place(struct fd_desc *d, struct path *out)
+{
+    const struct file *f = d->priv;
+    long r = file_where_path(&f->where, out);
+    out->nofollow = f->nofollow;
+    return r;
 }
 
 /* A child's own open of f's file (flags: its access; an O_APPEND one on a
@@ -416,7 +489,9 @@ static long reopen(const struct file *f, uint32_t s, handle_t *ch, handle_t *buf
     if (!p)
         return -ENOMEM;
     uint32_t ff = fs_access(s) | ((s & O_APPEND) && f->o->multi ? FS_APPEND : 0);
-    long r = path_set(f->path, p);
+    long r = file_where_path(&f->where, p);
+    if (r > 0)
+        r = -ENOENT;   /* nothing to open it by */
     while (!r) {
         status_t st = fobj_open_settled(p, ff, ch, buf);
         r = st == OK ? 0 : path_err(p, st);   /* ERR_BUSY: another child holds it to write */
@@ -444,7 +519,7 @@ static void lend_locked(struct fd_desc *d, const struct file *f)
     if (!o->lent) {
         fobj_lend_locked(o);
     } else {
-        bool known = !path_set(f->path, &p) && !path_info(&p, &i);
+        bool known = !file_where_path(&f->where, &p) && !path_info(&p, &i);
         path_done(&p);
         if (known) {
             follow_end_locked(d, o->lent_end, i.size);
@@ -487,10 +562,10 @@ static long kind_give(struct fd_desc *d, struct fd_given *out)
 {
     struct file *f = d->priv;
     uint32_t s = fd_status(d);
-    if (!f->o || !f->path)
+    if (!f->o || (!f->where.path && !f->where.dir))
         return -ENOTSUP;   /* O_PATH, or a file we were given without its path */
-    char *data = jam_strdup(f->path);
-    if (!data)
+    char *data = f->where.path ? jam_strdup(f->where.path) : NULL;   /* a hint with dir */
+    if (f->where.path && !data)
         return -ENOMEM;
     lock_take(&d->lock);
     if ((fs_access(s) & FS_WRITE) && !f->o->multi)
@@ -501,7 +576,7 @@ static long kind_give(struct fd_desc *d, struct fd_given *out)
     lock_give(&d->lock);
     *out = (struct fd_given){
         .kind = POSIXFDS_FILE, .status = s & POSIXFDS_STATUS, .offset = (uint64_t)off,
-        .nhandles = 2, .data = data, .data_len = (uint32_t)strlen(data) + 1,
+        .nhandles = 2, .data = data, .data_len = data ? (uint32_t)strlen(data) + 1 : 0,
     };
     long r = reopen(f, s, &out->handles[0], &out->handles[1]);
     if (r == -ENOENT)   /* the path is gone: our own open, moved */
@@ -520,7 +595,7 @@ static void kind_close(struct fd_desc *d)
         jam_handle_close(f->lock_token);   /* its last in every process: its locks go */
     if (f->o)
         fobj_put(f->o);
-    jam_free(f->path);
+    where_drop(&f->where);
     jam_free(f);
 }
 
@@ -532,17 +607,23 @@ static void kind_close(struct fd_desc *d)
  * may write is EBUSY there while we hold ours. A file that came over a
  * socket has no path to open again: left out. The description's lock
  * owner (OFD and flock locks) is shared: the child's copy holds a
- * duplicate of its token, so the locks last until the last copy closes. */
+ * duplicate of its token, so the locks last until the last copy closes.
+ * A file opened from a directory channel passes its directory's
+ * description (its own: fd_fork_inner, a duplicate of the channel); one
+ * whose channel didn't come goes by its text, if it has one. */
 static bool kind_fork(struct fd_desc *d, struct fd_fork *f)
 {
     struct file *fl = d->priv;
-    if (fl->lock_token && !fd_fork_child(f))
+    bool child = fd_fork_child(f);
+    if (fl->lock_token && !child)
         fd_fork_dup(f, 0, fl->lock_token);
     else if (fl->lock_token)
         fl->lock_token = fd_fork_take(f, 0);
-    if (!fd_fork_child(f) || !fl->o)
+    if (fl->where.dir && !fd_fork_inner(f, fl->where.dir) && child)
+        fl->where.dir = NULL;   /* left in the child's heap, unclosed (fork's rule) */
+    if (!child || !fl->o)
         return true;   /* O_PATH: the path alone */
-    if (!fl->path) {
+    if (!fl->where.path && !fl->where.dir) {
         if (fl->lock_token)
             jam_handle_close(fl->lock_token);   /* left out: its share of the owner too */
         return false;
@@ -555,26 +636,40 @@ static const struct fd_ops file_ops = {
     .name = "file", .read = kind_read, .write = kind_write, .write_at = kind_write_at,
     .seek = kind_seek,
     .stat = kind_stat, .ioctl = kind_ioctl, .sync = kind_sync, .truncate = kind_truncate,
-    .path = kind_path, .give = kind_give, .fork = kind_fork, .close = kind_close,
+    .path = kind_path, .place = kind_place, .give = kind_give, .fork = kind_fork,
+    .close = kind_close,
 };
 
-/* A description for the open o (its reference consumed) of path abs. */
-static long file_new(struct fobj *o, const char *abs, uint32_t status, struct fd_desc **out)
+/* A description for the open o (its reference consumed) of the file at w
+ * (consumed). */
+static long file_new(struct fobj *o, struct file_where *w, uint32_t status, struct fd_desc **out)
 {
     struct file *f = jam_calloc(1, sizeof(*f));
-    char *path = abs ? jam_strdup(abs) : NULL;
-    struct fd_desc *d = f && (path || !abs) ? fd_new(&file_ops, status, f) : NULL;
+    struct fd_desc *d = f ? fd_new(&file_ops, status, f) : NULL;
     if (!d) {
         if (o)
             fobj_put(o);
-        jam_free(path);
+        where_drop(w);
         jam_free(f);
         return -ENOMEM;
     }
     f->o = o;
-    f->path = path;
+    f->where = *w;
     *out = d;
     return 0;
+}
+
+/* file_new for the file just opened at p. */
+static long file_at(struct fobj *o, const struct path *p, uint32_t status, struct fd_desc **out)
+{
+    struct file_where w;
+    long r = where_of(p, &w);
+    if (r) {
+        if (o)
+            fobj_put(o);
+        return r;
+    }
+    return file_new(o, &w, status, out);
 }
 
 bool file_desc_is(const struct fd_desc *d)
@@ -594,13 +689,9 @@ long file_setattr_fd(struct fd_desc *d, uint32_t mask, uint32_t mode, uint32_t u
                               : ERR_IO;
     lock_give(&f->o->lock);
     if (st == ERR_ACCESS_DENIED) {   /* not the owner, or a view that may not change it */
-        long r = -EPERM;
-        if (f->path) {
-            struct path p;
-            if (!path_set(f->path, &p) && path_read_only(&p))
-                r = -EROFS;
-            path_done(&p);
-        }
+        struct path p;
+        long r = !file_where_path(&f->where, &p) && path_read_only(&p) ? -EROFS : -EPERM;
+        path_done(&p);
         return r;
     }
     return st == OK ? 0 : file_err(f, st);
@@ -611,7 +702,7 @@ long file_lockref(struct fd_desc *d, struct file_lockref *out)
     struct file *f = d->priv;
     if (d->ops != &file_ops || !f->o)
         return -ENOTSUP;
-    *out = (struct file_lockref){ .o = f->o, .path = f->path, .owner = &f->lock_owner,
+    *out = (struct file_lockref){ .o = f->o, .path = &f->where, .owner = &f->lock_owner,
                                   .token = &f->lock_token };
     return 0;
 }
@@ -631,8 +722,13 @@ long file_adopt_fd(const struct posixfds_fd *rec, const void *data, const handle
     struct fobj *o;
     uint32_t ff = fs_access(rec->status) | (rec->status & O_APPEND ? FS_APPEND : 0);
     long r = fobj_adopt(hs[0], hs[1], ff, path, &o);
+    struct file_where w = { 0 };
+    if (!r && path && !(w.path = jam_strdup(path))) {
+        fobj_put(o);
+        r = -ENOMEM;
+    }
     if (!r)
-        r = file_new(o, path, rec->status, out);
+        r = file_new(o, &w, rec->status, out);
     if (!r)
         (*out)->offset = (int64_t)rec->offset;
     return r;
@@ -658,13 +754,12 @@ static uint32_t open_fs_flags(long flags)
 
 /* A directory found where open was asked to open: a directory
  * description if the flags allow one (read-only, or O_PATH: musl's
- * O_ACCMODE holds O_PATH, so the mode is FD_ACCMODE's), its path physical. */
+ * O_ACCMODE holds O_PATH, so the mode is FD_ACCMODE's): dir.c's. */
 static long open_dir(struct path *p, long flags, struct fd_desc **out)
 {
     if ((flags & FD_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC)))
         return -EISDIR;
-    long r = path_place(p);
-    return r ? r : dir_new(p, (uint32_t)flags & (FILE_STATUS | O_DIRECTORY), out);
+    return dir_open(p, (uint32_t)flags & (FILE_STATUS | O_DIRECTORY), out);
 }
 
 /* O_DIRECTORY, O_PATH or a trailing slash: what the path is decides. */
@@ -684,7 +779,7 @@ static long open_by_stat(struct path *p, long flags, struct fd_desc **out)
         return -ENOTDIR;
     if (i.is_svc || !(flags & O_PATH))
         return -ENXIO;
-    r = file_new(NULL, p->abs, O_PATH, out);
+    r = file_at(NULL, p, O_PATH, out);
     if (!r) {
         struct file *f = (*out)->priv;
         f->nofollow = p->nofollow;   /* O_PATH | O_NOFOLLOW of a link: the link */
@@ -711,7 +806,7 @@ static long open_file(struct path *p, long flags, uint32_t mode, struct fd_desc 
         return open_dir(p, flags, out);
     if (r)
         return r;
-    return file_new(o, p->abs, (uint32_t)flags & FILE_STATUS, out);
+    return file_at(o, p, (uint32_t)flags & FILE_STATUS, out);
 }
 
 /* open's checks of flags: 0 or -errno. */
@@ -733,6 +828,10 @@ static long open_path(struct path *p, long flags, uint32_t mode, struct fd_desc 
 {
     if (flags & O_PATH)
         flags &= O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW;
+    bool dir_only = (flags & O_DIRECTORY) || p->must_dir;   /* fs.opendir alone: one call */
+    if (p->where == PATH_MOUNT && dir_only && (flags & FD_ACCMODE) == O_RDONLY &&
+        !(flags & (O_PATH | O_CREAT | O_TRUNC)) && (path_features(p) & FS_FEAT_DIRS))
+        return dir_open(p, (uint32_t)flags & (FILE_STATUS | O_DIRECTORY), out);
     if (p->where != PATH_MOUNT || (flags & (O_DIRECTORY | O_PATH)) || p->must_dir) {
         long r = open_by_stat(p, flags, out);
         if (r == -ENOENT && p->where != PATH_MOUNT && (flags & O_CREAT))
@@ -887,7 +986,7 @@ static long map_copy(struct fd_desc *d, int64_t off, uint64_t len, handle_t *out
         r = lx_err(jam_vmo_create(len, 0, &vmo));
     if (!r && file) {
         lock_take(&f->o->lock);
-        status_t back = fobj_back_locked(f->o, f->path);
+        status_t back = fobj_back_locked(f->o, &f->where);
         r = back != OK ? file_err(f, back) : fill_from_file(f, (uint64_t)off, len, vmo);
         lock_give(&f->o->lock);
     } else if (!r) {
@@ -915,7 +1014,7 @@ static status_t file_pages(const struct file *f, uint32_t flags, handle_t *out)
 {
     uint64_t size = 0;
     lock_take(&f->o->lock);
-    status_t st = fobj_back_locked(f->o, f->path);
+    status_t st = fobj_back_locked(f->o, &f->where);
     if (st == OK && !f->o->jf.ch)
         st = ERR_IO;   /* the open was lost */
     if (st == OK)

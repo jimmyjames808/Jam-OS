@@ -169,15 +169,16 @@ static long act_fchdir(struct spawnfd *t, const struct jam_spawn_op *op)
     struct spawnfd_slot *s = find(t, op->fd);
     if (!s)
         return -EBADF;
-    struct stat st = { 0 };
-    const struct fd_ops *ops = s->desc->ops;
-    const char *path = ops->path ? ops->path(s->desc) : NULL;
-    if (!path || !ops->stat || ops->stat(s->desc, &st) || !S_ISDIR(st.st_mode))
+    if (!dir_is(s->desc))
         return -ENOTDIR;
-    if (strnlen(path, PATH_MAX) == PATH_MAX)
-        return -ENAMETOOLONG;
-    strcpy(t->cwd, path);
-    return 0;
+    char *text = jam_malloc(PATH_BYTES);   /* the directory's text now (the child's is text) */
+    long e = text ? dir_text_now(s->desc, text) : -ENOMEM;
+    if (!e && strnlen(text, PATH_MAX) == PATH_MAX)
+        e = -ENAMETOOLONG;
+    if (!e)
+        strcpy(t->cwd, text);
+    jam_free(text);
+    return e;
 }
 
 /* Every descriptor from `from` up closed (addclosefrom_np): what the

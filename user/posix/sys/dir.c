@@ -3,13 +3,26 @@
  * directory or the current one: mkdir, unlink, rmdir, rename, chdir,
  * fchdir and getcwd.
  *
- * A directory description is a path (files.h: no handle; the `fs`
- * protocol's own directory handles are an addition for later) and a
- * position in its listing. The listing starts with "." and "..", which
- * the services leave out, then the service's entries in its batches
- * (fs.readdir: a cookie asks for a batch, and each batch says the cookie
- * of the next). A position is where the next getdents64 starts, and is
- * what d_off, telldir and seekdir carry:
+ * A directory description is one of two (docs/DIRHANDLE-PLAN.md 4.1):
+ *   - a **channel**: on a mount whose fs.statfs says FS_FEAT_DIRS (extfs),
+ *     the directory's own `fs` channel (fs.opendir), with its mount's
+ *     name, its id and volume and its last known text (a hint: NULL when
+ *     too long). Relative paths from it are sent on it as written
+ *     (path.c), so it works at any depth and follows a rename. A channel
+ *     whose service went (ERR_PEER_CLOSED: the mount went, or a fresh
+ *     start of extfs) is replaced by an open of the last known text if
+ *     that is still the same directory (its id), else the description is
+ *     gone and answers ENOENT;
+ *   - a **text** description, its absolute path, as before: on FAT, the
+ *     boot image, "/" and /svc, and when the service has no room for
+ *     another channel (256 a volume, 64 a process: ERR_NO_RESOURCES, said
+ *     once in the log), where renames are not followed and depth stops at
+ *     PATH_BYTES.
+ * Both hold a position in the listing. The listing starts with "." and
+ * "..", which the services leave out, then the service's entries in its
+ * batches (fs.readdir: a cookie asks for a batch, and each batch says the
+ * cookie of the next). A position is where the next getdents64 starts,
+ * and is what d_off, telldir and seekdir carry:
  *     0                       "."
  *     1                       ".."
  *     2 + (cookie << 16 | k)  entry k of the batch asked for with cookie
@@ -17,13 +30,18 @@
  * entries). The last batch asked for is kept with the description, so a
  * listing read in order asks the service once per batch; one started
  * again (from ".", or after any lseek: rewinddir, seekdir) asks afresh,
- * so it sees the directory as it is now. "/" lists the
- * mounts and "svc", "/svc" the services (libjam's fs_readdir, by index:
- * 2 + index).
+ * so it sees the directory as it is now. A channel's listing asks for its
+ * first batch before "." (a removed directory is ENOENT from the start,
+ * as Linux's). "/" lists the mounts and "svc", "/svc" the services
+ * (libjam's fs_readdir, by index: 2 + index).
  *
  * The answers follow Linux's for the same steps where FAT allows them
  * (the errno table is posixtest's files section); rename replaces what
- * is at the new name (fs.rename's FS_RENAME_REPLACE). */
+ * is at the new name (fs.rename's FS_RENAME_REPLACE). A rename or link
+ * between two directory descriptors is fs.rename_at or fs.link_at
+ * (dir_meet). Children: a forked child gets a duplicate of a channel; a
+ * spawned one, and a socket's receiver, the directory's text now (asked
+ * of the service), as before (DL2 hands the channel on). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
@@ -41,7 +59,17 @@
 #define ID_TOP      1000u   /* "/"'s and /svc's entries: ids of the layer's own, from here */
 
 struct dir {
-    char    *path;       /* absolute and clean */
+    char    *path;       /* a text description's path (absolute and clean); a channel's
+                          * last known text, a hint (NULL: not known, or too long) */
+    bool     chan;       /* a directory channel's description (else a text one) */
+    handle_t ch;         /* its channel; HANDLE_INVALID once gone; ch_lock */
+    bool     gone;       /* the channel went and wasn't made again: ENOENT; ch_lock */
+    lock_t   ch_lock;    /* ch and gone: held for a duplicate and across a replacement (no
+                          * other lock is taken under it) */
+    uint32_t flags;      /* fs.opendir's: FS_READ, unless it was opened O_PATH */
+    char     mount[NS_NAME_MAX];   /* a channel's mount ("/data") */
+    uint64_t id;         /* a channel's directory (getattr's id) and its volume (fs.opendir) */
+    uint64_t volume;
     uint8_t *batch;      /* the last batch (FS_READDIR_BYTES), made at the first listing */
     uint32_t blen;       /* its bytes */
     uint32_t bcookie;    /* the cookie it was asked with */
@@ -61,17 +89,279 @@ struct entry {
 };
 
 static const struct fd_ops dir_ops;
+static bool said_full;   /* the log's line about a service with no room: once a process */
 
 bool dir_is(const struct fd_desc *d)
 {
     return d->ops == &dir_ops;
 }
 
+/* ---- channels ------------------------------------------------------------------ */
+
+/* fs.opendir of p with flags (FS_READ, FS_NOFOLLOW): *ch, *id, *volume. */
+static status_t opendir_raw(const struct path *p, uint32_t flags, handle_t *ch, uint64_t *id,
+                            uint64_t *volume)
+{
+    handle_t fs;
+    if (path_fs(p, &fs))
+        return ERR_NOT_FOUND;
+    uint32_t len;
+    const char *rel = path_rel(p, &len);
+    status_t st = fs_opendir_within(fs, FILE_TIMEOUT, rel, len, flags, ch, id, volume);
+    jam_handle_close(fs);
+    return st;
+}
+
+/* x's channel went (its service ended): an open of the last known text
+ * through the namespace in its place, if that is the same directory (its
+ * id); else none, and x is gone. x->ch_lock. */
+static void replace_locked(struct dir *x)
+{
+    jam_handle_close(x->ch);
+    x->ch = HANDLE_INVALID;
+    x->gone = true;
+    struct path *p = x->path ? jam_malloc(sizeof(*p)) : NULL;
+    if (!p)
+        return;
+    handle_t ch = HANDLE_INVALID;
+    uint64_t id = 0, volume = 0;
+    if (!path_set(x->path, p) && p->where == PATH_MOUNT &&
+        opendir_raw(p, x->flags, &ch, &id, &volume) == OK) {
+        if (id == x->id) {
+            x->ch = ch;
+            x->volume = volume;
+            x->gone = false;
+        } else {
+            jam_handle_close(ch);   /* another directory has the name now */
+        }
+    }
+    path_done(p);
+    jam_free(p);
+}
+
+long dir_channel(struct fd_desc *d, handle_t *out)
+{
+    struct dir *x = d->priv;
+    long r = 0;
+    lock_take(&x->ch_lock);
+    if (x->ch && jam_object_wait_one(x->ch, SIG_PEER_CLOSED, 0, NULL) == OK)
+        replace_locked(x);
+    if (!x->ch)
+        r = -ENOENT;   /* gone */
+    else if (jam_handle_duplicate(x->ch, RIGHT_SAME, out) != OK)
+        r = -EIO;
+    lock_give(&x->ch_lock);
+    return r;
+}
+
+const char *dir_mount(const struct fd_desc *d)
+{
+    const struct dir *x = d->priv;
+    return x->mount;
+}
+
+/* path_get's base (files.h). (path_done: the caller's) */
+long dir_from(struct fd_desc *d, const char *in, size_t n, struct path *out)
+{
+    const struct dir *x = d->priv;
+    if (x->chan) {
+        long r = path_in_dir(d, in, n, out);
+        return r ? r : 1;
+    }
+    memcpy(out->abs, x->path, strlen(x->path) + 1);
+    return 0;
+}
+
+/* The last known text of a directory opened at p: p's own if it is a path
+ * from "/" (its trailing slashes dropped), else at's joined with p's path
+ * as written, if at has one and it fits. NULL: none (or no memory). */
+static char *hint_of(const struct path *p)
+{
+    uint32_t len;
+    const char *rel = path_rel(p, &len);
+    const struct dir *at = p->at ? p->at->priv : NULL;
+    const char *base = at ? at->path : p->abs;
+    if (!base)
+        return NULL;
+    size_t bl = strlen(base);
+    if (!at) {
+        len = 0;
+        while (bl > p->mount_len + 1 && base[bl - 1] == '/')
+            bl--;
+    }
+    while (len && rel[len - 1] == '/')
+        len--;
+    size_t n = bl + (len ? 1 + len : 0);
+    char *text = n < PATH_BYTES ? jam_malloc(n + 1) : NULL;
+    if (!text)
+        return NULL;
+    memcpy(text, base, bl);
+    if (len) {
+        text[bl] = '/';
+        memcpy(text + bl + 1, rel, len);
+    }
+    text[n] = '\0';
+    return text;
+}
+
+/* A channel's description for the directory p's fs.opendir gave. */
+static long chan_new(const struct path *p, handle_t ch, uint64_t id, uint64_t volume,
+                     uint32_t flags, uint32_t status, struct fd_desc **out)
+{
+    struct dir *x = jam_calloc(1, sizeof(*x));
+    /* read-only, with O_PATH kept: such a description lists nothing (dir_getdents) */
+    struct fd_desc *d = x ? fd_new(&dir_ops, (status & ~FD_ACCMODE) | O_RDONLY, x) : NULL;
+    if (!d || p->mount_len >= NS_NAME_MAX) {
+        if (d)
+            fd_put(d);   /* its close frees x */
+        else
+            jam_free(x);
+        jam_handle_close(ch);
+        return d ? -EIO : -ENOMEM;
+    }
+    x->chan = true;
+    x->ch = ch;
+    x->flags = flags & FS_READ;
+    x->id = id;
+    x->volume = volume;
+    memcpy(x->mount, p->abs, p->mount_len);
+    x->mount[p->mount_len] = '\0';
+    x->path = hint_of(p);
+    *out = d;
+    return 0;
+}
+
+/* "posix: /data has no room for more directory channels: ..." in the
+ * log, once a process (docs/DIRHANDLE-PLAN.md 2.6). */
+static void say_full(const struct path *p)
+{
+    if (__atomic_exchange_n(&said_full, true, __ATOMIC_RELAXED))
+        return;
+    char line[160];
+    int n = snprintf(line, sizeof(line),
+                     "posix: %.*s has no room for more directory channels: text descriptions "
+                     "from here (renames not followed)\n",
+                     (int)(p->mount_len < 32 ? p->mount_len : 32), p->abs);
+    if (n > 0)
+        (void)jam_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+}
+
+/* A text description of the directory at p (placed: its physical text).
+ * From a directory channel that is its text joined with the path, if it
+ * has one; else -EMFILE (the service has no room, and no text names it). */
+static long text_open(struct path *p, uint32_t status, struct fd_desc **out)
+{
+    if (!p->at) {
+        long r = path_place(p);
+        return r ? r : dir_new(p, status, out);
+    }
+    char *text = hint_of(p);
+    struct path *q = text ? jam_malloc(sizeof(*q)) : NULL;
+    long r = !text ? -EMFILE : !q ? -ENOMEM : path_set(text, q);
+    if (!r) {
+        q->nofollow = p->nofollow;
+        r = path_place(q);
+    }
+    if (!r)
+        r = dir_new(q, status, out);
+    if (q)
+        path_done(q);
+    jam_free(q);
+    jam_free(text);
+    return r;
+}
+
+long dir_open(struct path *p, uint32_t status, struct fd_desc **out)
+{
+    if (p->where == PATH_MOUNT && (path_features(p) & FS_FEAT_DIRS)) {
+        uint32_t ff = ((status & O_PATH) ? 0 : FS_READ) | (p->nofollow ? FS_NOFOLLOW : 0);
+        handle_t ch = HANDLE_INVALID;
+        uint64_t id = 0, volume = 0;
+        status_t st = opendir_raw(p, ff, &ch, &id, &volume);
+        if (st == OK)
+            return chan_new(p, ch, id, volume, ff, status, out);
+        if (st == ERR_INVALID_ARGS && p->nofollow)
+            return -ELOOP;   /* FS_NOFOLLOW: a link as the last name */
+        if (st != ERR_NO_RESOURCES && st != ERR_NOT_SUPPORTED)
+            return path_err_read(p, st);   /* ERR_LINK_OUT: openat follows it */
+        if (st == ERR_NO_RESOURCES)
+            say_full(p);
+    }
+    return text_open(p, status, out);
+}
+
+struct fd_desc *dir_copy(struct fd_desc *d)
+{
+    const struct dir *x = d->priv;
+    struct dir *y = x->chan ? jam_calloc(1, sizeof(*y)) : NULL;
+    char *path = x->path ? jam_strdup(x->path) : NULL;
+    handle_t ch = HANDLE_INVALID;
+    struct fd_desc *c = NULL;
+    if (y && (path || !x->path) && !dir_channel(d, &ch))
+        c = fd_new(&dir_ops, O_RDONLY | O_PATH, y);
+    if (!c) {
+        if (ch)
+            jam_handle_close(ch);
+        jam_free(path);
+        jam_free(y);
+        return NULL;
+    }
+    y->chan = true;
+    y->ch = ch;
+    y->flags = x->flags;
+    memcpy(y->mount, x->mount, sizeof(y->mount));
+    y->id = x->id;
+    y->volume = x->volume;
+    y->path = path;
+    return c;
+}
+
+/* d's channel's text now, as its service names it (fs.resolve of ""), its
+ * mount before it: 0 and out (PATH_BYTES), or -errno. */
+static long chan_text(struct fd_desc *d, char *out)
+{
+    const struct dir *x = d->priv;
+    handle_t ch;
+    long r = dir_channel(d, &ch);
+    if (r)
+        return r;
+    char *next = jam_malloc(PATH_BYTES);
+    uint8_t kind = 0;
+    uint16_t used;
+    uint32_t nlen = 0;
+    status_t st = next ? fs_resolve_within(ch, FILE_TIMEOUT, "", 0, 0, &kind, &used, next, &nlen)
+                       : ERR_NO_MEMORY;
+    jam_handle_close(ch);
+    if (st == OK && (kind != FS_RESOLVE_INSIDE || nlen >= PATH_BYTES))
+        st = ERR_IO;   /* "" never leads out: a broken service */
+    if (st == OK) {
+        next[nlen] = '\0';
+        int n = snprintf(out, PATH_BYTES, "%s%s%s", x->mount, nlen ? "/" : "", next);
+        r = n < 0 || n >= (int)PATH_BYTES ? -ENAMETOOLONG : 0;
+    } else {
+        r = st == ERR_NO_MEMORY ? -ENOMEM : lx_err(st);
+    }
+    jam_free(next);
+    return r;
+}
+
+long dir_text_now(struct fd_desc *d, char *out)
+{
+    const struct dir *x = d->priv;
+    long r = x->chan ? chan_text(d, out) : -ENOENT;
+    if (r && r != -ENAMETOOLONG && x->path && strlen(x->path) < PATH_BYTES) {
+        memcpy(out, x->path, strlen(x->path) + 1);   /* removed, gone: its last known */
+        r = 0;
+    }
+    return r;
+}
+
 /* ---- the listing ------------------------------------------------------------- */
 
 /* The id of abs + more ("" for ".", "/.." for ".."), or 1 if it can't be
- * asked. Its buffers are on the heap: they are 8 KiB, and a listing's
- * first call comes with whatever stack the caller has. */
+ * asked: a text description's. Its buffers are on the heap: they are
+ * 8 KiB, and a listing's first call comes with whatever stack the caller
+ * has. */
 static uint64_t id_of(const char *abs, const char *more)
 {
     struct {
@@ -90,22 +380,40 @@ static uint64_t id_of(const char *abs, const char *more)
     return id;
 }
 
-/* Ask the service for cookie's batch of the directory p. d->lock. */
-static long fetch_path(const struct path *p, struct dir *w, uint32_t cookie)
+/* A channel's "..": getattr("..") on it (from the view's root, the
+ * directory the mount point is in); 1 if it can't be asked. */
+static uint64_t parent_id(struct fd_desc *d)
+{
+    struct {
+        struct path      p;
+        struct path_info i;
+    } *w = jam_malloc(sizeof(*w));
+    if (!w)
+        return 1;
+    uint64_t id = 1;
+    if (!path_in_dir(d, "..", 2, &w->p) && !path_info_follow(&w->p, &w->i) && w->i.id)
+        id = w->i.id;
+    path_done(&w->p);
+    jam_free(w);
+    return id;
+}
+
+/* Ask the service for cookie's batch of the directory p into x. d->lock. */
+static long fetch_path(const struct path *p, struct dir *x, uint32_t cookie)
 {
     handle_t fs;
     long r = path_fs(p, &fs);
     if (r)
         return r;
-    if (!w->batch && !(w->batch = jam_malloc(FS_READDIR_BYTES))) {
+    if (!x->batch && !(x->batch = jam_malloc(FS_READDIR_BYTES))) {
         jam_handle_close(fs);
         return -ENOMEM;
     }
     uint32_t len, next = 0, blen = 0;
     uint16_t count = 0;
     const char *rel = path_rel(p, &len);
-    w->bvalid = false;
-    status_t st = fs_readdir_within(fs, FILE_TIMEOUT, rel, len, cookie, &next, &count, w->batch,
+    x->bvalid = false;
+    status_t st = fs_readdir_within(fs, FILE_TIMEOUT, rel, len, cookie, &next, &count, x->batch,
                                     &blen);
     jam_handle_close(fs);
     if (st == ERR_LINK_OUT)
@@ -114,18 +422,23 @@ static long fetch_path(const struct path *p, struct dir *w, uint32_t cookie)
         return path_err_read(p, st);
     if (!count && next)
         return -EIO;   /* an empty batch that isn't the last: a broken service */
-    *w = (struct dir){ .path = w->path, .batch = w->batch, .blen = blen, .bcookie = cookie,
-                       .bnext = next, .bcount = count, .bvalid = true };
+    x->blen = blen;
+    x->bcookie = cookie;
+    x->bnext = next;
+    x->bcount = count;
+    x->bvalid = true;
+    x->at_k = 0;
+    x->at_off = 0;
     return 0;
 }
 
-/* Ask the service for cookie's batch. d->lock. */
-static long fetch(const struct dir *x, struct dir *w, uint32_t cookie)
+/* Ask the service for cookie's batch of d's directory. d->lock. */
+static long fetch(struct fd_desc *d, uint32_t cookie)
 {
     struct path p;
-    long r = path_set(x->path, &p);
+    long r = path_of(d, &p);
     if (!r)
-        r = fetch_path(&p, w, cookie);
+        r = fetch_path(&p, d->priv, cookie);
     path_done(&p);
     return r;
 }
@@ -158,7 +471,7 @@ static long mount_entry(struct fd_desc *d, int64_t pos, struct entry *e)
     uint16_t k = (uint16_t)(v & K_MASK);
     for (;;) {
         if (!x->bvalid || x->bcookie != cookie) {
-            long r = fetch(x, x, cookie);
+            long r = fetch(d, cookie);
             if (r)
                 return r;
         }
@@ -212,11 +525,13 @@ static long entry_at(struct fd_desc *d, int64_t pos, struct entry *e)
     const struct dir *x = d->priv;
     if (pos < POS_ENTRIES) {
         memcpy(e->name, pos ? ".." : ".", pos ? 3 : 2);
-        e->ino = id_of(x->path, pos ? "/.." : "");
+        e->ino = x->chan ? (pos ? parent_id(d) : x->id) : id_of(x->path, pos ? "/.." : "");
         e->type = DT_DIR;
         e->next = pos + 1;
         return 1;
     }
+    if (x->chan)
+        return mount_entry(d, pos, e);
     bool mount;
     long r = on_mount(x->path, &mount);
     if (r)
@@ -254,13 +569,15 @@ static long dir_getdents(struct fd_desc *d, void *buf, size_t len)
     if (!e)
         return -ENOMEM;
     lock_take(&d->lock);
+    struct dir *x = d->priv;
+    long r = 0;
     if (d->offset < POS_ENTRIES) {   /* a listing from the start: asked afresh */
-        struct dir *x = d->priv;
         x->bvalid = false;
+        if (x->chan)
+            r = fetch(d, 0);   /* a removed directory: ENOENT before ".", as Linux's */
     }
     size_t used = 0;
-    long r;
-    while ((r = entry_at(d, d->offset, e)) > 0) {
+    while (!r && (r = entry_at(d, d->offset, e)) > 0) {
         long k = dir_put((uint8_t *)buf + used, len - used, e->name, e->ino, e->type, e->next);
         if (k <= 0) {
             r = used ? 0 : k ? k : -EINVAL;   /* the buffer can't hold the next one */
@@ -268,6 +585,7 @@ static long dir_getdents(struct fd_desc *d, void *buf, size_t len)
         }
         used += (size_t)k;
         d->offset = e->next;
+        r = 0;
     }
     lock_give(&d->lock);
     jam_free(e);
@@ -300,10 +618,9 @@ static long dir_seek(struct fd_desc *d, int64_t off, int whence)
 
 static long dir_stat(struct fd_desc *d, struct stat *st)
 {
-    const struct dir *x = d->priv;
     struct path p;
     struct path_info i;
-    long r = path_set(x->path, &p);
+    long r = path_of(d, &p);
     if (!r)
         r = path_info_follow(&p, &i);
     if (!r)
@@ -312,7 +629,7 @@ static long dir_stat(struct fd_desc *d, struct stat *st)
     return r;
 }
 
-/* fs.sync of p's mount. */
+/* fs.sync of p's mount (on a channel's path, on the channel). */
 static long sync_mount(const struct path *p)
 {
     handle_t fs;
@@ -326,9 +643,8 @@ static long sync_mount(const struct path *p)
 
 static long dir_sync(struct fd_desc *d)
 {
-    const struct dir *x = d->priv;
     struct path p;
-    long r = path_set(x->path, &p);
+    long r = path_of(d, &p);
     if (!r && p.where == PATH_MOUNT)
         r = sync_mount(&p);
     path_done(&p);
@@ -341,25 +657,64 @@ static const char *dir_path(struct fd_desc *d)
     return x->path;
 }
 
-static long dir_give(struct fd_desc *d, struct fd_given *out)
+/* The directory as a path: a channel's is itself (""), a text one its
+ * text. (path_done: the caller's) */
+static long dir_place(struct fd_desc *d, struct path *out)
 {
     const struct dir *x = d->priv;
-    char *data = jam_strdup(x->path);
-    if (!data)
+    out->at = NULL;
+    return x->chan ? path_in_dir(d, "", 0, out) : path_set(x->path, out);
+}
+
+static long dir_give(struct fd_desc *d, struct fd_given *out)
+{
+    char *text = jam_malloc(PATH_BYTES);
+    if (!text)
         return -ENOMEM;
+    if (dir_text_now(d, text)) {
+        jam_free(text);
+        return -ENOTSUP;   /* no text names it (too deep, or gone): left out until DL2 */
+    }
     lock_take(&d->lock);
     int64_t off = d->offset;
     lock_give(&d->lock);
     *out = (struct fd_given){
         .kind = POSIXFDS_DIR, .status = fd_status(d) & POSIXFDS_STATUS, .offset = (uint64_t)off,
-        .data = data, .data_len = (uint32_t)strlen(data) + 1,
+        .data = text, .data_len = (uint32_t)strlen(text) + 1,
     };
     return 0;
+}
+
+/* fork: a channel's description gives the child a duplicate of its
+ * channel; one whose channel doesn't come is the child's as text if it
+ * has its text, else left out. A text description, or a gone one, has
+ * nothing to pass. */
+static bool dir_fork(struct fd_desc *d, struct fd_fork *f)
+{
+    struct dir *x = d->priv;
+    if (!x->chan)
+        return true;
+    bool child = fd_fork_child(f);
+    if (child)
+        x->ch_lock = (lock_t){ 0 };
+    if (!x->ch)
+        return true;   /* gone */
+    if (!child) {
+        fd_fork_dup(f, 0, x->ch);
+        return true;
+    }
+    x->ch = fd_fork_take(f, 0);
+    if (x->ch)
+        return true;
+    x->chan = false;   /* the text, as the description was before channels */
+    return x->path != NULL;
 }
 
 static void dir_close(struct fd_desc *d)
 {
     struct dir *x = d->priv;
+    if (x->ch)
+        jam_handle_close(x->ch);
     jam_free(x->batch);
     jam_free(x->path);
     jam_free(x);
@@ -367,8 +722,8 @@ static void dir_close(struct fd_desc *d)
 
 static const struct fd_ops dir_ops = {
     .name = "directory", .read = dir_read, .seek = dir_seek, .stat = dir_stat,
-    .sync = dir_sync, .getdents = dir_getdents, .path = dir_path, .give = dir_give,
-    .close = dir_close,
+    .sync = dir_sync, .getdents = dir_getdents, .path = dir_path, .place = dir_place,
+    .give = dir_give, .fork = dir_fork, .close = dir_close,
 };
 
 long dir_new(const struct path *p, uint32_t status, struct fd_desc **out)
@@ -404,10 +759,11 @@ long dir_adopt_fd(const struct posixfds_fd *rec, const void *data, const handle_
 /* ---- calls that change directories ------------------------------------------- */
 
 /* p is "/", /svc, a service, or a mount's root: nothing there can be made
- * or removed. */
+ * or removed. (A path from a directory channel never is: the service
+ * judges what it names.) */
 static bool top_level(const struct path *p)
 {
-    return p->where != PATH_MOUNT || !p->abs[p->mount_len];
+    return p->where != PATH_MOUNT || (!p->at && !p->abs[p->mount_len]);
 }
 
 /* Does something exist at p (a link itself, if p->nofollow)? */
@@ -531,7 +887,8 @@ static long rename_check(const struct path *a, const struct path *b)
     if (a->last_dot || a->last_dotdot || b->last_dot || b->last_dotdot || top_level(a) ||
         top_level(b))
         return -EBUSY;
-    if (!strcmp(a->abs, b->abs) || a->must_dir || b->must_dir) {
+    bool same = a->at == b->at && !strcmp(a->abs, b->abs);   /* one name, from one place */
+    if (same || a->must_dir || b->must_dir) {
         struct path_info i;
         struct path q = *a;
         q.must_dir = false;
@@ -540,7 +897,7 @@ static long rename_check(const struct path *a, const struct path *b)
             return r;
         if (!i.is_dir && (a->must_dir || b->must_dir))
             return -ENOTDIR;
-        if (!strcmp(a->abs, b->abs))
+        if (same)
             return 0;   /* the same name: nothing to do (rename(2)) */
     }
     return 1;
@@ -557,6 +914,8 @@ static long rename_paths(const struct path *a, const struct path *b, uint32_t fl
     long r = rename_check(a, b);
     if (r <= 0)
         return r;
+    if (a->at != b->at)
+        return dir_meet(a, b, flags, false);   /* two directories: fs.rename_at */
     handle_t fs;
     if ((r = path_fs(a, &fs)) != 0)
         return r;
@@ -606,6 +965,116 @@ long lx_rename(long oldpath, long newpath, long c, long d, long e, long f)
     return lx_renameat2(AT_FDCWD, oldpath, AT_FDCWD, newpath, 0, 0);
 }
 
+/* ---- two directories in one request (docs/DIRHANDLE-PLAN.md 2.4) ------------- */
+
+/* One side of dir_meet: the channel its name is in (a duplicate, or a
+ * whole path's directory opened through its mount), that directory's id
+ * and volume, and the name (in p's abs). */
+struct side {
+    handle_t    ch;
+    uint64_t    id, volume;
+    const char *rel;
+    uint32_t    len;
+};
+
+/* A whole path's directory as a channel of its own, for s: the path cut
+ * at its last name. */
+static long side_of_text(const struct path *p, struct side *s)
+{
+    size_t end = strlen(p->abs), slash;
+    while (end > p->mount_len + 1 && p->abs[end - 1] == '/')
+        end--;   /* "a/b/": b */
+    for (slash = end; slash > p->mount_len && p->abs[slash - 1] != '/'; slash--)
+        ;
+    if (slash <= p->mount_len || slash == end)
+        return -EBUSY;   /* the mount's root (rename_check's top_level) */
+    struct {
+        char        text[PATH_BYTES];
+        struct path q;
+    } *w = jam_malloc(sizeof(*w));
+    if (!w)
+        return -ENOMEM;
+    memcpy(w->text, p->abs, slash - 1);
+    w->text[slash - 1] = '\0';   /* "/data" for "/data/x": the root, "/" in the mount */
+    long r = path_set(w->text, &w->q);
+    if (!r) {
+        status_t st = opendir_raw(&w->q, 0, &s->ch, &s->id, &s->volume);
+        r = st == OK ? 0 : path_err_read(&w->q, st);
+        if (r == PATH_LINK_OUT)
+            r = -EIO;   /* placed just now */
+    }
+    path_done(&w->q);
+    jam_free(w);
+    s->rel = p->abs + slash;
+    s->len = (uint32_t)(end - slash);
+    return r;
+}
+
+static long side_of(const struct path *p, struct side *s)
+{
+    if (!p->at)
+        return side_of_text(p, s);
+    const struct dir *x = p->at->priv;
+    s->id = x->id;
+    s->volume = x->volume;
+    s->rel = path_rel(p, &s->len);
+    return dir_channel(p->at, &s->ch);
+}
+
+/* Is rel (len bytes; "" for the directory itself) there on ch? */
+static bool there(handle_t ch, const char *rel, uint32_t len)
+{
+    uint32_t mode, nlink, uid, gid;
+    uint64_t size, blocks, id;
+    int64_t at, mt, ct;
+    return fs_getattr_within(ch, FILE_TIMEOUT, rel, len, FS_NOFOLLOW, &mode, &nlink, &uid, &gid,
+                             &size, &blocks, &id, &at, &mt, &ct) == OK;
+}
+
+/* rename_at's or link_at's ERR_NOT_FOUND: the name a moves isn't there,
+ * or b's directory or the directory its name goes in isn't (ENOENT); else
+ * the service can't place b's directory from a's view: EXDEV, as Linux's
+ * answer across mounts (a descriptor from a process whose view is
+ * another). */
+static long met_not_found(const struct side *a, const struct side *b)
+{
+    uint32_t dl = b->len;
+    while (dl && b->rel[dl - 1] != '/')
+        dl--;
+    if (!there(a->ch, a->rel, a->len) || !there(b->ch, "", 0) || (dl && !there(b->ch, b->rel, dl)))
+        return -ENOENT;
+    return -EXDEV;
+}
+
+long dir_meet(const struct path *a, const struct path *b, uint32_t flags, bool link)
+{
+    struct side sa = { .ch = HANDLE_INVALID }, sb = { .ch = HANDLE_INVALID };
+    long r = side_of(a, &sa);
+    if (!r)
+        r = side_of(b, &sb);
+    if (!r && sa.volume != sb.volume)
+        r = -EXDEV;   /* two volumes: an id names nothing on the other */
+    if (!r) {
+        status_t st = link ? fs_link_at_within(sa.ch, FILE_TIMEOUT, sa.rel, sa.len, sb.id, sb.rel,
+                                               sb.len)
+                           : fs_rename_at_within(sa.ch, FILE_TIMEOUT, sa.rel, sa.len, sb.id,
+                                                 sb.rel, sb.len, flags);
+        if (st == ERR_NOT_FOUND)
+            r = met_not_found(&sa, &sb);
+        else if (st == ERR_LINK_OUT)
+            r = -EIO;   /* both were placed just now: a link made meanwhile */
+        else if (st == ERR_IS_DIR && link)
+            r = -EPERM;   /* link(2): no hard link to a directory */
+        else
+            r = st == OK ? 0 : path_err(link ? b : a, st);
+    }
+    if (sa.ch)
+        jam_handle_close(sa.ch);
+    if (sb.ch)
+        jam_handle_close(sb.ch);
+    return r;
+}
+
 /* ---- the current directory ------------------------------------------------------ */
 
 /* chdir's check of p (a directory), and its physical form. */
@@ -640,14 +1109,19 @@ long lx_chdir(long pathname, long b, long c, long d, long e, long f)
     return r;
 }
 
+/* The current directory is text until DL2 (docs/DIRHANDLE-PLAN.md 4.4):
+ * fchdir takes the directory's text now (a channel's asked of its service,
+ * so a rename is followed; ENAMETOOLONG past PATH_BYTES). */
 long lx_fchdir(long fd, long b, long c, long d, long e, long f)
 {
     struct fd_desc *desc = fd_get(fd);
     if (!desc)
         return -EBADF;
-    long r = dir_is(desc) ? 0 : -ENOTDIR;
+    char *text = dir_is(desc) ? jam_malloc(PATH_BYTES) : NULL;
+    long r = !dir_is(desc) ? -ENOTDIR : !text ? -ENOMEM : dir_text_now(desc, text);
     if (!r)
-        path_cwd_set(dir_path(desc));
+        path_cwd_set(text);
+    jam_free(text);
     fd_put(desc);
     return r;
 }

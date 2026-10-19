@@ -21,8 +21,17 @@
  * is /data/boot). "/" itself is a read-only directory listing the mounts
  * and "svc"; "/svc" lists the services, each a socket-like node that
  * can't be opened. Paths are up to PATH_BYTES with their NUL, the `fs`
- * protocol's own limit. Directory descriptors are paths too: a directory
- * renamed under one is not followed (FAT has no inode to follow).
+ * protocol's own limit.
+ *
+ * **Directory descriptors** (docs/DIRHANDLE-PLAN.md section 4) on a mount
+ * whose fs.statfs says FS_FEAT_DIRS (extfs) hold the directory's own `fs`
+ * channel (fs.opendir): a relative path from one is sent on it as the
+ * program wrote it, however deep the directory lies, and the service
+ * walks it from there (".." up to the view's root, then from the mount
+ * point in our own namespace, as a link out); a directory renamed under
+ * one is followed. Anywhere else (FAT, the boot image, "/", /svc, libc's
+ * trees, a service with no room for more: 2.6) a directory description is
+ * its path as text, as before.
  *
  * **Mounts with links** (docs/M13.6-PLAN.md, "Paths and links": extfs,
  * whose fs.statfs says FS_FEAT_LINKS). Only the names up to the mount are
@@ -42,14 +51,17 @@
  *
  * **The mount's channel.** Each call asks libjam's namespace for a
  * duplicate of the mount's `fs` channel (ns_channel) and closes it after,
- * so a mount replaced meanwhile is seen at the next call.
+ * so a mount replaced meanwhile is seen at the next call; a path from a
+ * directory channel takes a duplicate of that one instead (path_fs).
  *
  * **A path's reference.** A call that made a struct path (path_get,
- * path_set) ends it with path_done on every way out, whatever the answer
- * was (docs/DIRHANDLE-PLAN.md 4.2): `at` is the directory description a
- * relative path started from, held until then. It is NULL for now, so
- * path_done has nothing to drop yet, but a call that forgets it would leak
- * a description once it is not. */
+ * path_set, path_of, path_in_dir, file_where_path) ends it with path_done
+ * on every way out, whatever the answer was (docs/DIRHANDLE-PLAN.md 4.2):
+ * `at` is the directory description a relative path started from, held
+ * until then. A call that forgets it leaks the description and its
+ * channel, one of the volume's 256: tools/checkpathdone.py (make check)
+ * finds a function that makes a path and never ends one; one that makes a
+ * path for its caller says "(path_done: the caller's)". */
 #pragma once
 
 #include <stdbool.h>
@@ -71,13 +83,16 @@ enum path_where {
  * whoever called them ends it with path_done: a copy (`struct path q = *p`)
  * only borrows `at` and is not ended. */
 struct path {
-    struct fd_desc *at;                 /* the directory description a relative path started
-                                         * from, held (path_done drops it); NULL for a path from
-                                         * "/". Always NULL for now (docs/DIRHANDLE-PLAN.md 4.2:
-                                         * a directory's channel will go here, and abs will then
-                                         * be the path as written, from it) */
-    char            abs[PATH_BYTES];    /* absolute and clean: "/", "/data", "/data/a/b"; on a
-                                         * mount with links clean up to the mount only */
+    struct fd_desc *at;                 /* the directory channel's description a relative path
+                                         * starts from, held (path_done drops it); NULL for a
+                                         * path from "/" (a text base was joined into abs) */
+    char            abs[PATH_BYTES + NS_NAME_MAX];
+                                        /* absolute and clean: "/", "/data", "/data/a/b"; on a
+                                         * mount with links clean up to the mount only. With
+                                         * `at`: its mount, a '/' and the path as the program
+                                         * wrote it from the directory ("/data/" for the
+                                         * directory itself), which only the service walks:
+                                         * abs is then no path from "/" (path_rel) */
     enum path_where where;
     uint32_t        mount_len;          /* abs[0 .. mount_len) is the mount ("/data") */
     bool            must_dir;           /* written with a trailing '/', "." or "..": only a
@@ -117,18 +132,30 @@ struct path_info {
  * in is relative). 0, or -EFAULT (NULL), -ENOENT (empty), -ENAMETOOLONG,
  * -EBADF (dirfd isn't open), -ENOTDIR (dirfd isn't a directory). A
  * relative path is walked on from the base's text where it stands in
- * out->abs (the current directory's and a description's are kept clean). */
+ * out->abs (the current directory's and a text description's are kept
+ * clean); from a directory channel's description it is that description's
+ * (`at`), the path as written. */
 long path_get(long dirfd, const char *in, struct path *out);
 /* Resolve an absolute path the layer made itself (a description's). */
 long path_set(const char *abs, struct path *out);
+/* A path from dir (a directory channel's description: one more reference
+ * to it in out->at), rel (n bytes, as written; "" for the directory
+ * itself). 0, or -ENAMETOOLONG. */
+long path_in_dir(struct fd_desc *dir, const char *rel, size_t n, struct path *out);
+/* The path description d stands for (ops->place, else the text of
+ * ops->path): 0 and *out; 1 if its kind names none (a pipe, a device:
+ * *out is then "/", which ends with nothing to drop); or -errno. */
+long path_of(struct fd_desc *d, struct path *out);
 /* End a path path_get or path_set made (even one they refused): drop what
  * `at` holds. Every call ends its paths on every way out. */
 void path_done(struct path *p);
-/* The path inside the mount as fs.idl wants it ("/" for its root), and
- * its length. */
+/* The path inside the mount as fs.idl wants it ("/" for its root; with
+ * `at` the path as written from the directory, "" for itself), and its
+ * length. */
 const char *path_rel(const struct path *p, uint32_t *len);
-/* A duplicate of p's mount's `fs` channel (the caller closes it): 0, or
- * -ENOENT (no such mount). Only for PATH_MOUNT. */
+/* A duplicate of the `fs` channel p goes to (the caller closes it): its
+ * mount's, or with `at` its directory's (dir_channel). 0, or -ENOENT (no
+ * such mount, or a directory that is gone). Only for PATH_MOUNT. */
 long path_fs(const struct path *p, handle_t *fs);
 /* What stat says about p (lstat's answer if p->nofollow): 0, or -errno,
  * or PATH_LINK_OUT. */
@@ -163,7 +190,10 @@ static inline bool path_again(struct path *p, long *r)
 /* p in its physical form, on a mount with links: every link followed
  * (the last one too unless p->nofollow), ".." resolved, as fs.resolve
  * answers (links out followed in our namespace). Nothing for other
- * mounts, whose paths are clean already. 0 or -errno. */
+ * mounts, whose paths are clean already. A path from a directory channel
+ * (`at`) is kept as it is while it stays inside the mount (the service
+ * walks it; its text from the view's root may be too long to write): only
+ * a link out makes it a whole path from "/". 0 or -errno. */
 long path_place(struct path *p);
 /* The same for a call that changes nothing (stat, readdir, statfs, an
  * open to read): a refusal there is always EACCES, never EROFS. */
@@ -235,11 +265,24 @@ void fobj_put(struct fobj *o);
  * it): our writable open, the file's one, is closed so the child's can
  * be made (o->lock held). Nothing for an open that only reads. */
 void fobj_lend_locked(struct fobj *o);
-/* o's open, made again if it was lent, from the file's absolute path
- * (o->lock held): OK, or the service's answer (ERR_BUSY: a child still
- * holds the file after the wait for its close). Every use of o->jf
- * calls it first. */
-status_t fobj_back_locked(struct fobj *o, const char *path);
+/* Where a file description's file is, to open it again (a lent open taken
+ * back, a child's own open): its absolute text, or for a file opened from
+ * a directory channel its name in a directory description of the file's
+ * own (dir_copy), whose joined text may be too long or stale (docs/
+ * DIRHANDLE-PLAN.md 4.5). file.c keeps one per description. */
+struct file_where {
+    char           *path;   /* absolute; with dir a hint (log lines, /proc); NULL: not known */
+    struct fd_desc *dir;    /* the directory's description, or NULL */
+    char           *name;   /* the name in dir as it was written */
+};
+/* w as a path (path_done after): 0, or 1 when w names nothing (*out is
+ * then "/", ending with nothing to drop), or -errno. (path_done: the
+ * caller's) */
+long file_where_path(const struct file_where *w, struct path *out);
+/* o's open, made again if it was lent, from where the file is (o->lock
+ * held): OK, or the service's answer (ERR_BUSY: a child still holds the
+ * file after the wait for its close). Every use of o->jf calls it first. */
+status_t fobj_back_locked(struct fobj *o, const struct file_where *where);
 /* fork's walk in the child (docs/FORK-PLAN.md section 1.6). fobj_fork: o,
  * which a file description the child keeps holds, counted again from its
  * first description (one reference each), its lock fresh and its open
@@ -266,14 +309,15 @@ bool file_desc_is(const struct fd_desc *d);
 long file_setattr_fd(struct fd_desc *d, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid,
                      int64_t atime_ns, int64_t mtime_ns);
 /* The record locks' way to a file's description (reclock.c): its open
- * here, its path, and the description's lock owner and token (OFD and
- * flock locks; 0 until the first such lock), which d->lock guards. 0, or
- * -ENOTSUP: not a file with an open (another kind, O_PATH). */
+ * here, where the file is (for fobj_back_locked), and the description's
+ * lock owner and token (OFD and flock locks; 0 until the first such
+ * lock), which d->lock guards. 0, or -ENOTSUP: not a file with an open
+ * (another kind, O_PATH). */
 struct file_lockref {
-    struct fobj *o;
-    const char  *path;
-    uint64_t    *owner;
-    handle_t    *token;
+    struct fobj             *o;
+    const struct file_where *path;
+    uint64_t                *owner;
+    handle_t                *token;
 };
 long file_lockref(struct fd_desc *d, struct file_lockref *out);
 /* The record locks' close rule (reclock.c; fd.c's close and dup2 call it
@@ -372,9 +416,41 @@ fd_adopt_fn proc_adopt;
 
 /* ---- dir.c ------------------------------------------------------------------------ */
 
-/* The directory kind: is d one, and a new one for p at position 0. */
+/* The directory kind: is d one, and a new one for p at position 0 (a
+ * text description, p->abs; never a path from `at`). */
 bool dir_is(const struct fd_desc *d);
 long dir_new(const struct path *p, uint32_t status, struct fd_desc **out);
+/* openat's directory found at p (p->nofollow: a link as the last name is
+ * ELOOP) with open's status flags (O_PATH: no read asked): a description
+ * of its own channel (fs.opendir) on a mount with FS_FEAT_DIRS, else, and
+ * when the service has no room (ERR_NO_RESOURCES, said once a process),
+ * a text one (p placed). -errno, or PATH_LINK_OUT. */
+long dir_open(struct path *p, uint32_t status, struct fd_desc **out);
+/* A relative path in (n bytes) from directory d: 1 and *out made from
+ * d's channel (path_in_dir), or 0 and d's text in out->abs (a text
+ * description), for path.c's path_get. */
+long dir_from(struct fd_desc *d, const char *in, size_t n, struct path *out);
+/* A directory channel description's mount ("/data"). */
+const char *dir_mount(const struct fd_desc *d);
+/* A duplicate of d's channel (path_fs): 0, or -ENOENT (gone). A channel
+ * whose service went (ERR_PEER_CLOSED: the mount went, or a fresh start)
+ * is replaced first by an open of the last known text, the same directory
+ * (its id) or none; failing that d is gone, ENOENT from then on. */
+long dir_channel(struct fd_desc *d, handle_t *out);
+/* A description of d's directory of its own (its channel duplicated): a
+ * file opened from d keeps it (file_where). NULL: no memory, or gone. */
+struct fd_desc *dir_copy(struct fd_desc *d);
+/* d's absolute text now (PATH_BYTES): a channel's asked of its service
+ * (fs.resolve of ""), else, or failing that, the last known; 0 or -errno
+ * (-ENAMETOOLONG: deeper than PATH_BYTES from "/"). fchdir's, spawn's. */
+long dir_text_now(struct fd_desc *d, char *out);
+/* A rename (fs.rename's flags) or a link of a to b, two paths on one
+ * mount whose `at` differ (two directory channels, or one and a whole
+ * path, whose directory is opened as a channel through its mount first):
+ * fs.rename_at or fs.link_at on a's directory with b's by its id, EXDEV
+ * when their volumes differ or the service can't place b's from a's view
+ * (b's still there through its own channel). 0 or -errno. */
+long dir_meet(const struct path *a, const struct path *b, uint32_t flags, bool link);
 /* The kind's adopter (fd_adopters' POSIXFDS_DIR line). */
 fd_adopt_fn dir_adopt_fd;
 /* One getdents64 record (Linux's linux_dirent64, padded to 8 bytes) for
