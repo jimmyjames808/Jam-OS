@@ -1808,7 +1808,7 @@ with a log line (`init: exec: <path>: its caller's directory <dir> isn't
 in its namespace: it starts in /`). A raised child starts in `/` whatever
 its caller says (`init: exec: <path> is raised (AT_SECURE): ...`), since a
 path is text and proves nothing about what the caller can reach. When
-directory handles land (docs/DIRHANDLE-PLAN.md, being written) the caller
+directory handles land ([history](HISTORY.md#directory-handles)) the caller
 gives an open directory instead; `child_dir` is where that goes, and a
 raised child may then be given its caller's directory too. (Built since by
 DL2: the caller's directory goes as a channel to a child that isn't raised;
@@ -2494,7 +2494,7 @@ the layer; no Chromium patch, no kernel change.
   broke the channel. Fixed (2d67cc9a): a directory crosses a socketpair by
   its path and getdents position, opened again in the receiver's namespace,
   as the hand-over gives one to a child (until directory handles:
-  DIRHANDLE-PLAN). The refusal's log line now names the descriptor's path.
+  [history](HISTORY.md#directory-handles)). The refusal's log line now names the descriptor's path.
 - **Stop 3: the renderer said nothing.** The window and toolbar drew (the
   GPU process's software compositor, its buffers to the browser and on to
   the Wayland compositor) but the page area stayed empty and the browser
@@ -5061,7 +5061,7 @@ every lock and kept none (`dup.c`), so `F_SETLK` never said `EAGAIN` and
 ## DC notes
 
 Track DC (2026-10-20, branch `worktree-agent-a6c512f7ae1ac1637`; the DC row of
-[DIRHANDLE-PLAN](DIRHANDLE-PLAN.md#dc-notes)): Chromium's programs relinked
+[directory handles](HISTORY.md#directory-handles)): Chromium's programs relinked
 against main with DL1's and DL2's libc, `base_unittests` measured again, the
 browser cases run on the new programs.
 
