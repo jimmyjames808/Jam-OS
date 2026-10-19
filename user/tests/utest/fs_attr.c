@@ -558,8 +558,9 @@ static bool no_dirs(handle_t ch)
     return true;
 }
 
-/* fat, a fat view (the shared view code passes the methods on), the boot
- * image and the tests' ramfs: no directory channels, whatever is asked. */
+/* fat, a fat view (the shared view code passes the methods on when it
+ * refuses nothing in them: fs_view_dirs), the boot image and the tests'
+ * ramfs: no directory channels, whatever is asked. */
 bool t_fs_no_dirs(void)
 {
     struct fatrun r;
@@ -567,7 +568,7 @@ bool t_fs_no_dirs(void)
     handle_t v = HANDLE_INVALID, ch = HANDLE_INVALID;
     if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false))
         return false;
-    bool ok = view_of(&r, FS_VIEW_READ_ONLY | FS_VIEW_HIDE_KEYS, &v) && no_dirs(r.fs) &&
+    bool ok = view_of(&r, FS_VIEW_GUARD_ETC | FS_VIEW_HIDE_KEYS, &v) && no_dirs(r.fs) &&
               no_dirs(v);
     if (v != HANDLE_INVALID)
         jam_handle_close(v);
@@ -583,4 +584,80 @@ bool t_fs_no_dirs(void)
     ok = no_dirs(ch) && ok;
     jam_handle_close(ch);
     return ram_stop("/nd", &ram) && ok;
+}
+
+/* A method the shared view code doesn't know (the fs protocol's 99th) on
+ * ch: the status it is answered with. */
+static status_t unknown_method(handle_t ch)
+{
+    struct idl_req_hdr q = { .txid = 0, .ordinal = FS_PROTOCOL_ID << 16 | 99 };
+    struct idl_rep_hdr a = { 0 };
+    handle_t hs[IDL_REP_HANDLES];
+    uint32_t an = 0, hn = 0;
+    status_t st = idl_call(ch, &q, sizeof(q), &a, sizeof(a), &an, hs, IDL_REP_HANDLES, &hn,
+                           false, now() + FAT_CALL_NS);
+    if (st != OK)
+        return st;
+    return an == sizeof(a) && !hn ? a.status : ERR_INTERNAL;
+}
+
+/* The directory channels' methods through views of fat (ro read-only, g
+ * guarding etc and pkg, h hiding etc), which the shared view code judges
+ * before fat says ERR_NOT_SUPPORTED to what gets past. */
+static bool view_dirs(handle_t whole, handle_t ro, handle_t g, handle_t h)
+{
+    handle_t dir = HANDLE_INVALID;
+    uint64_t id = 0, volume = 0, dl = now() + FAT_CALL_NS;
+    /* opendir is a read; rename_at and link_at change */
+    CHECK_ST(fs_opendir_until(ro, dl, "d", 1, FS_READ, &dir, &id, &volume), ERR_NOT_SUPPORTED);
+    CHECK_ST(fs_rename_at_until(ro, dl, "a", 1, 2, "b", 1, 0), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_link_at_until(ro, dl, "a", 1, 2, "b", 1), ERR_ACCESS_DENIED);
+    /* the guards: `from` as rename's and link's, `to` too when it starts
+     * at the view's root; a relative `to` starts at to_dir (the service's
+     * to judge), so its "etc" is no top-level etc here */
+    CHECK_ST(fs_rename_at_until(g, dl, "etc/allow", 9, 2, "b", 1, 0), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_rename_at_until(g, dl, "/x/../PKG/a", 11, 2, "b", 1, 0), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_rename_at_until(g, dl, "a", 1, 2, "/etc/b", 6, 0), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_link_at_until(g, dl, "Etc./allow", 10, 2, "b", 1), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_link_at_until(g, dl, "a", 1, 2, "/pkg/b", 6), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_rename_at_until(g, dl, "a", 1, 2, "etc/b", 5, 0), ERR_NOT_SUPPORTED);
+    CHECK_ST(fs_link_at_until(g, dl, "a", 1, 2, "pkg/b", 5), ERR_NOT_SUPPORTED);
+    CHECK_ST(fs_opendir_until(g, dl, "etc", 3, FS_READ, &dir, &id, &volume), ERR_NOT_SUPPORTED);
+    /* etc hidden: opendir of it or in it; rename_at and link_at from it,
+     * or to it from the root */
+    CHECK_ST(fs_opendir_until(h, dl, "etc", 3, 0, &dir, &id, &volume), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_opendir_until(h, dl, "/ETC./ssh", 9, FS_READ, &dir, &id, &volume),
+             ERR_ACCESS_DENIED);
+    CHECK_ST(fs_opendir_until(h, dl, "d", 1, FS_READ, &dir, &id, &volume), ERR_NOT_SUPPORTED);
+    CHECK_ST(fs_rename_at_until(h, dl, "etc/allow", 9, 2, "b", 1, 0), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_rename_at_until(h, dl, "a", 1, 2, "/etc/b", 6, 0), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_link_at_until(h, dl, "a", 1, 2, "/etc/ssh/k", 10), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_link_at_until(h, dl, "a", 1, 2, "etc/b", 5), ERR_NOT_SUPPORTED);
+    CHECK(dir == HANDLE_INVALID);
+    /* a method the view code doesn't know: refused by every view, the
+     * whole volume's channel leaves it to fat */
+    CHECK_ST(unknown_method(ro), ERR_ACCESS_DENIED);
+    CHECK_ST(unknown_method(g), ERR_ACCESS_DENIED);
+    CHECK_ST(unknown_method(h), ERR_ACCESS_DENIED);
+    CHECK_ST(unknown_method(whole), ERR_NOT_SUPPORTED);
+    return true;
+}
+
+/* The shared view code (user/lib/fsview.c) knows opendir, rename_at and
+ * link_at (DIRHANDLE-PLAN's DP notes) and refuses an fs method it doesn't
+ * know on a view. */
+bool t_fs_view_dirs(void)
+{
+    struct fatrun r;
+    handle_t ro = HANDLE_INVALID, g = HANDLE_INVALID, h = HANDLE_INVALID;
+    if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false))
+        return false;
+    bool ok = view_of(&r, FS_VIEW_READ_ONLY, &ro) &&
+              view_of(&r, FS_VIEW_GUARD_ETC | FS_VIEW_GUARD_PKG, &g) &&
+              view_of(&r, FS_VIEW_NO_ETC, &h) && view_dirs(r.fs, ro, g, h);
+    handle_t vs[] = { ro, g, h };
+    for (unsigned i = 0; i < 3; i++)
+        if (vs[i] != HANDLE_INVALID)
+            jam_handle_close(vs[i]);
+    return fat_stop(&r) && ramdisk_destroy(&disk) && ok;
 }

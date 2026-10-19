@@ -176,26 +176,39 @@ static bool path_at(const void *req, uint32_t n, uint32_t *o, const char **path,
     return true;
 }
 
+/* Does the second path of rename_at or link_at (len bytes) start at the
+ * view's root? Else it starts at their `to_dir`, a directory only the
+ * service can place (it judges where the path resolves), so the checks
+ * here leave it be. */
+static bool from_root(const char *path, uint32_t len)
+{
+    return len && path[0] == '/';
+}
+
 /* For the hiding flags (FS_VIEW_NO_ETC): does the view hide any path of
  * the request (n bytes)? Every method that takes a path, reads included. */
 static bool hidden_request(uint32_t flags, const void *req, uint32_t n)
 {
     /* skip: the first str is not a path (symlink's target: a string kept,
-     * not opened; what it leads to is judged when it is followed). */
-    static const struct { uint32_t ordinal, fixed; bool two, skip; } with_paths[] = {
-        { FS_OPEN, sizeof(struct fs_open_req), false, false },
-        { FS_STAT, sizeof(struct fs_stat_req), false, false },
-        { FS_READDIR, sizeof(struct fs_readdir_req), false, false },
-        { FS_MKDIR, sizeof(struct fs_mkdir_req), false, false },
-        { FS_UNLINK, sizeof(struct fs_unlink_req), false, false },
-        { FS_RENAME, sizeof(struct fs_rename_req), true, false },
-        { FS_GETATTR, sizeof(struct fs_getattr_req), false, false },
-        { FS_SETATTR, sizeof(struct fs_setattr_req), false, false },
-        { FS_SYMLINK, sizeof(struct fs_symlink_req), false, true },
-        { FS_READLINK, sizeof(struct fs_readlink_req), false, false },
-        { FS_LINK, sizeof(struct fs_link_req), true, false },
-        { FS_RESOLVE, sizeof(struct fs_resolve_req), false, false },
-        { FS_SUBVIEW, sizeof(struct fs_subview_req), false, false },
+     * not opened; what it leads to is judged when it is followed). at: the
+     * second path is `to_dir`'s (from_root). */
+    static const struct { uint32_t ordinal, fixed; bool two, skip, at; } with_paths[] = {
+        { FS_OPEN, sizeof(struct fs_open_req), false, false, false },
+        { FS_STAT, sizeof(struct fs_stat_req), false, false, false },
+        { FS_READDIR, sizeof(struct fs_readdir_req), false, false, false },
+        { FS_MKDIR, sizeof(struct fs_mkdir_req), false, false, false },
+        { FS_UNLINK, sizeof(struct fs_unlink_req), false, false, false },
+        { FS_RENAME, sizeof(struct fs_rename_req), true, false, false },
+        { FS_GETATTR, sizeof(struct fs_getattr_req), false, false, false },
+        { FS_SETATTR, sizeof(struct fs_setattr_req), false, false, false },
+        { FS_SYMLINK, sizeof(struct fs_symlink_req), false, true, false },
+        { FS_READLINK, sizeof(struct fs_readlink_req), false, false, false },
+        { FS_LINK, sizeof(struct fs_link_req), true, false, false },
+        { FS_RESOLVE, sizeof(struct fs_resolve_req), false, false, false },
+        { FS_SUBVIEW, sizeof(struct fs_subview_req), false, false, false },
+        { FS_OPENDIR, sizeof(struct fs_opendir_req), false, false, false },
+        { FS_RENAME_AT, sizeof(struct fs_rename_at_req), true, false, true },
+        { FS_LINK_AT, sizeof(struct fs_link_at_req), true, false, true },
     };
     const struct idl_req_hdr *h = req;
     /* a stat of etc itself answers in a partial view; on an ext volume, whose files have
@@ -213,7 +226,7 @@ static bool hidden_request(uint32_t flags, const void *req, uint32_t n)
         if (path_hidden(flags, path, len, stat))
             return true;
         return with_paths[i].two && path_at(req, n, &o, &path, &len) &&
-               path_hidden(flags, path, len, false);
+               (!with_paths[i].at || from_root(path, len)) && path_hidden(flags, path, len, false);
     }
     return false;
 }
@@ -277,8 +290,29 @@ status_t fs_view_check(uint32_t flags, const void *req, uint32_t n)
         if (n < o || !path_at(req, n, &o, &path, &len) || !path_at(req, n, &o, &to, &to_len))
             return OK;
         return change(flags, path, len, to, to_len);
+    case FS_RENAME_AT:   /* as rename and link; `to` here only from the root (from_root) */
+    case FS_LINK_AT:
+        o = h->ordinal == FS_RENAME_AT ? sizeof(struct fs_rename_at_req)
+                                       : sizeof(struct fs_link_at_req);
+        if (n < o || !path_at(req, n, &o, &path, &len) || !path_at(req, n, &o, &to, &to_len))
+            return OK;
+        return change(flags, path, len, from_root(to, to_len) ? to : NULL, to_len);
+    case FS_STAT:
+    case FS_READDIR:
+    case FS_SYNC:
+    case FS_STATFS:
+    case FS_VIEW:
+    case FS_GETATTR:
+    case FS_READLINK:
+    case FS_RESOLVE:
+    case FS_WATCH:
+    case FS_OPENDIR:
+        return OK;   /* no change (what they read is judged above) */
     default:
-        return OK;   /* stat, readdir, sync, statfs, getattr, readlink, resolve: no change */
+        /* An fs method this code doesn't know: it can't judge what the
+         * method would reach, so a view refuses it (teach it here when the
+         * protocol grows). Another protocol's is the dispatch's to refuse. */
+        return h->ordinal >> 16 == FS_PROTOCOL_ID ? ERR_ACCESS_DENIED : OK;
     }
     if (n < o || !path_at(req, n, &o, &path, &len))
         return OK;

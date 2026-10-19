@@ -93,7 +93,11 @@ bool     fs_region_hides(uint32_t flags, struct fs_region r, bool stat);
 /* Whether a view with `flags` may make the request of n bytes at req:
  * OK, or ERR_ACCESS_DENIED. A request this can't read (too short, not an
  * fs method, a path it can't take apart) is OK here: the protocol's own
- * dispatch refuses it. */
+ * dispatch refuses it. An fs method it doesn't know is refused (0 flags
+ * excepted): it can't judge what that would reach. rename_at's and
+ * link_at's `to` is judged here only when it starts with '/' (at the
+ * view's root); else it starts at their `to_dir`, which only the service
+ * can place, where it resolves. */
 status_t fs_view_check(uint32_t flags, const void *req, uint32_t n);
 
 /* Serve one request on ch, a channel with view flags `flags` (0: the

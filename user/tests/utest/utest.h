@@ -392,6 +392,9 @@ bool t_fs_attr_ns(void);
 /* ... and fs.opendir, rename_at, link_at: ERR_NOT_SUPPORTED from fat, its
  * views, the boot image and ramfs. */
 bool t_fs_no_dirs(void);
+/* ... and the shared view code's judgment of those three, and of an fs
+ * method it doesn't know. */
+bool t_fs_view_dirs(void);
 /* extfs.c, extfs_restart.c: the extfs service (bin/extfs) over a RAM disk. */
 bool t_extfs_basic(void);
 bool t_extfs_links(void);
