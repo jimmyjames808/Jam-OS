@@ -21,6 +21,8 @@ same rules: printable ASCII lines, each one of
     mount /jam rw pkg     the same on /jam (the Jam OS drive's volume)
     right <name>          klog sysinfo clock debug jit
     posix                 a POSIX program (once; it grants /tmp, writable)
+    deputy                /svc/exec may start it for a caller approved for
+                          less (once; it grants nothing)
 
 and, the build's own policy, the services that kill drivers and services
 (devmgr-ctl, init), the disks' and mounts' (volumes) and the file server's (serve: with it a program could
@@ -40,7 +42,10 @@ image's system programs, and the packages' prefix writable (`mount /data
 rw pkg`: bin/pkg's) only for one under user/services/, and the ESP
 writable (`mount /esp rw`, or `mount * rw`, every mount, which takes it
 in: what the next boot runs, docs/M13.7-REVIEW.md PR1) only for a service
-or a test.
+or a test, and `deputy` never for a program of ports/chromium (the
+browser and its shells act on every switch they are given and don't read
+AT_SECURE: started raised for a caller with less they would be its
+deputies, docs/M13.7-REVIEW.md PR2).
 A program without a list is fine (it gets its terminal only). Prints how
 many lists it checked (-v: each one); exits 1, naming each problem, if any.
 
@@ -52,6 +57,7 @@ import sys
 OS_H = "user/include/os.h"
 POINTS = {"/boot", "/esp", "/data", "/jam", "/pkg", "/usb*", "*"}
 BOOT_POINTS = {"/esp", "*"}   # writable: the ESP (`*`, every mount, takes it in)
+NO_DEPUTY_DIRS = ("ports/chromium/",)   # `deputy`: never the browser or its shells
 RIGHTS = {"klog", "sysinfo", "clock", "debug", "jit"}
 JIT_DIRS = ("ports/", "user/ports/", "user/tests/")   # `right jit`: packages and tests only
 TESTS_ONLY = {"devmgr-ctl", "init", "serve", "volumes"}
@@ -98,7 +104,7 @@ def notes(data):
 def check_text(text, in_tests, svcs, in_services=False, src=""):
     """The problems of one list's text; its wants as shown. src: the
     program's source directory (for `svc session`)."""
-    problems, shown, n, posix = [], [], 0, False
+    problems, shown, n, posix, deputy = [], [], 0, False, False
     if len(text) + 1 > TEXT_MAX:
         problems.append("the list is longer than %d bytes" % (TEXT_MAX - 1))
     if any(c != 0x0a and not 0x20 <= c <= 0x7e for c in text):
@@ -112,6 +118,13 @@ def check_text(text, in_tests, svcs, in_services=False, src=""):
                 problems.append("'posix' twice")
             posix = True
             n += 1   # /tmp, writable (wants.c)
+        elif w == ["deputy"]:
+            if deputy:
+                problems.append("'deputy' twice")
+            if (src.rstrip("/") + "/").startswith(NO_DEPUTY_DIRS):
+                problems.append("'deputy': the browser and its shells act on every switch "
+                                "their caller gives (docs/M13.7-REVIEW.md, PR2)")
+            deputy = True
         elif len(w) == 3 and w[:3] == ["svc", "net", "listen"]:
             n += 2   # /svc/net and /svc/net-listen
         elif len(w) == 4 and w == ["svc", "net", "listen", "low"]:
@@ -147,7 +160,7 @@ def check_text(text, in_tests, svcs, in_services=False, src=""):
                 problems.append("'%s': only a package or a test may ask for it" % line)
         else:
             problems.append("'%s': not a want (svc <name>, svc net listen [low], "
-                            "mount <point> r|rw, right <name>, posix)" % line)
+                            "mount <point> r|rw, right <name>, posix, deputy)" % line)
             continue
         shown.append(line)
     if n > WANTS_MAX:
@@ -162,7 +175,7 @@ def selftest():
             b"right clock\n", b"svc init\n", b"svc volumes\n", b"posix\n",
             b"posix\nsvc net\nmount /data rw\n", b"svc session\n", b"mount /pkg r\n",
             b"posix\nmount /data r\nmount /pkg r\n", b"mount /esp rw\n", b"mount * rw\n",
-            b"mount /esp r\nmount * r\n"]
+            b"mount /esp r\nmount * r\n", b"posix\nsvc exec\ndeputy\n", b"deputy\n"]
     take_services = [b"svc net listen low\n", b"svc net-sys\n", b"mount /data rw pkg\n",
                      b"mount /jam rw pkg\n", b"mount /data rw pkg\nmount /jam rw pkg\n",
                      b"mount /esp rw\n", b"mount * rw\n"]
@@ -178,7 +191,8 @@ def selftest():
               b"mount /data rw Pkg\n", b"mount /data rw pkg now\n", b"mount /jam rw pkg\n",
               b"mount /jam r pkg\n", b"mount /usb0 rw pkg\n", b"mount /pkg rw\n",
               b"mount /pkg r pkg\n", b"mount /pkg\n", b"mount /pkgx r\n", b"mount /pkg/bin r\n",
-              b"mount /esp rw\n", b"mount * rw\n", b"posix\nmount /data rw\nmount * rw\n"]
+              b"mount /esp rw\n", b"mount * rw\n", b"posix\nmount /data rw\nmount * rw\n",
+              b"deputy\ndeputy\n", b"Deputy\n", b"deputy now\n", b"svc deputy\n"]
     fails = []
     for t in take:
         problems, _ = check_text(t, True, svcs)
@@ -199,6 +213,11 @@ def selftest():
     problems, _ = check_text(b"svc net listen low\n", False, svcs, False, "user/ports/sbase")
     if not problems:
         fails.append("took svc net listen low for a port that isn't the SSH server")
+    for src, ok in (("ports/chromium", False), ("ports/chromium/", False), ("ports/x", True),
+                    ("ports/chromiumx", True), ("user/ports/x", True)):
+        problems, _ = check_text(b"posix\nsvc exec\ndeputy\n", False, svcs, False, src)
+        if bool(problems) == ok:
+            fails.append("%s deputy for %s: %s" % ("refused" if ok else "took", src, problems))
     for src, tests in (("ports/chromium", False), ("ports", False), ("user/ports/x", False),
                        ("user/tests/t", True)):
         problems, _ = check_text(b"right jit\nposix\n", tests, svcs, False, src)

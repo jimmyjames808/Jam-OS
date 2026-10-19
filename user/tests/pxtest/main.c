@@ -24,7 +24,10 @@
 #include <os.h>
 #include <wants.h>
 
-JAM_WANTS("mount /data r\n");   /* the cue file */
+/* /data: the cue file; deputy: utest starts it through /svc/exec, a caller
+ * init can't vouch for (init's exec.c, "who is raised"). */
+JAM_WANTS("mount /data r\n"
+          "deputy\n");
 
 #define TABLE_PAGES 128
 #define TABLE_MARK  "PXTEST-TABLE-0123456789"

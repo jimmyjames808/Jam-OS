@@ -466,6 +466,17 @@ bool dp_wants_within(const struct wants *w, const struct wants *of)
     return true;
 }
 
+enum dp_start dp_exec_start(const struct wants *w, const struct wants *caller)
+{
+    static const struct wants nothing;   /* a caller not known holds nothing we know of */
+    bool within = dp_wants_within(w, caller ? caller : &nothing);
+    if (caller && within && !w->rights)
+        return DP_START_PLAIN;
+    /* within: a power the caller's approval asks for too, or (not known)
+     * a list that asks for nothing at all */
+    return within || w->deputy ? DP_START_RAISED : DP_START_REFUSED;
+}
+
 bool dp_wants_mounts(const struct wants *w, const char *point)
 {
     for (unsigned i = 0; i < w->n; i++) {

@@ -18,7 +18,10 @@
  * t_exec_wider_than_parent: exectest (narrow: /data read-only, no root)
  * starts execwide through /svc/exec itself: the child has /data writable,
  * /boot and the root with sysinfo, none of which its parent has (the
- * owner's rule: a child gets its own approval, independent of its parent).
+ * owner's rule: a child gets its own approval, independent of its parent),
+ * since execwide's list says `deputy`; pxio's doesn't, and it asks for
+ * /tmp, which exectest lacks: exectest's start of it is refused, and so is
+ * utest's, a caller init can't vouch for (docs/M13.7-REVIEW.md, PR2).
  *
  * t_exec_refused: a program without a line; an approved program whose
  * list asks for what no /data program may have (wantsession: `svc
@@ -49,8 +52,12 @@
  *
  * t_exec_within: the rule for a raised child (dp_wants_within: a list
  * within another, read within write, a mount within every mount's, a
- * service and a power the same) and the mounts a list gives
- * (dp_wants_mounts), which init's exec.c uses.
+ * service and a power the same), the mounts a list gives
+ * (dp_wants_mounts) and who may be raised (dp_exec_start: a child asking
+ * for more than its caller's approval only if its list says `deputy`, or
+ * only for a power that approval has too), which init's exec.c uses.
+ * exectest, execwide, pxtest and posixtest say `deputy` (utest starts
+ * them, and exectest starts execwide and posixtest); pxio doesn't.
  *
  * t_exec_starter: a caller's directory and environment (docs/CR-PLAN.md,
  * "SX"; the owner's D2), with posixtest on /data as the caller,
@@ -375,6 +382,27 @@ bool t_exec_wider_than_parent(void)
     const char *narrow[] = { "execwide", "launch", NARROW, "probe" };
     CHECK(ex_run(WIDE, 4, narrow, &code));
     CHECK_EQ(code, EXT_NARROW);
+    /* Who may be raised (docs/M13.7-REVIEW.md, PR2): execwide's list says
+     * `deputy`, so exectest's start of it runs (above). pxio's doesn't,
+     * and asks for /tmp, which exectest's approval doesn't give: exectest's
+     * start of it is refused at exec_prog.start (step 4), and so is ours
+     * (a boot-image program sends no image: a caller init can't vouch
+     * for). Started, pxio would act on our argv and exit 0. */
+    const char *plain[] = { "exectest", "launch", PXIO, "cwd" };
+    CHECK(ex_run(NARROW, 4, plain, &code));
+    CHECK_EQ(code, EXT_LAUNCH_ERR + 4);
+    const char *cwd[] = { "pxio", "cwd" };
+    handle_t proc, job, sig;
+    int step = 0;
+    status_t st = exectest_start(PXIO, 2, cwd, NULL, &proc, &job, &sig, &step);
+    if (st == OK) {
+        jam_job_kill(job);
+        jam_handle_close(proc);
+        jam_handle_close(job);
+        jam_handle_close(sig);
+    }
+    CHECK_ST(st, ERR_ACCESS_DENIED);
+    CHECK_EQ(step, 4);
     return true;
 }
 
@@ -658,6 +686,37 @@ bool t_exec_within(void)
     CHECK(!dp_wants_mounts(&w, "/data2"));
     CHECK_ST(wants_parse("mount * r\n", 10, &w), OK);
     CHECK(dp_wants_mounts(&w, "/boot"));
+    /* dp_exec_start: who may be raised (PR2). of: the caller's approval,
+     * "-" for a caller init can't vouch for. */
+    static const struct { const char *w, *of; enum dp_start how; } starts[] = {
+        { "posix\n", "mount * rw\n", DP_START_PLAIN },
+        { "posix\nmount /data r\n", "posix\nmount /data rw\nsvc exec\n", DP_START_PLAIN },
+        { "mount /data rw\n", "mount /data r\nsvc exec\n", DP_START_REFUSED },
+        { "mount /data rw\ndeputy\n", "mount /data r\nsvc exec\n", DP_START_RAISED },
+        /* a power its caller's approval has too: raised, no word needed
+         * (base_unittests starting itself, `right jit`) */
+        { "right sysinfo\nsvc exec\n", "svc exec\nright sysinfo\n", DP_START_RAISED },
+        { "right jit\nposix\n", "posix\nright jit\nsvc exec\n", DP_START_RAISED },
+        { "right sysinfo\n", "svc exec\n", DP_START_REFUSED },
+        { "right sysinfo\ndeputy\n", "svc exec\n", DP_START_RAISED },
+        { "posix\n", "-", DP_START_REFUSED },
+        { "posix\ndeputy\n", "-", DP_START_RAISED },
+        { "", "-", DP_START_RAISED },   /* asks for nothing: no deputy of anyone's */
+        { "deputy\n", "", DP_START_PLAIN },
+    };
+    for (unsigned i = 0; i < sizeof(starts) / sizeof(starts[0]); i++) {
+        bool known = strcmp(starts[i].of, "-") != 0;
+        CHECK_ST(wants_parse(starts[i].w, strlen(starts[i].w), &w), OK);
+        CHECK_ST(wants_parse(known ? starts[i].of : "", known ? strlen(starts[i].of) : 0, &of),
+                 OK);
+        enum dp_start how = dp_exec_start(&w, known ? &of : NULL);
+        if (how != starts[i].how)
+            FAIL("\"%s\" for \"%s\": %d, not %d", starts[i].w, starts[i].of, (int)how,
+                 (int)starts[i].how);
+    }
+    CHECK_ST(wants_parse("deputy\ndeputy\n", 14, &w), ERR_INVALID_ARGS);   /* once */
+    CHECK_ST(wants_parse("posix\ndeputy\n", 13, &w), OK);
+    CHECK(w.deputy && w.posix && w.n == 1 && !w.rights);   /* it grants nothing */
     return true;
 }
 
