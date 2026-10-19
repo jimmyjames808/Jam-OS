@@ -345,7 +345,9 @@ through `mkdirat` and `openat`, a file and a link `up` at the bottom with
 the *at calls there, then removed by `fstatat`, `openat(O_NOFOLLOW)`,
 `fdopendir` and `unlinkat` on descriptors only), a directory renamed while
 open followed (`fchdir` and `getcwd` naming the new place), one removed and
-made again (its descriptor makes nothing in either), `renameat`,
+made again (its descriptor an orphan: `fstat` with no links, `fstatfs`,
+`fsync` and `..` answer, nothing made in it and `getdents` `ENOENT`, a
+whole path from it going through the mount), `renameat`,
 `renameat2`'s exchange and `linkat` between two descriptors and between one
 and a whole path (`EXDEV` to the other mount), `O_PATH` and
 `AT_EMPTY_PATH`, `..` above a mount's root, a forked child's descriptors,

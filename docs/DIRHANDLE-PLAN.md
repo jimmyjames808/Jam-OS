@@ -1013,10 +1013,15 @@ Built (2026-10-19), 4.1 to 4.3 in libc (`user/posix/sys/`):
   `path_get`, `path_set`, `path_of`, `path_in_dir` or `file_where_path`
   calls `path_done`, or says "(path_done: the caller's)" (`stat_at`,
   `dir_from`, the two place hooks); failures by file and line.
-- **Removed directories**: a removed directory's channel answers
-  `ERR_NOT_FOUND` to everything today; posixtest's removed case takes
-  either answer for `fstat` and `..` (DE2 makes them answer), and
-  checks that nothing is made in it and getdents is `ENOENT` (both rules).
+- **Removed directories** (DE2's orphans, merged before this was
+  finished): fstat (no links), fstatfs, fsync and `..` answer; a create
+  and getdents are `ENOENT`. A whole path given with a removed
+  directory's descriptor never goes to its channel (libc sends every path
+  that starts with `/` on the mount's own channel, `path_get`'s first
+  test), so `openat(<removed>, "/data/x", ...)` works as Linux's (the main
+  session's call on DE2's question; posixtest's removed case checks it).
+  `getcwd`-style text of a removed directory (fchdir, a give) is its last
+  known text (fs.resolve says `ERR_NOT_FOUND` there).
 - **ABI**: nothing in an IDL, `posixfds.h` or `pkgformat.py` changed, so
   the stamp did not move; static programs get the channels when relinked.
 

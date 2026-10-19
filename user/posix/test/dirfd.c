@@ -12,8 +12,10 @@
  *     on descriptors only (FAT: 15 levels, then ENAMETOOLONG);
  *   - renamed: a directory renamed while open is followed (FAT: not);
  *   - removed: a directory removed and made again: the old descriptor
- *     names the removed one (ENOENT to a create and to getdents), never
- *     the new one (FAT: the new one, by its name);
+ *     names the removed one, an orphan (fstat says no links, fstatfs,
+ *     fsync and ".." to the parent it had answer; ENOENT to a create and
+ *     to getdents), never the new one; a whole path from it goes through
+ *     the mount (FAT: the new one, by its name);
  *   - across: renameat, renameat2's exchange and linkat between two
  *     descriptors and between one and a whole path; EXDEV to the other
  *     mount;
@@ -26,10 +28,7 @@
  *   - many: 300 directories open at once, more than the 64 channels a
  *     process has of a volume: the rest are text descriptions (the log
  *     says so once), so a rename is followed by the first, not by the
- *     last; each is written in and listed.
- * A removed directory's channel answers ERR_NOT_FOUND to everything
- * until extfs keeps it as an orphan (DE2), which makes fstat and ".."
- * answer: those two checks take either. */
+ *     last; each is written in and listed. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
@@ -242,13 +241,17 @@ static void removed(const char *top, bool ext)
         CHECK(!there(g));                   /* ... and the new one is another directory */
         errno = 0;
         CHECK(syscall(SYS_getdents64, dfd, buf, sizeof(buf)) == -1 && errno == ENOENT);
-        CHECK(fstat(dfd, &st) == 0 || errno == ENOENT);   /* DE2: answered (an orphan) */
-        int up = openat(dfd, "..", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        CHECK(up >= 0 || errno == ENOENT);                  /* DE2: the parent it had */
-        if (up >= 0) {
-            CHECK(fstatat(up, "rm", &st, 0) == 0 && S_ISDIR(st.st_mode));
+        struct stat now;
+        CHECK(fstat(dfd, &st) == 0 && S_ISDIR(st.st_mode) && st.st_nlink == 0 &&
+              stat(c, &now) == 0 && now.st_ino != st.st_ino);   /* an orphan, as Linux's */
+        struct statfs sf;
+        CHECK(fstatfs(dfd, &sf) == 0 && sf.f_type == EXT4_MAGIC && fsync(dfd) == 0);
+        int up = openat(dfd, "..", O_RDONLY | O_DIRECTORY | O_CLOEXEC);   /* the parent it had */
+        CHECK(up >= 0 && fstatat(up, "rm", &now, 0) == 0 && S_ISDIR(now.st_mode));
+        if (up >= 0)
             close(up);
-        }
+        /* a whole path ignores the descriptor (it goes through the mount, not the orphan) */
+        CHECK(put_file(dfd, g, "whole") && there(g) && unlink(g) == 0);
     } else {
         CHECK(made && there(g));   /* a text description: the new one, by its name */
         CHECK(unlink(g) == 0);
