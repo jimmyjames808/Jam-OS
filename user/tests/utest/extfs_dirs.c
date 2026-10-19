@@ -161,6 +161,14 @@ static bool stop(struct fatrun *r, const char *name)
     return ramdisk_destroy(&dd);
 }
 
+/* stop, the disk not saved: extfs-svc-test's /data is nearly full of the
+ * other cases' disks, and a hostile run's checks are its own. */
+static bool stop_unsaved(struct fatrun *r)
+{
+    CHECK(fat_stop(r));
+    return ramdisk_destroy(&dd);
+}
+
 /* ---- paths from a directory ---------------------------------------------------------- */
 
 #define LEVELS 26u
@@ -1114,7 +1122,7 @@ bool t_extfs_dirs_storm(void)
     CHECK_EQ(escapes, 0u);
     CHECK(ok > 0 && cut > 0 && moves >= ST_MOVERS);
     close_all(st_sub, ST_WALKERS);
-    return stop(&r, "dirs-storm");
+    return stop_unsaved(&r);
 }
 
 /* (DR) A process holding its 64 channels (on /h/k00 to /h/k63) killed
@@ -1161,7 +1169,7 @@ bool t_extfs_dirs_killed(void)
         CHECK(kid(r.fs, "xdirs-share", &kids[k * SHARE]));
     close_all(own, SHARE);
     close_all(kids, CHANNELS - SHARE);
-    return stop(&r, "dirs-killed");
+    return stop_unsaved(&r);
 }
 
 #define DK_EVERY_MS 200u
@@ -1279,7 +1287,7 @@ bool t_extfs_restart_deep(void)
     memset(name, 'k', NM);
     name[NM] = '\0';
     dk_io = 0;
-    CHECK(ramdisk_create(&dd, EXT_DISK_SECTORS));
+    CHECK(ramdisk_create(&dd, 8u * MIB_SECTORS));   /* small: its disk is saved */
     CHECK(extfs_sup_start(&dd, NULL, 0));
     struct fatrun *f = extfs_sup_run();
     CHECK_ST(t_mkdir(f, "/dk"), OK);

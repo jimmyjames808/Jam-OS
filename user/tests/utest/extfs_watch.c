@@ -488,7 +488,7 @@ bool t_extfs_watch_nameless(void)
     jam_handle_close(in);
     jam_handle_close(s);
     unwatcher(&a);
-    return stop("watch-nameless");
+    return stop_unsaved();   /* (extfs-svc-test's /data is nearly full of disks) */
 }
 
 /* ---- moves --------------------------------------------------------------------- */
