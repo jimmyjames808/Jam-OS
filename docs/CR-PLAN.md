@@ -3319,9 +3319,10 @@ every other script: [GP2 notes, continued](G2-PLAN.md#gp2-notes-continued-the-fo
 found with no environment variable: libc serves `/etc/fonts/fonts.conf`,
 fontconfig's default file, which includes the packages' own
 (`/pkg/share/fonts/fonts.conf`), and the browsers ask for `mount /pkg r`
-([FONTS notes](#fonts-notes-2026-10-19)). The cache goes under
-`$XDG_CACHE_HOME/fontconfig`, else `$HOME/.cache/fontconfig`, else
-`/data/.cache/fontconfig`.
+([FONTS notes](#fonts-notes-2026-10-19)). No cache a program can write:
+only the packages' own, `/pkg/share/fonts/cache`, read only and not yet
+filled, so the browser scans the fonts at its start
+([SB1 notes](SANDBOX-PLAN.md#sb1-notes)).
 
 ### 11. Sound
 

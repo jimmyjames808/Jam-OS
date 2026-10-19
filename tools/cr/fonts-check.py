@@ -6,8 +6,9 @@ headless_shell:
     fonts-check.py --has-pkg <program>
 
 <dir> has the files the guest wrote (tools/cr/fonts.txt; the case copies them
-out of the saved stick): dom-sys.html and dom-ctl.html (--dump-dom), sys.png and
-ctl.png (--screenshot, --window-size=1000,1400) and the guest's terminal log
+out of the saved stick): dom-sys.html, dom-psn.html and dom-ctl.html
+(--dump-dom), sys.png, own2.png and ctl.png (--screenshot,
+--window-size=1000,1400) and the guest's terminal log
 run/fonts.log. The page is tools/cr/fonts.html: a line of text in each script
 and its own check (its script draws every grapheme cluster of each line on a
 canvas and compares the pixels with a character no font has, which Chromium
@@ -16,7 +17,7 @@ system fonts found by default (no FONTCONFIG_FILE: /etc/fonts/fonts.conf, the
 packages' /pkg/share/fonts/fonts.conf); the ctl files are the control, a
 fonts.conf of Inter alone. Checked:
 
-    the runs' exit status (the first four), and no complaint of fontconfig's in the log
+    every run's exit status, and no complaint of fontconfig's in the log
     sys DOM: every line of the page has no missing cluster (the 29 rows of
         fonts.html: English, Greek, Cyrillic, Chinese both ways, Japanese,
         Korean, Arabic, Hebrew, Hindi, Thai, the other Indic scripts, Georgian,
@@ -32,8 +33,21 @@ fonts.conf of Inter alone. Checked:
         Latin) has
     sys and ctl PNGs: 1000x1400, each row of the sys page has ink and, for the
         scripts Inter lacks, differs from the control's row
-    fontconfig's cache written on the stick by the first run, and by a run
-        with HOME=/ into /data/.cache/fontconfig (the fallback in fonts.conf)
+    what the system's configuration reads (docs/SANDBOX-PLAN.md, SB1): the
+        stick has a planted /data/.config/fontconfig/fonts.conf that puts
+        Inter first for every family, and the sys DOM's faces by name (Noto
+        Sans and Serif, Liberation Sans and Serif, Inter) are five different
+        faces with sans-serif and serif drawn as one of theirs; no cache was
+        written on /data by the system runs ($HOME/.cache/fontconfig,
+        /data/.cache/fontconfig); a run with poison.conf (a scan rule that
+        renames every face of the packages' jamos directory, its cache in
+        /data/.cache/fontconfig) wrote its cache files there, and the system
+        run after it (dom-psn.html, the planted file gone) drew the faces as
+        themselves and everything as dom-sys.html did; own2.png (a cache of the program's own, read) is
+        the same picture as sys.png
+    the times the shell's `time` gave (printed, not checked): rc2, the system
+        fonts with no cache (a scan at every start), rcA a run that scans and
+        writes a cache of its own, rcB the run that reads it
 
 Prints a line for each check and PASS or FAIL; exit 0 if all passed.
 
@@ -98,6 +112,53 @@ def parse(dom):
         elif p[0] == "cjk" and len(p) == 6:
             cjk.append((p[1], p[2], p[3], p[4] == "1", p[5]))
     return refs, rows, cjk
+
+
+def looks(dom):
+    """The page's face and gen lines: {(kind, name): (ink, hash)}."""
+    got = {}
+    for line in (dom or "").splitlines():
+        m = re.search(r"(?:^|>)((?:face|gen)\|[^<]*)", line.strip())
+        if not m:
+            continue
+        p = m.group(1).split("|")
+        if len(p) == 4 and p[2].isdigit():
+            got[(p[0], p[1])] = (int(p[2]), p[3])
+    return got
+
+
+SANS, SERIF = ("Noto Sans", "Liberation Sans"), ("Noto Serif", "Liberation Serif")
+
+
+def check_faces(what, got):
+    """In one run the faces by name are themselves (five different drawings:
+    a planted file putting one face first, or a cache renaming the faces,
+    makes them one) and the generic families are drawn with the faces the
+    packages' lists give."""
+    faces = {n: got.get(("face", n)) for n in SANS + SERIF + ("Inter",)}
+    if not all(faces.values()):
+        report(False, "%s has the face lines (%s)" % (what, ", ".join(n for n, v in faces.items() if not v)))
+        return
+    report(all(v[0] > 0 for v in faces.values()) and len({v[1] for v in faces.values()}) == len(faces),
+           "%s: the faces by name are %d different drawings: %s"
+           % (what, len(faces), ", ".join("%s %s" % (n, v[1]) for n, v in faces.items())))
+    for gen, want in (("sans-serif", SANS), ("serif", SERIF)):
+        g = got.get(("gen", gen))
+        is_ = [n for n in want if g and faces[n][1] == g[1]]
+        report(bool(is_), "%s: %s is drawn with %s (one of %s)"
+               % (what, gen, is_[0] if is_ else "another face (%s)" % (g[1] if g else "no line"), ", ".join(want)))
+
+
+def check_looks(sys_dom, psn_dom):
+    """The system's configuration and caches are the packages' alone: the sys
+    run (the planted fonts.conf on the stick) and the run after the poisoned
+    cache was written each draw the faces as themselves, and both the same."""
+    s, p = looks(sys_dom), looks(psn_dom)
+    check_faces("sys DOM (a fonts.conf planted)", s)
+    check_faces("psn DOM (a cache written to /data/.cache/fontconfig)", p)
+    diff = sorted("%s %s" % k for k in s if p.get(k) != s[k])
+    report(s and not diff, "the psn run draws the faces and generic families as the sys run%s"
+           % (" (not: " + ", ".join(diff) + ")" if diff else ""))
 
 
 def check_sys(dom):
@@ -189,6 +250,13 @@ def check_png(dir):
             d = diff_count(ims["sys"], ims["ctl"], y0, y1)
             report(d >= DIFF_MIN, "screenshot row %s differs from the control's boxes: %d pixels (%d or more)"
                    % (name, d, DIFF_MIN))
+    # a cache of the program's own gives the same fonts as the scan
+    own = os.path.join(dir, "own2.png")
+    if not os.path.isfile(own):
+        report(False, "own-cache screenshot: no %s" % own)
+        return
+    same = Image.open(own).convert("RGB").tobytes() == Image.open(os.path.join(dir, "sys.png")).convert("RGB").tobytes()
+    report(same, "own2.png (the program's own cache, read) is the same picture as sys.png (a scan)")
 
 
 def has_pkg(path):
@@ -217,23 +285,30 @@ def main(argv):
     # whole (tools/bigprog-test.sh's rule), so the echoed commands below are
     # found again once their pieces join.
     term = re.sub(r"\[ *\d+\.\d{6}\] [^\n]*\n", "", term)
-    for n in range(1, 5):
-        m = re.search(r"^rc%d-(\d+)" % n, term, re.M)
-        report(m and m.group(1) == "0", "run %d exit status %s" % (n, m.group(1) if m else "missing"))
+    for n in ("1", "2", "A", "B", "P", "6", "3", "4"):
+        m = re.search(r"^rc%s-(\d+)" % n, term, re.M)
+        report(m and m.group(1) == "0", "run %s exit status %s" % (n, m.group(1) if m else "missing"))
     # fontconfig's own complaints (its "Fontconfig error: ..." lines) in the
     # runs that used the system fonts: the default config was found and parsed
     bad = [l for l in term.splitlines() if re.match(r"Fontconfig (error|warning)", l)]
     report(not bad, "no fontconfig complaint in the log%s" % (": " + bad[0][:120] if bad else ""))
-    # the first run wrote fontconfig's cache (a file named for a directory's
-    # hash) under $HOME/.cache; the run with HOME=/ wrote the one named second
-    # in fonts.conf, /data/.cache/fontconfig
+    # fontconfig's cache files are named for a directory's hash: the system
+    # runs wrote none on /data (the configuration names no cache there), and
+    # the poison run wrote its own into /data/.cache/fontconfig
     cache = r"[0-9a-f]{32}-le64\.cache-\d+"
-    for n, where in ((1, "$HOME/.cache/fontconfig (HOME=/data/cr/tmp)"), (2, "/data/.cache/fontconfig (HOME=/)")):
-        m = re.search(r"fontconfig; echo ls%d-\"x\"(.*?)^ls%d-x" % (n, n), term, re.S | re.M)
-        report(m and re.search(cache, m.group(1)), "fontconfig's cache is in %s" % where)
-    m = re.search(r"^rc5-(\d+)", term, re.M)
-    print("fonts-check: run 5 (HOME=/) exit status %s" % (m.group(1) if m else "missing"))
+    m = re.search(r"fontconfig; echo ls1-\"x\"(.*?)^ls1-x", term, re.S | re.M)
+    report(m and not re.search(cache, m.group(1)),
+           "the system runs wrote no cache in $HOME/.cache/fontconfig or /data/.cache/fontconfig%s"
+           % ("" if m else " (no ls1 output)"))
+    m = re.search(r"fontconfig; echo ls2-\"x\"(.*?)^ls2-x", term, re.S | re.M)
+    report(m and re.search(cache, m.group(1)), "the poison run wrote its cache in /data/.cache/fontconfig")
+    # the times: `time` prints "time: <s> s (status <n>)" before the echo
+    for n, what in (("2", "system fonts, no cache (a scan)"), ("A", "own cache, scanned and written"),
+                    ("B", "own cache, read")):
+        m = re.search(r"time: ([0-9.]+) s \(status \d+\)\s*rc%s-" % n, term)
+        print("fonts-check: time of run %s (%s): %s s" % (n, what, m.group(1) if m else "?"))
     check_sys(read(os.path.join(dir, "dom-sys.html")))
+    check_looks(read(os.path.join(dir, "dom-sys.html")), read(os.path.join(dir, "dom-psn.html")))
     check_ctl(read(os.path.join(dir, "dom-ctl.html")))
     check_png(dir)
     print("fonts-check: %s" % ("PASS" if ok else "FAIL"))

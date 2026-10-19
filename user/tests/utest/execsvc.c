@@ -542,20 +542,24 @@ bool t_exec_no_leak(void)
     return true;
 }
 /* posixtest (on /data as PT) started through /svc/exec as `posixtest
- * --child-launch <args>` (argc of them) with HOME and TMPDIR in its
- * environment, the hand-over ho written on our end first (NULL: none) and
- * image as our own program (HANDLE_INVALID: none; consumed): its exit
- * code into *code (-1: killed). */
+ * --child-launch <args>` (argc of them) with HOME, TMPDIR and fontconfig's
+ * three variables (a raised child drops all but HOME) in its environment,
+ * the hand-over ho written on our end first (NULL: none) and image as our
+ * own program (HANDLE_INVALID: none; consumed): its exit code into *code
+ * (-1: killed). */
 static bool pt_run_args(int argc, const char *const *args, const struct posixfds_out *ho,
                         handle_t image, int64_t *code)
 {
-    const char *strs[16] = { "posixtest", "--child-launch" };
+    const char *strs[19] = { "posixtest", "--child-launch" };
     unsigned ns = 2;
     for (int i = 0; i < argc && ns < 14; i++)
         strs[ns++] = args[i];
     const uint16_t nargs = (uint16_t)ns;
     strs[ns++] = "HOME=/data";
     strs[ns++] = "TMPDIR=/data/etc";
+    strs[ns++] = "FONTCONFIG_FILE=/data/etc/fonts.conf";
+    strs[ns++] = "FONTCONFIG_PATH=/data/etc";
+    strs[ns++] = "FONTCONFIG_SYSROOT=/data";
     uint8_t strings[512];
     uint32_t len = 0;
     for (unsigned i = 0; i < ns; i++) {
