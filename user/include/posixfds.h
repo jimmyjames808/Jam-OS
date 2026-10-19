@@ -7,7 +7,8 @@
  *     description's status flags and offset, the kind's handles (a
  *     duplicate of each, or for a file a fresh open) and the kind's data
  *     (a directory's path, a /dev node's name, ...);
- *   - the process's state that exec keeps: the current directory, the
+ *   - the process's state that exec keeps: the current directory (its
+ *     path, or the directory's own `fs` channel: POSIXFDS_CWD), the
  *     umask, the blocked and the ignored signals (and, from an exec in
  *     place, the pending ones), the parent's pid, the process group and
  *     the session;
@@ -47,9 +48,12 @@
 #include <os.h>
 
 #define POSIXFDS_MAGIC    0x5853504au   /* "JPSX" */
-#define POSIXFDS_VERSION  2             /* 2: the state's sigpending (FL3) */
+#define POSIXFDS_VERSION  3             /* 2: the state's sigpending (FL3); 3: directory
+                                         * channels, POSIXFDS_CWD (DL2) */
 #define POSIXFDS_LAST     1u            /* posixfds_msg.flags: the last message */
 #define POSIXFDS_SECURE   2u            /* ... the first only: start as AT_SECURE (above) */
+#define POSIXFDS_CWD      4u            /* ... the first only: the current directory is a
+                                         * directory channel (struct posixfds_msg) */
 #define POSIXFDS_MSG_MAX  CHANNEL_MAX_BYTES   /* bytes of one message */
 #define POSIXFDS_FD_MAX   1024          /* descriptors are 0 .. POSIXFDS_FD_MAX - 1 */
 #define POSIXFDS_PATH_MAX 4096          /* the current directory, its NUL included */
@@ -106,8 +110,24 @@ enum posixfds_kind {
                                * ("/proc/<pid>/statm"), a string, opened again by the
                                * receiver, whose /proc it names (sent over socketpairs
                                * only: a child's hand-over leaves /proc files out) */
+    POSIXFDS_DIR_CHANNEL = 15, /* a directory's own `fs` channel (fs.opendir's); data: a
+                               * directory channel's (below) */
     POSIXFDS_KIND_COUNT,
 };
+
+/* A directory channel's data (POSIXFDS_DIR_CHANNEL's, and the current
+ * directory's with POSIXFDS_CWD): this, then the mount's name and its NUL
+ * ("/data": a '/' and 1 to NS_NAME_MAX - 2 bytes, no other '/'), then the
+ * directory's last known path and its NUL, or the NUL alone (not known,
+ * or too long to fit), at most POSIXFDS_DATA_MAX bytes in all. The
+ * channel is the directory: the ids and the path are the starter's word,
+ * a hint the receiver may check against it, never a name it resolves
+ * with more than the channel gives. */
+struct posixfds_dirch {
+    uint64_t id;            /* the directory's id (fs.getattr's) */
+    uint64_t volume;        /* its volume (fs.opendir's) */
+};
+#define POSIXFDS_DIRCH_MIN (sizeof(struct posixfds_dirch) + 3)   /* "/m" and an empty path */
 
 /* The process state exec keeps (in the first message). */
 struct posixfds_state {
@@ -126,7 +146,11 @@ struct posixfds_state {
  * nfds records, each a struct posixfds_fd and its data_len bytes; the
  * directory, the path and each record's data are padded with zero bytes
  * to a multiple of 8, and the message ends right after the last one. The
- * handles come in the records' order, each record's in its kind's order. */
+ * handles come in the records' order, each record's in its kind's order.
+ * With POSIXFDS_CWD the current directory is a directory channel: the
+ * first message's first handle (an OBJ_CHANNEL, before the records'), and
+ * its cwd_len bytes are that channel's data (struct posixfds_dirch's
+ * shape), not a path. */
 struct posixfds_msg {
     uint32_t txid;          /* channel convention: first 4 bytes; 0 here */
     uint32_t magic;         /* POSIXFDS_MAGIC */
@@ -135,9 +159,12 @@ struct posixfds_msg {
                              * (or not) on the first; no other bit */
     uint16_t seq;           /* this message's place: 0, 1, 2, ... */
     uint16_t nfds;          /* records; at least 1 but in the first message */
-    uint32_t nhandles;      /* handles carried: the records' handles, all of them */
+    uint32_t nhandles;      /* handles carried: the records' handles, all of them (and
+                             * with POSIXFDS_CWD the directory's, first) */
     uint32_t cwd_len;       /* first message: the directory's bytes with its NUL
-                             * (an absolute path, 2 .. POSIXFDS_PATH_MAX); else 0 */
+                             * (an absolute path, 2 .. POSIXFDS_PATH_MAX; with
+                             * POSIXFDS_CWD a directory channel's data,
+                             * POSIXFDS_DIRCH_MIN .. POSIXFDS_DATA_MAX); else 0 */
     struct posixfds_state state;   /* first message: as above; else all 0 */
     uint32_t exe_len;       /* first message: the program's path's bytes with its NUL
                              * (an absolute path, 2 .. POSIXFDS_PATH_MAX), or 0 (not
@@ -171,7 +198,14 @@ struct posixfds_desc {
 /* A whole hand-over to send. */
 struct posixfds_out {
     struct posixfds_state       state;
-    const char                 *cwd;    /* absolute, shorter than POSIXFDS_PATH_MAX */
+    const char                 *cwd;    /* absolute, shorter than POSIXFDS_PATH_MAX (not
+                                         * looked at with cwd_dir) */
+    /* 0, or the current directory as a directory channel (moved, as a
+     * descriptor's handles are): then cwd_data is its data (cwd_data_len
+     * bytes, a POSIXFDS_DIR_CHANNEL's) and it goes in place of cwd */
+    handle_t                    cwd_dir;
+    const void                 *cwd_data;
+    uint32_t                    cwd_data_len;
     const struct posixfds_desc *fds;    /* nfds of them, in any order */
     unsigned                    nfds;
     /* NULL, or the program's path, as cwd (spawn names it when this is
@@ -199,12 +233,23 @@ struct posixfds_sink {
     /* NULL, or called once the whole hand-over was taken, if it says the
      * program starts as AT_SECURE (POSIXFDS_SECURE). */
     void (*secure)(void *ctx);
+    /* NULL, or given the current directory's channel once the whole
+     * hand-over was taken, if it carries one (POSIXFDS_CWD): its data
+     * (len bytes, checked; gone after the call) and the channel, the
+     * sink's from then on. Without this the reader closes the channel. */
+    void (*cwd_dir)(void *ctx, const void *data, uint32_t len, handle_t ch);
 };
 
 /* How many handles a descriptor of kind has, and of which object types
  * (OBJ_*, in order, into types if not NULL; at most POSIXFDS_KIND_HANDLES).
  * -1 for a kind that isn't one. */
 int      posixfds_kind_handles(uint32_t kind, uint32_t types[POSIXFDS_KIND_HANDLES]);
+
+/* Is data (len bytes) a directory channel's (struct posixfds_dirch's
+ * rules)? If so, and they aren't NULL, its ids into *ids and pointers
+ * into data at its mount's name and its path ("" when none). */
+bool     posixfds_dirch_parse(const void *data, uint32_t len, struct posixfds_dirch *ids,
+                              const char **mount, const char **path);
 
 /* Send out on ch (the starter's end of the child's startup channel, right
  * after the startup message): as many messages as the handles and bytes
@@ -215,13 +260,15 @@ int      posixfds_kind_handles(uint32_t kind, uint32_t types[POSIXFDS_KIND_HANDL
  * the last one, refuses them). Context: any thread (a lock guards the
  * message buffer). */
 status_t posixfds_write(handle_t ch, const struct posixfds_out *out);
-/* Close every handle in out->fds (a spawn that never got as far as
- * sending them). */
+/* Close every handle in out->fds, and out->cwd_dir (a spawn that never
+ * got as far as sending them). */
 void     posixfds_discard(const struct posixfds_out *out);
 
 /* Read the hand-over from ch (the startup channel, after the startup
  * message) without waiting, giving each descriptor to sink and the state
- * and the current directory to *state and cwd (written only on success).
+ * and the current directory to *state and cwd (written only on success;
+ * a directory channel's path there, "" if it has none, its channel to
+ * sink->cwd_dir).
  * ERR_NOT_FOUND: nothing queued (no hand-over; nothing changed).
  * ERR_INVALID_ARGS: a malformed or missing message: every handle of the
  * hand-over is closed (the sink's through reset, the rest here, every

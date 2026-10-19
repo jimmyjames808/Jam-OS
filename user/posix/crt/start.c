@@ -5,7 +5,9 @@
  *   1. The startup message (libjam's startup_read): argv, the
  *      environment, the handles by role.
  *   2. The POSIX hand-over that may follow it (<posixfds.h>,
- *      posixfds_read): the descriptors, the state exec keeps and the
+ *      posixfds_read): the descriptors, the state exec keeps (the current
+ *      directory a path, or a directory's channel that path.c takes at the
+ *      start) and the
  *      program's path (libc's /proc/self/exe, user/posix/sys/procfs.c). Without
  *      one, descriptors 0 to 2 are the defaults; a malformed one leaves
  *      the program with no descriptors and a line in the log. Both are
@@ -66,6 +68,9 @@ static handle_t self_process, self_vmar;
 static struct posixfds_state ho_state;
 static char ho_cwd[POSIXFDS_PATH_MAX];
 static char ho_exe[POSIXFDS_PATH_MAX];   /* the program's path, if named; else empty */
+static _Alignas(8) uint8_t ho_dir[POSIXFDS_DATA_MAX];   /* the directory's channel's data */
+static uint32_t ho_dir_len;
+static handle_t ho_dir_ch;               /* ... and the channel, until path.c takes it */
 static bool ho_given;
 static bool ho_secure;                   /* the hand-over says AT_SECURE */
 static uint8_t at_random[16];
@@ -113,10 +118,27 @@ bool lx_handover_secure(void)
     return ho_secure;
 }
 
+handle_t lx_handover_dir(const void **data, uint32_t *len)
+{
+    handle_t ch = ho_dir_ch;
+    ho_dir_ch = HANDLE_INVALID;
+    *data = ho_dir;
+    *len = ho_dir_len;
+    return ch;
+}
+
 static void sink_exe(void *ctx, const char *path)
 {
     (void)ctx;
     memcpy(ho_exe, path, strlen(path) + 1);   /* shorter than POSIXFDS_PATH_MAX: checked */
+}
+
+static void sink_cwd_dir(void *ctx, const void *data, uint32_t len, handle_t ch)
+{
+    (void)ctx;
+    memcpy(ho_dir, data, len);   /* at most POSIXFDS_DATA_MAX: checked */
+    ho_dir_len = len;
+    ho_dir_ch = ch;
 }
 
 static status_t sink_fd(void *ctx, const struct posixfds_fd *rec, const void *data,
@@ -172,7 +194,8 @@ static void say(const char *what, status_t st)
 /* Step 2: the hand-over, or the default descriptors. */
 static void take_handover(void)
 {
-    const struct posixfds_sink sink = { NULL, sink_fd, sink_reset, sink_exe, sink_secure };
+    const struct posixfds_sink sink = { NULL, sink_fd, sink_reset, sink_exe, sink_secure,
+                                        sink_cwd_dir };
     status_t st = posixfds_read(startup_channel(), &sink, &ho_state, ho_cwd);
     if (st == ERR_NOT_FOUND) {
         fd_stage_default();

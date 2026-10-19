@@ -28,6 +28,10 @@ struct pfd_collect {
     unsigned resets;                /* reset calls */
     unsigned secures;               /* secure calls (POSIXFDS_SECURE) */
     status_t refuse;                /* OK, or what fd() answers */
+    unsigned cwds;                  /* cwd_dir calls (POSIXFDS_CWD) */
+    handle_t cwd;                   /* ... the last one's channel, ours */
+    uint8_t  cwd_data[PFD_DATA];    /* ... and its data (the first PFD_DATA bytes) */
+    uint32_t cwd_len;
 };
 
 /* A sink over c (emptied first). */
@@ -51,6 +55,13 @@ struct pfd_raw {
 };
 /* Start message seq (seq 0 with cwd and a fixed valid state). */
 void     pfd_raw_begin(struct pfd_raw *m, uint16_t seq, bool last, const char *cwd);
+/* Start message 0 with the current directory as a directory channel
+ * (POSIXFDS_CWD): its data (len bytes) and ch, the message's first handle. */
+void     pfd_raw_begin_dir(struct pfd_raw *m, bool last, const void *data, uint32_t len,
+                           handle_t ch);
+/* A directory channel's data (<posixfds.h>) into out: ids id and id + 1,
+ * the mount m and the text path (NULL: none); its length. */
+uint32_t pfd_dirch(uint8_t *out, uint64_t id, const char *m, const char *path);
 /* Append a record of kind with fresh handles and data. */
 status_t pfd_raw_fd(struct pfd_raw *m, int32_t fd, uint16_t kind, uint32_t status,
                     uint64_t offset, const void *data, uint32_t len);
