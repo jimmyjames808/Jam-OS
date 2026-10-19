@@ -49,7 +49,7 @@ Counts: **0 High, 3 Medium, 3 Low, 4 notes.**
 | 6 | Low | `kernel/object/process.c:352` with `kernel/mm/aspace.c:2262` | `process_info.faults` is the address space's count, so it starts again at the exec (FK3's swap): `/proc/<pid>/stat`'s minflt goes back to a few after `execve`, where Linux keeps counting across it. | `fork`, `execve`, read minflt. | Not changed: `kernel/include/jam/abi.h` says so (the address space's count, 0 once torn down). Design question 3. |
 | 7 | Note | `kernel/object/process.c:1071` (process_replace, what of the thread is cleared) | The replacing thread keeps its kernel names (the uthread's and the scheduler thread's, from the old image's `thread_create`): the log and panic screens show the old image's thread name in the new one. Nothing user-visible reads them. | | No change. |
 | 8 | Note | `kernel/object/process.c:959` (process_replace) and `kernel/abi/vmar_sys.c:123` (sys_vmar_clone) | Every handle others hold of the process survives a replace (FK3's point: waits, ports, kill). One with `RIGHT_WRITE` can also make and start a thread in the new image (`thread_create`, `thread_start`) or map into it through a vmar it was given. Fine today: the new image has only what its caller gave it. For FX (an image `/svc/exec` builds with init's authority), a holder of the caller's process handle would get that authority; and FX's replace-only right must not allow `vmar_clone` into the process either (which takes `RIGHT_WRITE` and charges the destination's job). | | Design question 2. |
-| 9 | Note | `kernel/object/vmo.c:469` (protect_wq) | One wait queue for every VMO's freeze, woken whole at every freeze's end: with many writers waiting on different VMOs each end wakes them all. A cost only (FK2 chose it). | | No change. |
+| 9 | Note | `kernel/object/vmo.c:469` (protect_wq) | One wait queue for every VMO's freeze, woken whole at every freeze's end: with many writers waiting on different VMOs each end wakes them all. A cost only (FK2 chose it). | | Fixed by FZ (5858acee): a queue per VMO ([FZ notes](#fz-notes)). |
 | 10 | Note | `kernel/object/vmo.c:2198` (vmo_clone_begin of a pager VMO's child) | A copy of a pager VMO's child gets the whole window again (charged, its tables made: a leaf table per 2 MiB, up to 64 GiB), whatever the mappings cover: a fork of a process with a big private file mapping costs the window again, as the parent's child did. As designed (WK1's pager children); written down for CB5's figures. | | No change. |
 
 ## Design questions
@@ -66,6 +66,10 @@ Counts: **0 High, 3 Medium, 3 Low, 4 notes.**
    a VMO by ending it right after that VMO's pages (a shootdown per VMO,
    not one per clone: costs the "one instant" argument, which needs every
    freeze held until the single shootdown).
+   **Answered: (b), built** (track FZ, 2026-10-20): a freeze that would
+   begin while a writer of its VMO waits backs off, and after three
+   back-offs waits for a turn that never backs off; see
+   [FZ notes](#fz-notes).
 2. **Handles to a replaced process (note 8).** For FX: drop or narrow
    every other process handle's `RIGHT_WRITE` at a replace into an image
    with authority its caller lacks (a generation on the process's
@@ -125,3 +129,143 @@ of the track (two tries failed on things this change doesn't touch,
 under a full PC: `intr_deadline_comes_first`'s timing, and a watchdog
 panic in the USB bus thread in ring 3 at 12.8 s of boot, as seen
 before on a loaded PC).
+
+## FZ notes
+
+Design question 1, option (b), the main session's choice, built by
+track FZ (2026-10-20, from main 1ba47c99): `kernel/object/vmo.c` (its
+header's "Freezes and writers"), `aspace_clone` in `kernel/mm/aspace.c`.
+
+**The rule.**
+
+- A writer that finds a VMO frozen (a write fault, `vmo_write` and so
+  every pin and kernel mapping, a decommit, a resize) is counted on it
+  (`frozen_waiters`) while it waits, and goes on in the lock hold that
+  sees the freeze over, keeping the page it made before it waited (a
+  copy of a page shared before the freeze, or a new page for an absent
+  one, is still right then: a shared page has no writable entry
+  anywhere).
+- No freeze of a VMO begins while a writer is counted on it
+  (`freeze_begin`). A clone that meets one backs off: it undoes its try
+  as it does on an error (one shootdown, every freeze it began ended,
+  its children, twins and charges given back), lets the source's region
+  lock go, waits holding nothing until that VMO's count has fallen to 0
+  once (`drains`), and starts again from the beginning. A child's
+  creation lets "vmo resize" go and does the same.
+- After three back-offs (`FREEZE_TRIES`), or at once on meeting someone
+  else's turn, a freezer waits for the **freeze turn**: one mutex for
+  every VMO, which hands itself to its longest waiter once one has
+  waited 1 ms. While a thread has the turn nobody else begins a freeze
+  anywhere (they back off and queue for it), and the holder's begins
+  wait for the VMO's writers instead of backing off.
+
+**No deadlock.** What waits for what:
+
+- a writer waits for its VMO's freezers, holding no freeze (a fault
+  holds its own address space's region lock, a resize "vmo resize", as
+  before; no freezer takes either);
+- a freezer that backed off waits holding nothing: no freeze, no region
+  lock, no "vmo resize";
+- a freeze waits for the `vmo_write` copies under way (`inflight`, as
+  before), which hold nothing;
+- only the turn's holder waits with freezes held (and its source's
+  region lock, or a creation's "vmo resize"): for the writers of the VMO
+  it is about to freeze. They wait for that VMO's other freezers. None is
+  the holder (it hasn't frozen that VMO in this try), and none has the
+  turn, so each never waits with a freeze held but for `inflight`: it
+  ends its walk or backs off at its next begin. A writer woken by the
+  freeze's end leaves the count in that same lock hold, before it takes
+  any other lock.
+
+So every chain of waits from the holder ends at a thread that runs: no
+cycle. The turn is taken with nothing held (`vmar_clone` holds the new
+process's `setup` mutex throughout, which ranks above a region lock
+already), and ranks above a region lock and "vmo resize".
+
+**Bounds.**
+
+- A writer: from the moment it is counted no freeze of its VMO begins
+  (the others back off; the turn's holder waits for it). It waits only
+  for the freezes held then. Each is a clone's walk or a creation's
+  sharing, which waits for nothing, or (the turn's) for the writers of a
+  VMO not yet frozen, who wait only for freezes begun before that turn
+  began. So a write waits about two walks at most, however many freezers
+  come after it. A write that lets the lock go to make its page (a copy,
+  a fill) can meet a freeze begun meanwhile: it keeps that page across
+  the wait and puts it in the hold that sees the freeze over, so that
+  happens once per page it makes.
+- A clone or a creation: at most three back-offs, each a wait for one
+  VMO's writers (bounded as above), then the turns queued before its own
+  (the mutex's hand-off makes that a queue), then its own try, which
+  never backs off: its waits end once the freezes begun before it had
+  the turn have ended, and no other begins.
+
+**One instant, kept.** The try that completes begins every freeze before
+its one shootdown and ends them after it, as before; an earlier try
+leaves nothing behind. The turn's waits only make that walk longer:
+writers that come meanwhile wait for the whole clone, as any writer of
+a frozen VMO does.
+
+**Note 9** is fixed with it (5858acee): each VMO has its own wait queue,
+woken by its own freezes' ends, its own copies and its own writers.
+
+**Found on the way:** finding 2's "only a holder of a writable mapping of
+that VMO can freeze it" holds for a clone (a copy needs a maximum with
+write) but not for a child's creation, which needs only `RIGHT_READ |
+RIGHT_DUPLICATE`: a reader of a shared buffer could freeze it in a loop.
+The rule covers creations the same way, so nothing more is needed.
+
+**Costs.** A back-off costs its try's work and a shootdown; it happens
+only when a writer outside the cloned address space waits on a VMO the
+clone copies (the source's own threads wait for its region lock and are
+never counted). `struct vmo` grows by 40 bytes (the queue and two
+counts).
+
+**Tests** (`kernel/test/test_vmar_clone.c`; hooks `DBG_VMO_CLONE_BEGIN`
+and `DBG_VMAR_CLONE_WALKED`):
+
+- `vmar_clone_writer_first`: a `vmo_write`, a store's fault, a decommit
+  and a resize waiting for a frozen VMO: a second freeze gets
+  `ERR_SHOULD_WAIT`, and the writer goes on at the first's end; a child's
+  creation waits for such a writer and its child holds the write.
+- `vmar_clone_writer_bounded`: three threads, each forking its own
+  address space that maps one VMO as a copy, in loops, each clone
+  holding it frozen 1 to 2 ms, so their freezes overlap nearly always,
+  while a `vmo_write` and a store through another address space keep
+  writing it for a second: each write done within 250 ms (idle), every
+  child's bytes unchanged by the parent's later writes.
+- `vmar_clone_backs_off`: a clone paused holding its first VMO frozen
+  (a writer waits on it) meets a writer waiting on its second (frozen by
+  another freezer): it lets the first go (that writer goes on) and
+  waits; the other freezer then freezes the first and ends both; the
+  clone starts again and completes holding both writes, and afterwards
+  neither side's writes reach the other.
+- `vmar_clone_turn_waits`: a clone meets this thread's turn and waits
+  for it; with the turn it holds its first VMO frozen (a writer waits)
+  while it waits for the second's writer, who waits for this thread's
+  freeze; this thread's freeze of the first now gets `ERR_SHOULD_WAIT`, it
+  lets the second go, and the writer, the clone and the other writer
+  all go on.
+
+**Without the fix** (the tests on 5858acee with the two hooks and FZ's
+calls as stubs, the PC, batches 20081827 and 20082924): each of the four
+fails. `vmar_clone_writer_first`: "a second freeze began, the writer
+waited on at the first's end"; `vmar_clone_writer_bounded` (4 and 8
+CPUs): about 2,000 clones and 1 write and 1 store in the second, each
+waiting 1,001 ms; `vmar_clone_backs_off`: "the clone went on" (0
+back-offs, holding neither write); `vmar_clone_turn_waits`: "the clone
+went on past another thread's turn". With the fix the bounded test's
+longest waits were 22.6 ms (the `vmo_write`) and 3.2 ms (the store) at 4
+CPUs, 4.9 and 6.3 ms at 8, with 136 and 617 clones: writers that write
+in a tight loop now slow the forks instead (most clones backed off and
+took the turn), which is the point.
+
+**On the branch** (the PC, `JAMOS_TIER=kernel`, batch 20083636): `make
+check`; the full ktest at 4 and at 8 CPUs, 659 passed each;
+`ktest=vmar_clone loops=3` at 4 and at 8; the init run
+(`tools/init-test.sh`); the shell scripts basic, posix-fork and
+posix-run; `cr-test.sh multi` (multi-process Chromium); all PASS. The
+soak at 4 CPUs passed on its second try (+1,234 pages, +4,800 message
+bytes); the first hit the known watchdog panic in the serial driver
+(`fill_fifo_locked`) under a full PC. `ktest=vmo_child` at 4 CPUs, PASS
+(batch 20082924).

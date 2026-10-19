@@ -176,7 +176,8 @@ own commit first, bb351a91: the ABI stamp moves).
 4. **Freezes and a writer (finding 12).** FR1's choices stand; *my
    call:* not High now, (b) of FR1's list (a freeze that would begin while
    a writer of that VMO waits gives up and starts again) as a small kernel
-   track before renderers are sandboxed.
+   track before renderers are sandboxed. Built by track FZ
+   ([FORK-REVIEW-KERNEL](FORK-REVIEW-KERNEL.md#fz-notes)).
 
 ## Tests
 

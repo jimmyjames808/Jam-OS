@@ -1209,6 +1209,33 @@ questions 1, 2 and 4 and IL2's finding; [FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md))
   nothing else stores the stamp). Static programs (Chromium's) are
   relinked against it as after any ABI change.
 
+### FZ notes
+
+[FORK-REVIEW-KERNEL](FORK-REVIEW-KERNEL.md#fz-notes)'s design question 1,
+option (b), built (2026-10-20): a writer of a frozen VMO is no longer
+starved by freezes that keep overlapping (a peer forking in a loop),
+which matters once renderers are sandboxed (CR-f).
+
+- **Writers first.** A writer waiting for a VMO's freeze is counted on
+  it, and no freeze of that VMO begins meanwhile: a clone (section 1.1's
+  walk) that meets one backs off, undoing its try as on an error, lets
+  the source's lock go, waits for those writers and starts again; a
+  child's creation does the same. A writer goes on in the lock hold that
+  sees the freeze over, so it waits only for the freezes held when it
+  began to wait.
+- **The turn.** After three back-offs, or on meeting another's turn, a
+  freezer waits for the freeze turn (one mutex): while it has it nobody
+  else begins a freeze, and its own begins wait for the writers instead
+  of backing off. Only the turn's holder waits with a freeze held, and
+  nothing it waits for waits for it, so no deadlock; a clone is done
+  after three back-offs and the turns queued before its own.
+- **One instant and one shootdown** per completed clone, as before: the
+  try that completes holds every freeze it began until its single
+  shootdown; a try that backed off leaves nothing.
+- FR1's note 9 is fixed with it: a freeze wait queue per VMO.
+- The rule, the deadlock argument and the bounds in full, and the tests:
+  FORK-REVIEW-KERNEL's "FZ notes".
+
 ## 6. Questions for the owner
 
 One at a time, in this order; each ends with a recommendation, which the
