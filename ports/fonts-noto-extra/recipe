@@ -1,0 +1,189 @@
+# fonts-noto-extra: the fonts for every script the browser meets that
+# fonts-jamos does not cover (the FONTS track, docs/G2-PLAN.md "GP2 notes,
+# continued"), a data port like fonts-jamos (style data: files and no build).
+# The owner asked for full coverage, so a page in any language shows text and
+# not boxes.
+#
+# What is in it, all Noto Sans, all SIL OFL 1.1, the static unhinted TrueType
+# files (FreeType's own hinting does the rest):
+#   CJK        Noto Sans CJK 2.004's two OpenType collections, Regular and Bold,
+#              from googlefonts/noto-cjk at its Sans2.004 tag (a collection is
+#              one file of 19 or 20 MB: the JP, KR, SC, TC and HK faces, and the
+#              Mono ones, over one set of outlines); fonts.conf picks the face by
+#              the page's language
+#   scripts    Arabic, Hebrew, Devanagari, Bengali, Tamil, Telugu, Gujarati,
+#              Gurmukhi (Punjabi), Kannada, Malayalam, Thai, Georgian,
+#              Armenian, Ethiopic, and Khmer, Lao, Myanmar, Sinhala, Oriya
+#              (Odia) beyond the owner's list, each Regular and Bold where
+#              the release has both
+#   symbols    Noto Sans Symbols (Regular, Bold), Symbols 2 and Math (Regular
+#              only: they have no Bold)
+# Not in it: Noto Serif for any script (the CJK and Indic text of a page asking
+# for a serif falls to these sans faces), Thai Looped, Tamil Supplement,
+# Tibetan (the release is a Serif), Syriac, Thaana, Mongolian and the historic
+# scripts. Noto Sans, Serif, Sans Mono and Noto Color Emoji (Latin, Greek,
+# Cyrillic, Vietnamese and emoji) are fonts-jamos's.
+#
+# Where the script fonts come from: the notofonts GitHub organisation builds each
+# script from its own repository and puts the fonts in that repository's release
+# zip (NotoSansArabic-v2.013.zip, 5 to 35 MB, every width and weight hinted and
+# not, static and variable) and in notofonts.github.io, its website's
+# repository. The zips' files and the website's at the commit below are the same
+# bytes (checked file by file for every font here), and the website's are one
+# small file each at one pin; five of the zips (Ethiopic, Gurmukhi, Malayalam,
+# Myanmar, Tamil) also carry members named ../AUTHORS.txt, which the builder
+# refuses to unpack. So each font is a source of its own at that commit, with
+# the size and SHA-256 of the file. The releases they are: Arabic 2.013, Hebrew
+# 3.001, Devanagari 2.007, Bengali 3.011, Tamil 2.004, Telugu 2.005, Gujarati
+# 2.106, Gurmukhi 2.004, Kannada 2.006, Malayalam 2.104, Thai 2.002, Georgian
+# 2.005, Armenian 2.008, Ethiopic 2.102, Khmer 2.004, Lao 2.003, Myanmar 2.107,
+# Sinhala 3.000, Oriya 2.007, Symbols 2.003, Symbols 2 2.008, Math 3.000.
+#
+# Each licence text is a file of its own in the package
+# (share/licences/fonts-noto-extra/), taken from the project's repository at the
+# tag of the release (the notofonts repositories' OFL.txt each carry their own
+# copyright line, so each project has its own file; Symbols and Symbols 2 are
+# one repository and share one).
+#
+# The fontconfig side: share/fonts/noto-extra/fonts.conf names this package's
+# directory, the families' places in the generic lists (after fonts-jamos's)
+# and the CJK face for each language. fonts-jamos's fonts.conf includes it
+# when it is installed (and fonts-jamos is what the browser's /etc/fonts/fonts.conf
+# includes), so this package `runs` fonts-jamos.
+name        fonts-noto-extra
+version     1.0
+revision    1
+summary     the Noto fonts for CJK, Arabic, Hebrew, the Indic and Southeast Asian scripts, Georgian, Armenian, Ethiopic and symbols
+homepage    https://github.com/notofonts/notofonts.github.io
+category    data
+licence     OFL-1.1
+licence-file noto-cjk-OFL.txt noto-arabic-OFL.txt noto-hebrew-OFL.txt noto-devanagari-OFL.txt noto-bengali-OFL.txt noto-tamil-OFL.txt noto-telugu-OFL.txt noto-gujarati-OFL.txt noto-gurmukhi-OFL.txt noto-kannada-OFL.txt noto-malayalam-OFL.txt noto-thai-OFL.txt noto-georgian-OFL.txt noto-armenian-OFL.txt noto-ethiopic-OFL.txt noto-khmer-OFL.txt noto-lao-OFL.txt noto-myanmar-OFL.txt noto-sinhala-OFL.txt noto-oriya-OFL.txt noto-symbols-OFL.txt noto-math-OFL.txt
+runs        fonts-jamos
+
+# Noto Sans CJK 2.004 (the OpenType collections; 19 and 20 MB, under the
+# format's 64 MiB).
+source      https://raw.githubusercontent.com/googlefonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Regular.ttc 19484784 b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a
+source      https://raw.githubusercontent.com/googlefonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Bold.ttc 20050760 faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb
+
+# The scripts' unhinted static Regular and Bold files (Symbols 2 and Math have
+# no Bold), one file a source, all at one commit of notofonts.github.io (see
+# the header: the same bytes as the scripts' release zips).
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansArabic/unhinted/ttf/NotoSansArabic-Regular.ttf 142140 bd86ca02f087d7f3c3788ba458fb6b73744c7639ed276b8d870dba6def6c40d0
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansArabic/unhinted/ttf/NotoSansArabic-Bold.ttf 141852 f4cb79f842a07d1bcf597879574358fb7010f73761396d1d0f2445dfedb4d2ca
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansHebrew/unhinted/ttf/NotoSansHebrew-Regular.ttf 16836 04272f5600d0ec816d31d0df73b23aa8d3501ea359ebe820da31c11ffcf00853
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansHebrew/unhinted/ttf/NotoSansHebrew-Bold.ttf 16900 dfdb3056de1f4542b888c77a1a8a750548a802e271479f56e52152423b64dde8
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansDevanagari/unhinted/ttf/NotoSansDevanagari-Regular.ttf 184228 9c7d935139ea6a1e6ad9dbac4f6d27ece1e04bca8123c8888d00a0f9df4724cd
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansDevanagari/unhinted/ttf/NotoSansDevanagari-Bold.ttf 183412 ff2f76a23aad41e0608c2d7dbc4bacd247ff3bec78f0ec2a8fb106b561636e58
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansBengali/unhinted/ttf/NotoSansBengali-Regular.ttf 103704 5dceda02816fece18ea6796f474f5d3170f1d862f21b1e809cdc94b1caa4b6ec
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansBengali/unhinted/ttf/NotoSansBengali-Bold.ttf 102440 2fe8d779e0f19576d1fc11e39f9154b4326a17b693215017dd1f5a8898c3f2c3
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansTamil/unhinted/ttf/NotoSansTamil-Regular.ttf 46600 6634d9cc97a726e670df41281dd32b167a6b9b71f2036e19671ff08fdde0c292
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansTamil/unhinted/ttf/NotoSansTamil-Bold.ttf 46428 04a472e49fa83b387976756554fe179de631a950d79f652ebba14a39a44f5d71
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansTelugu/unhinted/ttf/NotoSansTelugu-Regular.ttf 165212 dcb86a5da09365a2d73d725e429403dca988e6d50c1b1d564579a25dbc18bd29
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansTelugu/unhinted/ttf/NotoSansTelugu-Bold.ttf 165564 44393b05a863057cc2cbfe86623fc20b906b00cf19a2ae9304cdd0f3608889db
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansGujarati/unhinted/ttf/NotoSansGujarati-Regular.ttf 142760 18727143b8eadade0a59dca80959ef784bf8d55e07285d1b4096594dbf829f0a
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansGujarati/unhinted/ttf/NotoSansGujarati-Bold.ttf 140812 3ce0cf6e1d0bfe2ef5823772eeb2f25da28ec0c2c1d99c0fce529025723e61a1
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansGurmukhi/unhinted/ttf/NotoSansGurmukhi-Regular.ttf 35956 2454c944fda799d2861f11c03e492c453e33083dd1e8d99bd6baac8de71ad0f0
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansGurmukhi/unhinted/ttf/NotoSansGurmukhi-Bold.ttf 35712 d16804da302ecb2a7defe0502e65136870445fd88f9fddaef60b68d5f1ee7386
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansKannada/unhinted/ttf/NotoSansKannada-Regular.ttf 135488 2870274619c2a4abe5d6b11fcb7c4a372eba765b6b7881d459b0eb0a609a68eb
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansKannada/unhinted/ttf/NotoSansKannada-Bold.ttf 133868 e989c72f6fec5a0b3366af5f90e3ce8b2b8a350fc5286c6374f0353937e513f5
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansMalayalam/unhinted/ttf/NotoSansMalayalam-Regular.ttf 77312 cc39bb1f7d63b582a2aec1abf2469a43b805a3523a27e0a0eee8cd32702541d5
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansMalayalam/unhinted/ttf/NotoSansMalayalam-Bold.ttf 75916 165d635d82b0eb0a04275b92b9334c1ece679b99f263727c24c7c92ebcab51e9
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansThai/unhinted/ttf/NotoSansThai-Regular.ttf 20960 d4303fe9c63ebb72759ca8b6d2040c8ae81689f7d08d7b91c656154382b49313
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansThai/unhinted/ttf/NotoSansThai-Bold.ttf 20600 5227602d7f9108252cfb7d75d6f7b2a26bdb2fc2fa89a702f9063758fb2f86c7
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansGeorgian/unhinted/ttf/NotoSansGeorgian-Regular.ttf 35300 f4b229b126859725b75031dd8c051335d20c85e4eb6d525af28f3e83e471baa4
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansGeorgian/unhinted/ttf/NotoSansGeorgian-Bold.ttf 35820 517722454bbe6587ada79a0509db8c9b292b6a40b025eebe69c151a6508efc7e
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansArmenian/unhinted/ttf/NotoSansArmenian-Regular.ttf 18772 73bde9f3c63aa5ed39236e8a2837224605210a98b54d65724676c0119fcaa24c
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansArmenian/unhinted/ttf/NotoSansArmenian-Bold.ttf 18752 1dd206046cd3f41efddec93359a8d6590e5e2d5fcb036b9025725b560cefe6c6
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansEthiopic/unhinted/ttf/NotoSansEthiopic-Regular.ttf 289244 86b9c07c049e68438388d00a34033fa28cabeef91b26e1bbed67512d360166d4
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansEthiopic/unhinted/ttf/NotoSansEthiopic-Bold.ttf 288828 6b06274ea730962522b1fcbfdcb16cb5a385aa36734f31f5c9d0ca910541e880
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansKhmer/unhinted/ttf/NotoSansKhmer-Regular.ttf 67784 60c10dbfae33a44f1897cd939789bd173aedb7c7dc0a9af389a737e33cb7e548
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansKhmer/unhinted/ttf/NotoSansKhmer-Bold.ttf 67976 817382a538f299eb809ee9313ef5c52e0049e3487eb4d02678349755ed607ddf
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansLao/unhinted/ttf/NotoSansLao-Regular.ttf 21720 d3976b0ac08702c54999ff42eae295d1597fd73b44e0c57d7f4917524e18afbe
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansLao/unhinted/ttf/NotoSansLao-Bold.ttf 21508 6fea2e9f231a4b9cfdeec90e9afaff8818b3d11f74cdb23559275f71eeff1ffd
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansMyanmar/unhinted/ttf/NotoSansMyanmar-Regular.ttf 148628 f4be6ef43871516d8347c5217a2033991b8ecda2dd1200007c2fb431a66d64db
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansMyanmar/unhinted/ttf/NotoSansMyanmar-Bold.ttf 146412 c40a000f8093de13bdf1379a7c589faa2ea989319f33f244eaaa907033c6889f
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansSinhala/unhinted/ttf/NotoSansSinhala-Regular.ttf 90296 46d5b54952a624e6e3981e0968aecc5464f3b1081131dd7a1fcd42fbf7966471
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansSinhala/unhinted/ttf/NotoSansSinhala-Bold.ttf 88508 438ce1325e788ec0501042dd6e798c0ec02231a42dbf42e72d17b338aa46742a
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansOriya/unhinted/ttf/NotoSansOriya-Regular.ttf 131216 a16645d056017927406546aa78e4ce15e782fd8783467267b75450453d007415
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansOriya/unhinted/ttf/NotoSansOriya-Bold.ttf 130104 1c575e8aba40d6baf200e8abac534e9517f431d38cc8131715643037eec149da
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansSymbols/unhinted/ttf/NotoSansSymbols-Regular.ttf 145508 6eea9cb4cd39269ea9f95ba5c2735f80ae74049dfc9e1a7c932a5cfc8f0c3030
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansSymbols/unhinted/ttf/NotoSansSymbols-Bold.ttf 146136 e1e81b03028777dcf556dc22c18cb34c8e8cecdca66a494d7a0dae02f7f491df
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansSymbols2/unhinted/ttf/NotoSansSymbols2-Regular.ttf 671568 c4a0a80f0041ce4be81e2478faad22776d23edb98ae3f0d19bd37044820ecf9d
+source      https://raw.githubusercontent.com/notofonts/notofonts.github.io/9566151bf4d9138cd83d3563196fb2efa5698eaa/fonts/NotoSansMath/unhinted/ttf/NotoSansMath-Regular.ttf 657440 b127e84699212b6b2ef50aff58e0ebebeec04ffe6db1b9eb9e209c8c3d97b4aa
+
+# The licence texts, one for each project, from its release's tag.
+source      https://raw.githubusercontent.com/googlefonts/noto-cjk/Sans2.004/LICENSE 4301 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2 noto-cjk-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/arabic/NotoSansArabic-v2.013/OFL.txt 4382 a7a5a25eb188bf1cd96982030d53e23c33485c69b1044a562254226857ee13af noto-arabic-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/hebrew/NotoSansHebrew-v3.001/OFL.txt 4382 9b9fe028b5ba74d231659a1bbaf0ed09b11e759d1ca6a070999e16d151616b47 noto-hebrew-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/devanagari/NotoSansDevanagari-v2.007/OFL.txt 4386 a216f6f8d85c7228093e0ee5e258d9d377e6671f68acb4db1930b29583d0f331 noto-devanagari-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/bengali/NotoSansBengali-v3.011/OFL.txt 4383 754f0e221aa7d5a915489f3bf1f20fe53ddc35ab2834a4d91656d78f9622de70 noto-bengali-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/tamil/NotoSansTamil-v2.004/OFL.txt 4381 f8ff8ce7d0a81bf8d5e121c635ef027250c531f2fd37d5988b8dd6e45f19d7f1 noto-tamil-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/telugu/NotoSansTelugu-v2.005/OFL.txt 4382 481c72a8f1b4f645a7e6b10326be41b2da2c15cb470ff48a07fab773eed00102 noto-telugu-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/gujarati/NotoSansGujarati-v2.106/OFL.txt 4384 c0b88977aa18b5e4fd05d646d560da89fde61b6581fa4507cb00dd90bd1bf7d4 noto-gujarati-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/gurmukhi/NotoSansGurmukhi-v2.004/OFL.txt 4384 3f7451b7e2c8381be0c5712f7b0dd5c2d75fe787ae16a99f18b7fa45627a0fde noto-gurmukhi-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/kannada/NotoSansKannada-v2.006/OFL.txt 4383 e01ae2ea75d7bc6fccb13c48a2f442b32e4bc4be46810fb52a4a1a095320801a noto-kannada-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/malayalam/NotoSansMalayalam-v2.104/OFL.txt 4385 1df18163a0bf60f02131401ba1609df90051f40c4047684dda1c8a2e9586f7f2 noto-malayalam-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/thai/NotoSansThai-v2.002/OFL.txt 4380 2e98fd23a52d253db8612cd5942c8f2ff4111b21d2367050fdca91d8ccc374a0 noto-thai-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/georgian/NotoSansGeorgian-v2.005/OFL.txt 4384 8c02263c5d73d40544f9ed91e30c4e947407057a3cc430d7b786189aeceff6df noto-georgian-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/armenian/NotoSansArmenian-v2.008/OFL.txt 4384 0468358b316f69f405b55cadf8a8314e16e3610b8feaad96772bd5d968112d02 noto-armenian-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/ethiopic/NotoSansEthiopic-v2.102/OFL.txt 4384 72606b23f312cb25973958f2892d4d2c2012deabadbf0f763232624a9649fc69 noto-ethiopic-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/khmer/NotoSansKhmer-v2.004/OFL.txt 4381 be0407f060aea48787ff9e75d8d3aedef70aef113b3ce9aca26fdaacd10b1870 noto-khmer-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/lao/NotoSansLao-v2.003/OFL.txt 4379 a42993999944845fb5af693ea678a372a053db1f0981d55e911dcfa9d330f279 noto-lao-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/myanmar/NotoSansMyanmar-v2.107/OFL.txt 4383 246a75859267af7da466823969d2e2b407ed8455ee5f74f4c8d63d8783be9b57 noto-myanmar-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/sinhala/NotoSansSinhala-v3.000/OFL.txt 4383 2d6f7c43bce61f4b1919379f901bc613484f5285f520b6d29bb7c1f31b17e841 noto-sinhala-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/oriya/NotoSansOriya-v2.007/OFL.txt 4381 c90ff15ade263a49148e35af34e9c177c6d56881e81260b29f10123e9e227eca noto-oriya-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/symbols/NotoSansSymbols-v2.003/OFL.txt 4383 b118dd41337806a5d4797052c77caf3bd096aed783e5eb21b4d11154351e1ac0 noto-symbols-OFL.txt
+source      https://raw.githubusercontent.com/notofonts/math/NotoSansMath-v3.000/OFL.txt 4380 c9c63b8ed6cf76b2ce0c58b241acfc1195c2c928334c989c7047cbdac58773d9 noto-math-OFL.txt
+
+place       package
+style       data
+
+# The configuration (OVERRIDES): this package's directory and its rules.
+data        noto-extra/fonts.conf share/fonts/noto-extra/fonts.conf
+
+data        NotoSansCJK-Regular.ttc share/fonts/noto-extra/cjk/NotoSansCJK-Regular.ttc
+data        NotoSansCJK-Bold.ttc share/fonts/noto-extra/cjk/NotoSansCJK-Bold.ttc
+data        NotoSansArabic-Regular.ttf share/fonts/noto-extra/arabic/NotoSansArabic-Regular.ttf
+data        NotoSansArabic-Bold.ttf share/fonts/noto-extra/arabic/NotoSansArabic-Bold.ttf
+data        NotoSansHebrew-Regular.ttf share/fonts/noto-extra/hebrew/NotoSansHebrew-Regular.ttf
+data        NotoSansHebrew-Bold.ttf share/fonts/noto-extra/hebrew/NotoSansHebrew-Bold.ttf
+data        NotoSansDevanagari-Regular.ttf share/fonts/noto-extra/devanagari/NotoSansDevanagari-Regular.ttf
+data        NotoSansDevanagari-Bold.ttf share/fonts/noto-extra/devanagari/NotoSansDevanagari-Bold.ttf
+data        NotoSansBengali-Regular.ttf share/fonts/noto-extra/bengali/NotoSansBengali-Regular.ttf
+data        NotoSansBengali-Bold.ttf share/fonts/noto-extra/bengali/NotoSansBengali-Bold.ttf
+data        NotoSansTamil-Regular.ttf share/fonts/noto-extra/tamil/NotoSansTamil-Regular.ttf
+data        NotoSansTamil-Bold.ttf share/fonts/noto-extra/tamil/NotoSansTamil-Bold.ttf
+data        NotoSansTelugu-Regular.ttf share/fonts/noto-extra/telugu/NotoSansTelugu-Regular.ttf
+data        NotoSansTelugu-Bold.ttf share/fonts/noto-extra/telugu/NotoSansTelugu-Bold.ttf
+data        NotoSansGujarati-Regular.ttf share/fonts/noto-extra/gujarati/NotoSansGujarati-Regular.ttf
+data        NotoSansGujarati-Bold.ttf share/fonts/noto-extra/gujarati/NotoSansGujarati-Bold.ttf
+data        NotoSansGurmukhi-Regular.ttf share/fonts/noto-extra/gurmukhi/NotoSansGurmukhi-Regular.ttf
+data        NotoSansGurmukhi-Bold.ttf share/fonts/noto-extra/gurmukhi/NotoSansGurmukhi-Bold.ttf
+data        NotoSansKannada-Regular.ttf share/fonts/noto-extra/kannada/NotoSansKannada-Regular.ttf
+data        NotoSansKannada-Bold.ttf share/fonts/noto-extra/kannada/NotoSansKannada-Bold.ttf
+data        NotoSansMalayalam-Regular.ttf share/fonts/noto-extra/malayalam/NotoSansMalayalam-Regular.ttf
+data        NotoSansMalayalam-Bold.ttf share/fonts/noto-extra/malayalam/NotoSansMalayalam-Bold.ttf
+data        NotoSansThai-Regular.ttf share/fonts/noto-extra/thai/NotoSansThai-Regular.ttf
+data        NotoSansThai-Bold.ttf share/fonts/noto-extra/thai/NotoSansThai-Bold.ttf
+data        NotoSansGeorgian-Regular.ttf share/fonts/noto-extra/georgian/NotoSansGeorgian-Regular.ttf
+data        NotoSansGeorgian-Bold.ttf share/fonts/noto-extra/georgian/NotoSansGeorgian-Bold.ttf
+data        NotoSansArmenian-Regular.ttf share/fonts/noto-extra/armenian/NotoSansArmenian-Regular.ttf
+data        NotoSansArmenian-Bold.ttf share/fonts/noto-extra/armenian/NotoSansArmenian-Bold.ttf
+data        NotoSansEthiopic-Regular.ttf share/fonts/noto-extra/ethiopic/NotoSansEthiopic-Regular.ttf
+data        NotoSansEthiopic-Bold.ttf share/fonts/noto-extra/ethiopic/NotoSansEthiopic-Bold.ttf
+data        NotoSansKhmer-Regular.ttf share/fonts/noto-extra/khmer/NotoSansKhmer-Regular.ttf
+data        NotoSansKhmer-Bold.ttf share/fonts/noto-extra/khmer/NotoSansKhmer-Bold.ttf
+data        NotoSansLao-Regular.ttf share/fonts/noto-extra/lao/NotoSansLao-Regular.ttf
+data        NotoSansLao-Bold.ttf share/fonts/noto-extra/lao/NotoSansLao-Bold.ttf
+data        NotoSansMyanmar-Regular.ttf share/fonts/noto-extra/myanmar/NotoSansMyanmar-Regular.ttf
+data        NotoSansMyanmar-Bold.ttf share/fonts/noto-extra/myanmar/NotoSansMyanmar-Bold.ttf
+data        NotoSansSinhala-Regular.ttf share/fonts/noto-extra/sinhala/NotoSansSinhala-Regular.ttf
+data        NotoSansSinhala-Bold.ttf share/fonts/noto-extra/sinhala/NotoSansSinhala-Bold.ttf
+data        NotoSansOriya-Regular.ttf share/fonts/noto-extra/oriya/NotoSansOriya-Regular.ttf
+data        NotoSansOriya-Bold.ttf share/fonts/noto-extra/oriya/NotoSansOriya-Bold.ttf
+data        NotoSansSymbols-Regular.ttf share/fonts/noto-extra/symbols/NotoSansSymbols-Regular.ttf
+data        NotoSansSymbols-Bold.ttf share/fonts/noto-extra/symbols/NotoSansSymbols-Bold.ttf
+data        NotoSansSymbols2-Regular.ttf share/fonts/noto-extra/symbols2/NotoSansSymbols2-Regular.ttf
+data        NotoSansMath-Regular.ttf share/fonts/noto-extra/math/NotoSansMath-Regular.ttf
+
+files       share/fonts

@@ -45,6 +45,9 @@
 # `make image` first, which tools/remote-test.sh does), PORTS_TEST_SCRIPT (a
 # script, run after the same start in place of each port's own `test`: the
 # shell's `pkg` against the installed packages, tools/shell-tests/pkg.txt),
+# PORTS_TEST_DATA_MIB (each stick's /data made this many MiB before the
+# packages go in: the image's own is 64, too small for fonts-noto-extra's 45 MB
+# and fonts-jamos's 34 MB together; fonts-noto-extra's test wants 256),
 # QEMU_TIMEOUT (here default 300), and the tools/qemu-test.sh variables. Build output is in
 # build/ports. On the test host:
 #   JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh \
@@ -52,6 +55,7 @@
 # (one remote-test call per port takes a slot of the machine for each, as
 # the other area tests do: use that for many ports at once.)
 set -u
+. tools/datafs.sh
 if [ $# -lt 2 ]; then
     echo "usage: tools/ports-test.sh <outdir> <port>..." >&2
     exit 2
@@ -97,6 +101,10 @@ shard() {
         return
     fi
     cp "$image" "$img"
+    if [ -n "${PORTS_TEST_DATA_MIB:-}" ] && ! data_grow "$img" "$PORTS_TEST_DATA_MIB" > "$dir/grow.out" 2>&1; then
+        fail "growing /data to $PORTS_TEST_DATA_MIB MiB: $(tail -1 "$dir/grow.out")"
+        return
+    fi
     pk=/data/pkg
     [ "$(python3 tools/mkimage.py --data-fs "$img" 2> /dev/null)" = ext ] && pk=/pkg
     if ! mcopy -o -i "$img@@1M" "$dir/bootfs-key.img" ::/boot/bootfs.img; then

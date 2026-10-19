@@ -1,0 +1,4 @@
+# The fontconfig configuration: a file the font archives do not have. `-` is
+# the hash of a file upstream must not have, so a release that adds this
+# name stops the build.
+noto-extra/fonts.conf - override/fonts.conf
