@@ -182,10 +182,8 @@ class Builder:
         for name in todo:
             r = self.tree.recipes[name]
             self.stamps[name] = self.stamp(r)
-            if self.plan and name not in names:   # a plan builds nothing: what it needs must be built
-                if not self.up_to_date(r, self.stamps[name]):
-                    raise BuildError("%s: %s is not built, so its plan can't be made" % (names[0], name))
-                continue
+            if self.plan and name not in names:   # a plan builds nothing: what it needs is used as last built
+                continue   # (a build builds the ones out of date first: it can only add to the plan)
             if self.up_to_date(r, self.stamps[name]) and not (self.plan and name in names):
                 self.say("%s: up to date" % name)
                 done.append((name, "up to date"))

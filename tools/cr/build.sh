@@ -165,10 +165,10 @@ status() {
         echo "cr-build: running: run $(basename "$run"), $(( (now - $(cat "$run/started")) / 60 )) min so far"
     elif running; then
         echo "cr-build: run $(basename "$run") is waiting for its CPUs and memory, or another build runs"
-        [ -f "$run/claim" ] && echo "cr-build: $(cat "$run/claim")"
     else
         echo "cr-build: not running; the last run: $(basename "$run")"
     fi
+    [ -f "$run/claim" ] && echo "cr-build: $(cat "$run/claim")"
     line=$(grep -a '^\[[0-9]*/[0-9]*\]' "$ports/chromium/log" 2> /dev/null | tail -1 | cut -c1-160)
     [ -n "$line" ] && echo "cr-build: ninja: $line"
     [ -f "$run/peak" ] && echo "cr-build: peak memory so far: $(cat "$run/peak")"
