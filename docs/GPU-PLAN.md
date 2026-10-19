@@ -743,6 +743,8 @@ against a register-file fake, so most logic is tested before any boot.
 
 ## Questions for the owner
 
+**Answered (the owner, 2026-10-20): the recommendations taken** (two cables, the board's HDMI for Jam OS; the BIOS settings when the time comes; route B, our own drivers first and i915 by need; no firmware blobs for now, DMC with run well; the stage-3 downloads approved when stage 3 comes). Still the owner's to answer: Q4 (the monitor's model and top refresh rate) and Q6 (a test box: his call, not required).
+
 Each ends with a recommendation; the plan assumes it until you say
 otherwise. Q1, Q2 and Q3 shape the work; the rest are smaller.
 

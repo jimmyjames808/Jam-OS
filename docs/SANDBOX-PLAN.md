@@ -572,6 +572,8 @@ table's grammar and checks 400, tests 1,500.
 
 ## 11. Questions for the owner
 
+**Answered (the owner, 2026-10-20): every recommendation above taken** (layer (a); the keeper; path grants; limits from 4x the measured peak with the floors; SwiftShader default for `chrome` after SBR; children's output to the log; the one-line --no-sandbox warning patch after SBR; the ordinary-sites rule lifted after SBR and the PC check). SB1 and SB2 started ahead of CR-f the same day.
+
 One at a time; each ends with a recommendation, which the plan assumes
 until the owner says otherwise. The main session's calls on CR3's
 questions (section 8) are recorded there and are the owner's to override.

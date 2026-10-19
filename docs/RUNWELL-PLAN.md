@@ -844,6 +844,8 @@ queue on the PC's budget like any other.
 
 ## 9. Questions for the owner
 
+**Answered (the owner, 2026-10-20): every recommendation above taken** (numbers from a Linux guest in the same QEMU plus one bare-metal session, the live stick's download asked for first; a same-tree Linux build with a stock row; the provisional targets; both flag rows; the 50 sites, the 8-hour browse on request; wave 1 right after CB6; tests out of the boot image; the 10-minute ceiling and the reboot notice; the feels-fast budgets).
+
 Decided here as technical (by the recommendations in the sections
 unless the owner says otherwise): a DevTools-protocol driver shared by
 both systems; the Linux build from the same tree; the sampler in the
