@@ -443,7 +443,9 @@ session's calls on its questions (2026-10-20; the owner's to override):
   children. **This one can't wait for CR-f**: the browser itself reads the
   shared settings, so any approved program with `mount /data rw` can steer
   the browser's fonts today, and `chrome` (CB6) makes it the owner's daily
-  browser. SB1 should run now.
+  browser. SB1 should run now. **Built** ([SB1 notes](#sb1-notes)), except
+  the caches: nothing on Jam OS writes the cache format of Chromium's
+  fontconfig yet, so every program scans the fonts at its start.
 - **Q3, text directories over sockets**: refuse kind 2 over sockets once
   CB6 shows the profile never sends one; in SB7.
 - **Q5**: section 3 (adopted). **Q6**: section 6 (a check in SB10).
@@ -513,7 +515,7 @@ WebGL page with SwiftShader).
 
 | Track | What | Files | Gate | Tests | Size | Model |
 |---|---|---|---|---|---|---|
-| **SB1. Fonts (CR3 M3)**, ahead of CR-f | fontconfig's caches built at install into the package area, no writable shared `cachedir`, the owner's settings only where a settings grant writes, `FONTCONFIG_FILE`/`FONTCONFIG_PATH` dropped for AT_SECURE children | bin/pkg's install step, `ports/fonts-jamos/override/fonts.conf`, `user/posix/sys/etc.c`, `user/posix/crt/start.c` | none | cr-test fonts with a planted `/data/.config/fontconfig/fonts.conf` mapping sans-serif to the cut Inter (fails without); posixtest AT_SECURE env | 1.5 | Opus |
+| **SB1. Fonts (CR3 M3)**, ahead of CR-f (**built**, but for the caches: [SB1 notes](#sb1-notes)) | fontconfig's caches built at install into the package area, no writable shared `cachedir`, the owner's settings only where a settings grant writes, `FONTCONFIG_FILE`/`FONTCONFIG_PATH` dropped for AT_SECURE children | bin/pkg's install step, `ports/fonts-jamos/override/fonts.conf`, `user/posix/sys/etc.c`, `user/posix/crt/start.c` | none | cr-test fonts with a planted `/data/.config/fontconfig/fonts.conf` mapping sans-serif to the cut Inter (fails without); posixtest AT_SECURE env | 1.5 | Opus |
 | **SB2. Openers of one's own (CR3 M1)** | `own_channel` for net, dns and audio; netstack's and the resolver's per-opener caps; the mixer's per-opener cap 8; `audio_open_on` handing back the program's opener | `user/lib/ns.c`, `user/lib/audio.c`, `user/include/net.h`, `user/include/dns.h`, `user/include/mixer.h`, the services' opener counts | none | utest: one program opens openers until refused, a second still gets one of each (fails without); crsound | 1.5 | Opus |
 | **SB3. Socket files need write (CR3 M2)** | `connect` opens the socket file `O_RDWR` without truncation | `user/posix/sys/unixsock.c` | CB6 merged (its singleton's place) | posixtest unix: a read-only view can't connect (fails without); a rewritten socket file is refused | 0.5 | Sonnet 5.5 |
 | **SB4. The children's table** | note type 2, its grammar (rows, conditions, grants words, `mount self r`, `limits`), `JAM_CHILDREN`, libos's reader, checkwants and its selftest, `allow` showing it, the port's link step embedding `wants/<program>.children`; the list's `limit pages`/`messages` words applied by `dp_job_create` | `user/include/wants.h`, `user/lib/wants.c`, `tools/checkwants.py`, `<dataprog.h>` and its source, the shell's `allow`, tools/cr's link wrapper | none | checkwants selftest (tables it must take and refuse); utest: a table read back; `allow` shows it | 1.5 | Opus |
@@ -648,3 +650,93 @@ The owner's rule holds until Jam OS's sandbox lands and is reviewed.
 with the sandbox on, keeping in mind what Chromium's own sandbox would add
 on Linux that this one doesn't (none found for renderers; the shared GPU
 process as on every platform).
+
+## 12. Track notes
+
+### SB1 notes
+
+2026-10-20, ahead of CR-f. CR3's M3 is closed for what fontconfig reads; the
+caches made at install are not built (why, and the way to them, below).
+
+- **The configuration** (fonts-jamos's `fonts.conf`, revision 2) names only
+  places under `/pkg`, which programs can only read (every writable `/data`
+  view has `FS_VIEW_GUARD_PKG`; `/jam/pkg` is bin/pkg's): its `<dir>`, the
+  include of fonts-noto-extra's file, and one cache directory to read,
+  `/pkg/share/fonts/cache`, which nothing fills yet. Gone: `<cachedir
+  prefix="xdg">` (`$XDG_CACHE_HOME`, else `$HOME/.cache`), `/data/.cache/fontconfig`
+  and the include of `/data/.config/fontconfig/fonts.conf`. The XDG one went
+  too because Chromium's fontconfig (2.18.3) reads every cache directory
+  listed and takes the newest valid file for a font directory
+  (`FcDirCacheProcess`), believes its patterns (names, files; a scan rule's
+  edits are kept in it), and a cache is valid when it names the directory's
+  mtime, which anyone can read. So any cache directory a program can write is
+  filled by whatever else writes there: `/data` by every `/data rw` program,
+  a program's own XDG or HOME cache by its children (every Chromium child
+  has the browser's namespace until CR-f). A program that wants a cache of
+  its own sets `FONTCONFIG_FILE` to a file that includes the packages' and
+  names one (the own.conf of cr-test's fonts case).
+- **The cache a scan makes goes to `/dev/null`**, a second `<cachedir>`:
+  with no writable cache directory fontconfig prints "Fontconfig error: No
+  writable cache directories" and the list on stderr for every directory it
+  scanned (about 15), at every start (the first try printed 90 such lines
+  in cr-test's log). `/dev/null` passes its `access(W_OK)`; the write then
+  fails at the lock file's create, quietly; reading finds no file under it.
+  tools/fonts-check.sh allows `/pkg` and that one only.
+- **The owner's own font settings**: no settings grant exists that would
+  do. The settings live in `/data/etc`, which every program's `/data` view
+  hides, so a program could not read a file there; `/pkg` is written by
+  bin/pkg alone. The include is dropped (the owner has no custom font
+  settings today); it comes back when there is a place the owner's settings
+  tool writes and every font user reads.
+- **The crt** drops `FONTCONFIG_FILE`, `FONTCONFIG_PATH` and
+  `FONTCONFIG_SYSROOT` for an AT_SECURE child (`unsecure_vars`,
+  `user/posix/crt/start.c`); the root too, since with it fontconfig reads
+  every directory and cache under the caller's choice. libc's
+  `/etc/fonts/fonts.conf` (`user/posix/sys/etc.c`) was checked: it includes
+  `/pkg/share/fonts/fonts.conf` and nothing else; unchanged. Chromium's
+  programs get the crt's part at their next relink (SB10's); the
+  configuration works with the staged ones now.
+- **The caches made at install: not built.** Of the two places the owner
+  allowed, **bin/pkg's install step** is the right one, not the package's
+  build: (1) the cache's format is the reader's: Chromium 155's fontconfig
+  2.18.3 writes cache version 12 (`FC_CACHE_VERSION_NUMBER`, in the file's
+  name, `<md5 of the directory>-le64.cache-12`, and checked in its header;
+  2.18 added the mtime's high word). The build hosts have 2.17.1 (the Mac:
+  version 9) and 2.15.0 (the PC, with no FreeType or gperf to build
+  another), whose caches Chromium never opens; a host build of 2.18.3 would
+  scan with FreeType where Chromium scans with Fontations, and must follow
+  every Chromium update (9 to 12 between 2.17 and 2.18). (2) A cache is
+  valid only while its directory's mtime, seconds and nanoseconds, is the
+  one it recorded (`FcCacheTimeValid`; or the mtime is 0). bin/pkg writes
+  each file as `<path>.new` and renames it, so a font directory's mtime is
+  the install's, and the package format carries no times. But nothing on
+  Jam OS writes cache version 12 but Chromium's programs themselves. **What
+  is needed**: an `fc-cache` built from Chromium's own fontconfig (an
+  executable over `//third_party/fontconfig` in ports/chromium, linked with
+  the browser, so its version and Fontations), shipped in the chromium
+  package; bin/pkg's install step runs it after installing or upgrading
+  chromium or a package with `share/fonts` files, as a child that reads
+  `/pkg` and writes only a staging directory, and moves the files into
+  `share/fonts/cache` under the packages' prefix (recorded as the step's
+  own, so a remove takes them). It needs CB6's tree and a relink:
+  **recommended for SB10**, which relinks, or a small track after it.
+- **The cost of a scan at start** (cr-test fonts, QEMU with KVM on the PC,
+  4 GiB, ext `/data`, headless_shell's `--screenshot` of fonts.html at
+  1000x1400, timed by the shell's `time`; batches 20094609 and 20102232):
+  with no cache (a scan) 3.24 and 3.10 s; reading a cache of the program's
+  own 3.05 and 3.24 s; scanning and writing one 36.2 s (the PC loaded by a
+  Chromium build) and 3.33 s. So the scan of the 79 MB of fonts costs at
+  most about 0.2 s of a 3 s start, within the spread between runs (2.4 to
+  4.7 s for starts that read a cache, in the runs without the fix).
+- **Tests.** cr-test.sh `fonts`: the planted `/data/.config/fontconfig/fonts.conf`
+  (Inter first for every family), then the poisoned cache (poison.conf:
+  a scan rule renaming every face of the packages' jamos directory, written
+  to `/data/.cache/fontconfig`), each checked by five faces by name drawing
+  differently and `sans-serif`/`serif` drawn with the packages' faces; no
+  cache on `/data` after the system runs; the own-cache screenshot equal to
+  the scanned one; the times printed. tools/fonts-check.sh: every `<dir>`,
+  `<cachedir>` and `<include>` under `/pkg` (or the `/dev/null` cachedir).
+  utest `exec_handover` and `exec_starter`: posixtest's raised child has
+  none of the three variables (its code 22). Without the fix (ee652332,
+  batch 20093718): the plant, the poison and the cache on `/data` each
+  WRONG; the earlier batch 20093234 showed utest's two cases failing with 22.

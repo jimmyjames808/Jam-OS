@@ -1837,10 +1837,11 @@ so Chinese, Japanese, Korean, Arabic and even Greek and Cyrillic were boxes.
   340.
 - **fontconfig: how the files include each other.**
   `/pkg/share/fonts/fonts.conf` (fonts-jamos) is the entry: its own
-  `<dir>`, two caches, its aliases, then `<include
+  `<dir>`, the packages' cache directory, its aliases, then `<include
   ignore_missing="yes">/pkg/share/fonts/noto-extra/fonts.conf</include>`
   (fonts-noto-extra's: its `<dir>`, the families and the CJK rules; nothing
-  of its own is read twice), then Noto Color Emoji, then the owner's file.
+  of its own is read twice), then Noto Color Emoji (SB1 took out the owner's
+  file on `/data` and the writable caches: [SB1 notes](SANDBOX-PLAN.md#sb1-notes)).
   Each is useful alone: fonts-jamos without the extras skips the include;
   the extras read alone (a test's `FONTCONFIG_FILE`) name their directory and
   rules and no generic families.
@@ -1893,9 +1894,11 @@ so Chinese, Japanese, Korean, Arabic and even Greek and Cyrillic were boxes.
   (`ports/chromium/wants/headless_shell`, `content_shell`). No `/pkg` mount
   (a FAT `/data` has none): the include is skipped, no fonts. posixtest's
   `fds` section checks the file, its stat, `access`, `EROFS` and `ENOENT`
-  beside it. The cache goes under `$XDG_CACHE_HOME/fontconfig`, else
-  `$HOME/.cache/fontconfig`, else `/data/.cache/fontconfig` (a program with
-  HOME=`/` cannot write the second, so the third catches it).
+  beside it. The cache went under `$XDG_CACHE_HOME/fontconfig`, else
+  `$HOME/.cache/fontconfig`, else `/data/.cache/fontconfig`; since SB1 the
+  only cache directory is the packages' own, `/pkg/share/fonts/cache`, read
+  only and not yet filled, so every program scans the fonts at its start
+  ([SB1 notes](SANDBOX-PLAN.md#sb1-notes)).
 - **Tests.** `tools/fonts-check.sh` now merges the staged packages as init's
   `/pkg` and runs the build host's `fc-match` over both: 121 checks (the
   generics and names as before; every script's character for sans-serif,
