@@ -106,7 +106,7 @@ GPU after G3 and G4.
 | `/proc` | none | |
 | Floating point | the kernel saves x87, SSE and AVX state (XCR0); no AVX-512 on the PC anyway; PKU's register is not enabled | `kernel/arch/x86_64/fpu.c` |
 | Wayland | the compositor speaks Wayland over channels; G2's shim, subsurfaces and popups to come | [G2-PLAN](G2-PLAN.md) |
-| Storage | FAT32 `/data` on the stick (768 MiB on the owner's); M13.6's ext filesystem (`/jam`) and M12.7's writes to the Jam OS drive to come | [M13.6-PLAN](M13.6-PLAN.md), [M12.7 in HISTORY](HISTORY.md#m127-nvme-and-the-installer) |
+| Storage | FAT32 `/data` on the stick (768 MiB on the owner's); M13.6's ext filesystem (`/jam`) and M12.7's writes to the Jam OS drive to come | [M13.6 in HISTORY](HISTORY.md#m136-the-ext-filesystem), [M12.7 in HISTORY](HISTORY.md#m127-nvme-and-the-installer) |
 | Ports | M13.7's builder, packages and signing on the Mac; `pkg` on Jam OS to come; ports build on the Mac and on the PC's WSL | [M13.7-PLAN](M13.7-PLAN.md) |
 | The PC's WSL | Ubuntu, 28 threads, the cross compiler and QEMU; every test runs there through `tools/remote-test.sh` (a budget of 26 vCPUs) | [TESTING](TESTING.md) |
 

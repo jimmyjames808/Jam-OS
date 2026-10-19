@@ -306,6 +306,92 @@ booted from the internal disk) is the main session's pre-push pass, not a
 separate run; the real power-cut check above; FAT is still the Jam OS ESP's
 format, ext is the data partition's (M13.6).
 
+## M13.6: the ext filesystem
+
+*Planned 2026-10-11, built 2026-10-11 to 2026-10-17, reviewed and fixed
+2026-10-17.* "Porting first" (the owner, 2026-10-11): FAT32 has no symbolic
+links, permission bits, owners or hard links, a 4 GiB file limit and
+case-blind names, and Unix software breaks on each of them. The owner's
+2026-09-30 decision (FAT32 only) was reopened for this and only this.
+
+What was built:
+- **The format** (`user/services/extfs/ext/`, no Jam OS calls, built for
+  the host too): a subset of ext4's on-disk format, Jam OS's own code
+  (about 10,500 lines in all): superblock and feature table, group
+  descriptors, CRC32C on every structure, inodes, extent trees, bitmaps
+  with flex groups, plain and hashed directories, symbolic links, hard
+  links, atomic rename (replace and exchange), the orphan list, mkfs, and
+  jbd2's journal (descriptor, revoke and commit blocks, checksum v3, replay).
+  Linux reads and checks it: `e2fsck -fn` is the judge of every crash test.
+- **The service** (`bin/extfs`, `user/services/extfs/`): the `fs` and
+  `file` protocols on the ext core, a journal transaction per request, a
+  restart as recovery (the state VMO, the keeper, a warm spare), views
+  judged where paths resolve, subviews, many writers (`FS_APPEND`),
+  unlink of open files, remount read-only on an error. New protocol calls
+  (`getattr`, `setattr`, `symlink`, `readlink`, `link`, `resolve`,
+  `subview`, `ERR_LINK_OUT`) with answers from fat and bootfs.
+- **libc** follows links in the caller's own namespace (`ELOOP` at 40),
+  sends paths uncleaned, keeps `..` above a mount's root in `/`, and has
+  `stat`, `chmod`, `chown`, `utimensat`, `symlink`, `readlink`, `link`,
+  `RENAME_EXCHANGE`, `umask`, and `fsync` backed by the journal.
+- **extfs as a pager** (U10): `file.map` read and exec from extents,
+  invalidation on write and truncate, `ERR_BUSY` for running programs,
+  unlinked mapped files kept on the orphan list, maps carried across
+  restarts. Writable shared maps came later ([above](#writable-file-mappings-on-ext)).
+- **volumes and init**: an ext superblock on a partition starts `bin/extfs`
+  (the Jam OS data type, GPT's Linux type, MBR 0x83); the Jam OS drive's
+  data partition is `/jam`, read-write; foreign ext volumes are always
+  read-only; init mounts `/usr`, `/var`, `/home` and `/tmp` as views of
+  `/jam`; 16 mounts. **On a drive boot the data partition is `/data` and
+  `/jam` at once** (DB1, "drive boot first"), `/tmp` is a view of
+  `/jam/tmp`, and `/pkg` is the package area.
+- **Tools**: `tools/jamext` (mkfs, an image from a directory, import, put,
+  get, ls, ln, chmod, check; reproducible images), the checker shared by
+  `jamext check` and the shell's `disk check`, `ls -l`, `stat`, `ln`,
+  `chmod`, `readlink` in the shell, `tools/extcheck.c` (cut storms on the
+  Mac), and `tools/extfs-test.sh` (basic, links, case, a 6 GiB file and a
+  file sparse at 5 GiB checked by hash, cuts at 20 write points judged by
+  `e2fsck`, extfs killed 0/1/10/100 times a second during a copy, interop
+  with three `mke2fs` volumes, foreign volumes read-only).
+
+The owner's answers (2026-10-11, all as recommended): **own code for ext4's
+format** (compared with lwext4, libext2fs, FreeBSD's and Haiku's ext2: none
+permissive, current and journalled at once; libext2fs, LGPL, in extfs was
+the fallback if the first tracks ran into trouble; FreeBSD's and Haiku's
+code may be read as references; no code from Linux or e2fsprogs); the Jam
+OS drive's data partition first; the stick unchanged until the owner
+revised that on **2026-10-15: ext is the default data filesystem**, FAT only
+when asked for (`disk format <disk> data fat`; `make image` and `make usb`
+build the stick's `/data` as ext with `jamext`; the ESP stays FAT32 because
+the firmware reads only FAT). A write is on the disk when its request is
+answered; the Mac does not read the stick (logs by network, files by
+`update` and SSH).
+
+The review (docs/M13.6-REVIEW.md, by an agent that wrote none of it): 1
+High, 2 Medium, 9 Low. The High: **extfs never flushed a disk's cache.**
+drv/nvme's writes are FUA, so the journal's order held, but usb-storage's
+writes land in the stick's volatile cache in any order, and since ext became
+the stick's default `/data` a power cut could break the journal's order.
+Now the journal flushes around the commit block, before the tail moves and
+before the log is marked empty, at close and at mkfs; requests, `fs.sync`
+and `file.sync` flush; NVMe uses `EXTFS_ARG_FUA`. The Mediums: a request in
+progress at two deaths in a row ran again instead of being answered; one
+extfs held only 32 open files, 32 views and 64 maps for a whole volume
+(now 256, 128 and 256, with room in the keeper and volumes' job limits).
+Also fixed with tests: a name a view hides gives nothing away when walked
+through, and a journal's region is counted in 64 bits. Left as reported
+Lows: a stick's writes cost two or three cache flushes a request; the
+guards judge a place by its top-level name (only the unviewed shell can make
+an `etc` link); `statfs` has no inode counts (an IDL change wanted before M14
+freezes `fs`); `NS_MAX_MOUNTS` 16 is tight for a stick beside three drives.
+
+Open: the PC check P1 (hold the power button during a `disktest` write on
+the drive's ext `/jam`, then check the journal replays and `e2fsck` is
+clean) was not run; the owner skipped the same step for M12.7 and QEMU's
+cuts cover it, so only the real drive honouring its flush is unproven. The
+three review questions (flushes per request, links named `etc`, inode counts
+in `statfs`) are the owner's.
+
 ## M12.1: the code check
 
 *2026-10-09 to 2026-10-11.* A check of what M12 and G1 changed, by fresh
