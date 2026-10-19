@@ -49,8 +49,14 @@
  * instance that replaces one that ended, FAT_ARG_KILLED (a deliberate
  * kill) or FAT_ARG_CRASHED (any other end): only a crash counts against
  * the request in progress (docs/HISTORY.md, M11.6, Q1: a request in progress
- * at two crashes is answered ERR_IO and dropped). A test that starts fat
- * itself may add test powers (user/services/fat/test.c).
+ * at two crashes is answered ERR_IO and dropped), and FAT_ARG_ESP_TYPE for
+ * a partition of the ESP's type on a disk that isn't the boot disk
+ * (another stick's ESP at /usbN, the drive's at /nvmeN when Jam OS runs
+ * from a stick): it holds what that computer boots, so every view of it
+ * is read-only (views.c), whatever its mount is: a program's list never
+ * writes it, `mount /usb* rw` or `mount * rw` (docs/M13.7-REVIEW.md, PR1,
+ * the owner's Q5). The mount's own channel stays as its mount is. A test
+ * that starts fat itself may add test powers (user/services/fat/test.c).
  *
  * Formatting is off unless a word is FAT_ARG_FORMAT. Only then, and only
  * on a writable channel, is a blank partition (no boot signature in its
@@ -82,5 +88,6 @@
 #define FAT_ARG_FORMAT     "format-if-blank"
 #define FAT_ARG_KILLED     "killed"
 #define FAT_ARG_CRASHED    "crashed"
+#define FAT_ARG_ESP_TYPE   "esp-type"
 #define FAT_EXIT_NO_VOLUME 2
 #define FAT_EXIT_TEST      3

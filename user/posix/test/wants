@@ -6,3 +6,4 @@ svc net listen
 svc dns
 svc exec
 svc unix
+deputy

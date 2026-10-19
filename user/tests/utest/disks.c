@@ -19,6 +19,7 @@
 #include <check.h>
 #include <extfssvc.h>
 #include <fatsvc.h>
+#include <fsview.h>
 #include <idl/block.h>
 #include <idl/storage.h>
 #include "disks.h"
@@ -416,7 +417,9 @@ bool t_disk_not_boot(void)
  * a blank FAT32-typed partition. The FAT volume is mounted read-only at
  * /usbN-test on a `block` channel opened read-only (the disk itself would
  * refuse a write); volumes.remount reopens it read-write with a new
- * service and a new channel, and back. The blank partition is never
+ * service and a new channel, and back. Even read-write, a view of it (a
+ * program's `mount /usb* rw`) is read-only: the partition is of the
+ * ESP's type, another computer's boot files. The blank partition is never
  * opened for writing, never mounted and never formatted, in either mode. */
 bool t_disk_other(void)
 {
@@ -472,6 +475,26 @@ bool t_disk_other(void)
         !file_is(&usb, "/new.txt", "written after mount -w"))
         return false;
     CHECK(dm_count(&mock.writes) > writes);
+
+    /* The partition is of the ESP's type: another computer's boot files.
+     * The mount's own channel writes (the owner's `mount -w`), but a
+     * program's list never does (docs/M13.7-REVIEW.md, PR1, the owner's
+     * Q5): the view `mount /usb* rw` gives is read-only, and says so. */
+    handle_t vw;
+    CHECK_ST(fs_view_until(usb.fs, now() + 10 * NS_PER_S,
+                           FS_VIEW_GUARD_ETC | FS_VIEW_GUARD_PKG | FS_VIEW_NO_ETC, &vw), OK);
+    struct fatrun viewed = { .fs = vw };
+    uint32_t vwrites = dm_count(&mock.writes);
+    bool viewed_ok = file_is(&viewed, "/new.txt", "written after mount -w");
+    status_t vopen = t_open(&viewed, "/by-list.txt", FS_WRITE | FS_CREATE, &f);
+    if (vopen == OK)
+        t_close(&f);
+    status_t vmkdir = t_mkdir(&viewed, "/by-list");
+    CHECK_ST(jam_handle_close(vw), OK);
+    CHECK(viewed_ok);
+    CHECK_ST(vopen, ERR_ACCESS_DENIED);
+    CHECK_ST(vmkdir, ERR_ACCESS_DENIED);
+    CHECK_EQ(dm_count(&mock.writes), vwrites);
 
     /* and read-only again: what was written is there, nothing more goes in */
     CHECK_ST(remount(vm, usbn, false), OK);

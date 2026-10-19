@@ -30,7 +30,11 @@
  *                             (every other stick) or * (every mount); a
  *                             writable one can't change the top-level
  *                             `pkg` (the packages' prefix: /jam/pkg, or
- *                             /data/pkg when there is no /jam)
+ *                             /data/pkg when there is no /jam); /esp
+ *                             and * writable (the ESP: what the next
+ *                             boot runs) the build allows only for a
+ *                             service or a test, and `allow` never for
+ *                             a program on /data
  *     mount /data rw pkg      /data writable, the packages' prefix too
  *     mount /jam rw pkg       (still no etc), or /jam: bin/pkg's; the
  *                             build allows them only for a service
@@ -51,6 +55,19 @@
  *                             promises and init's shell mode always has
  *                             (M13.6's U7b), as `mount /tmp rw` would (the
  *                             compiler wrapper adds the word)
+ *     deputy                  it may be started raised: by /svc/exec for
+ *                             a caller approved for less than its list
+ *                             asks (init's exec.c, "who is raised"), with
+ *                             that caller's argv, environment and
+ *                             descriptors, which it must then trust no
+ *                             further than the caller (it starts with
+ *                             AT_SECURE 1, in "/"). Without the word
+ *                             /svc/exec refuses such a start
+ *                             (docs/M13.7-REVIEW.md, PR2, the owner's
+ *                             Q2); a start by a caller whose approval
+ *                             covers the whole list needs no word. The
+ *                             browser and its shells never say it: they
+ *                             act on every switch (tools/checkwants.py)
  * `svc session` (/svc/session, init's sessions: a whole shell) is for a
  * boot-image service, port or test only, and `allow` refuses it for a
  * program on /data.
@@ -93,6 +110,7 @@
 struct wants {
     bool     found;                     /* the file has a list */
     bool     posix;                     /* the word `posix`: a POSIX program */
+    bool     deputy;                    /* the word `deputy`: /svc/exec may start it raised */
     unsigned n;                         /* entries of grant */
     char     grant[WANTS_MAX][24];      /* <os.h> "grants" strings: "/svc/music", "/data:r" */
     uint32_t rights;                    /* WANT_RIGHT_* */

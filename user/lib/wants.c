@@ -166,6 +166,11 @@ static bool want_line(struct wants *w, char *line)
         w->posix = true;   /* how to start it, and POSIX's /tmp: init keeps one (tmp.c) */
         return add_grant(w, "/tmp:w", "/tmp (write)");
     }
+    if (n == 1 && !strcmp(word[0], "deputy") && !w->deputy) {
+        w->deputy = true;   /* /svc/exec may start it raised (init's exec.c) */
+        add_text(w, "may run for a program approved for less (a deputy)");
+        return true;
+    }
     return false;
 }
 

@@ -1797,6 +1797,14 @@ the reasoning is written out):
   a copy; the shell's whole-read first run after `allow`, an anonymous VMO,
   too), one that doesn't read. Old static programs that send no image keep
   the old behaviour until relinked.
+- A raised start is refused (`ERR_ACCESS_DENIED`, `EACCES`) unless the
+  child's list says `deputy` (`<wants.h>`), or its caller's approval
+  covers its whole list and only a power raises it (base_unittests
+  starting itself): a program acting on its caller's argv, environment
+  and descriptors with more than the caller has is that caller's deputy
+  ([M13.7-REVIEW](M13.7-REVIEW.md) PR2, the owner's Q2; `dp_exec_start`).
+  The browser and its shells never say it (`tools/checkwants.py`), so the
+  owner starts `chrome` from the shell, not through a launcher.
 - What the child is given is its own approval either way (the owner's
   CE1 rule): this decides only the mark and the directory.
 

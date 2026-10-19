@@ -602,6 +602,15 @@ bool t_pkgctl_want(void)
     CHECK(w.n == 1 && !strcmp(w.grant[0], "/data:w") && !dp_wants_refused(&w));
     CHECK_ST(wants_parse("mount /jam rw\n", 14, &w), OK);   /* an ordinary view of /jam */
     CHECK(w.n == 1 && !strcmp(w.grant[0], "/jam:w") && !dp_wants_refused(&w));
+    /* What the next boot runs (docs/M13.7-REVIEW.md, PR1): the ESP writable,
+     * or every mount writable, which takes it in; reading them is fine. */
+    CHECK_ST(wants_parse("mount /esp rw\n", 14, &w), OK);
+    CHECK(dp_wants_refused(&w) && !strcmp(dp_wants_refused(&w), "mount /esp rw"));
+    CHECK_ST(wants_parse("mount /data r\nmount * rw\n", 25, &w), OK);
+    CHECK(dp_wants_refused(&w) && !strcmp(dp_wants_refused(&w), "mount * rw"));
+    static const char reads[] = "mount /esp r\nmount * r\nmount /usb* rw\n";
+    CHECK_ST(wants_parse(reads, sizeof(reads) - 1, &w), OK);
+    CHECK(w.n == 3 && !dp_wants_refused(&w));
     CHECK(dp_on_data("/jam/pkg/bin/x") && dp_on_data("/data/x") && !dp_on_data("/jam") &&
           !dp_on_data("/jam/") && !dp_on_data("/jamx/y") && !dp_on_data("/usb0/x"));
     /* M13.7's PO14: /pkg, init's read-only view of the prefix, is a place to run from, a

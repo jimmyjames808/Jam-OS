@@ -117,23 +117,23 @@ send ls -l cl | grep -c "^lrwxrwxrwx" | grep ^1$ && echo ok-$T-linkmode
 wait ok-x-linkmode
 
 # ---- a program on /jam: allowed with allow, then run ----------------------------------------
-send cd /jam && cp /boot/bin/soakload /jam/s && echo ok-$T-copied
+send cd /jam && cp /boot/bin/pxio /jam/s && echo ok-$T-copied
 wait ok-x-copied
 wait {prompt}
-send run /jam/s 1; echo st-$T=$?
+send run /jam/s cwd; echo st-$T=$?
 wait run: /jam/s is not allowed to run: `allow /jam/s` first
 wait st-x=126
 wait {prompt}
 send allow /jam/s; echo st-$T=$?
-wait allow s: every mount (write)? y/n
+wait allow s: /tmp (write)? y/n
 type y
 wait allow: /jam/s may run
 wait st-x=0
 wait {prompt}
 send allow -l | grep -c "/jam/s" | grep ^1$ && echo ok-$T-listed
 wait ok-x-listed
-send run /jam/s 1; echo st-$T=$?
-wait soakload:
+send run /jam/s cwd; echo st-$T=$?
+wait pxio: cwd=
 wait run: /jam/s exited with code 0
 wait st-x=0
 wait {prompt}

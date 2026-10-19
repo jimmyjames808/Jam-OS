@@ -52,12 +52,12 @@ static status_t dep_lines(struct pkg_lines *ls, struct pkg_manifest *m, const ch
         m->nruns++;
     }
     while (pkg_peek_line(ls, &line) && pkg_line_is(line, "built-with")) {
-        struct pkg_built *b = &m->built_with[m->nbuilt];
         pkg_next_line(ls, &line);
+        NEED(m->nbuilt < PKG_DEPS_MAX, "too many built-with lines");   /* before b is written */
+        struct pkg_built *b = &m->built_with[m->nbuilt];
         NEED(pkg_words(line, "built-with", w, 2, 3, &n) && pkg_f_name(w[0]) &&
                  pkg_f_version(w[1]) && (n == 2 || pkg_f_revision(w[2], &b->revision)),
              "a built-with line");
-        NEED(m->nbuilt < PKG_DEPS_MAX, "too many built-with lines");
         NEED(m->nbuilt == 0 || pkg_increasing(m->built_with[m->nbuilt - 1].name, w[0]),
              "built-with lines not in strictly increasing order");
         b->name = w[0];

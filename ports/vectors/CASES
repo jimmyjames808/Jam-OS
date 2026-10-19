@@ -30,6 +30,7 @@ package p-ext.jpk ok
 package p-case.jpk refused
 package p-list.jpk refused
 package p-session.jpk refused
+package p-esp.jpk refused
 package data.jpk ok
 package multi.jpk ok
 index INDEX-good ok

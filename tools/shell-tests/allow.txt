@@ -1,5 +1,7 @@
-# allow: programs on /data (docs/HISTORY.md, M8.6): a copy of
-# bin/soakload on /data is refused until allowed; `allow` shows its list
+# allow: programs on /data (docs/HISTORY.md, M8.6): a copy of bin/soakload
+# on /data is refused whatever the owner says (it asks for every mount
+# writable, the ESP among them: M13.7-REVIEW PR1); a copy of bin/pxio is
+# refused until allowed; `allow` shows its list
 # and asks, n keeps it refused, y lets it run; `allow -l` lists it; a
 # program can't change /data/etc (even with /data writable), nor read,
 # list or make anything there, by any spelling (utest and sbase's tools
@@ -21,27 +23,31 @@ wait {prompt}
 seen 60 init: /data mounted
 send T=x
 wait {prompt}
-send cp /boot/bin/soakload /data/s && cp /boot/bin/utest /data/u && echo ok-$T-copied
+send cp /boot/bin/soakload /data/s && run /data/s 1; echo st-$T=$?
+wait run: /data/s: asks for mount * rw, which no program from /data may have
+wait st-x=126
+wait {prompt}
+send cp /boot/bin/pxio /data/s && cp /boot/bin/utest /data/u && echo ok-$T-copied
 wait ok-x-copied
 wait {prompt}
-send run /data/s 1; echo st-$T=$?
+send run /data/s cwd; echo st-$T=$?
 wait run: /data/s is not allowed to run: `allow /data/s` first
 wait st-x=126
 wait {prompt}
 send allow /data/s; echo st-$T=$?
-wait allow s: every mount (write)? y/n
+wait allow s: /tmp (write)? y/n
 type n
 wait st-x=1
 wait {prompt}
 # a y typed ahead, before the question, is no answer to it (typed during
 # the sleep, so it has reached the shell before `allow` asks)
 type sleep 1; allow /data/s; echo st-$T=$?\ry
-wait allow s: every mount (write)? y/n
+wait allow s: /tmp (write)? y/n
 type n
 wait st-x=1
 wait {prompt}
 send allow /data/s; echo st-$T=$?
-wait allow s: every mount (write)? y/n
+wait allow s: /tmp (write)? y/n
 type y
 wait allow: /data/s may run
 wait st-x=0
@@ -50,10 +56,10 @@ send ls /data/etc/allow.d | grep -c . | grep ^1$ && echo tables-$T-1
 wait tables-x-1
 wait {prompt}
 send allow -l
-wait /data/s: every mount (write) (sha-256
+wait /data/s: /tmp (write) (sha-256
 wait {prompt}
-send run /data/s 1; echo st-$T=$?
-wait soakload:
+send run /data/s cwd; echo st-$T=$?
+wait pxio: cwd=/
 wait run: /data/s exited with code 0
 wait st-x=0
 wait {prompt}

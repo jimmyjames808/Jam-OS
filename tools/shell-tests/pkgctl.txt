@@ -55,8 +55,8 @@ wait {prompt}
 send allow -r pv; echo pc9-$T-$?
 wait allow: pv: a package's program (allow -l): `pkg remove` takes it back
 wait pc9-x-1
-send cp /boot/bin/soakload /data/pv && allow /data/pv; echo pc10-$T-$?
-wait allow pv: every mount (write)? y/n
+send cp /boot/bin/pxio /data/pv && allow /data/pv; echo pc10-$T-$?
+wait allow pv: /tmp (write)? y/n
 type y
 wait allow: /data/pv: a package's program (allow -l): its package approves it
 wait pc10-x-1

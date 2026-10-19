@@ -156,6 +156,20 @@ const char *dp_wants_refused(const struct wants *w);
 bool        dp_wants_within(const struct wants *w, const struct wants *of);
 /* Does w's list give a mount at point (a mount point: "/data", "/tmp")? */
 bool        dp_wants_mounts(const struct wants *w, const char *point);
+/* How /svc/exec starts a program whose list is w for a caller approved
+ * with `caller` (NULL: not known; init's exec.c, "who is raised"):
+ *   DP_START_PLAIN    not raised: w asks for nothing beyond caller's and
+ *                     for no power;
+ *   DP_START_RAISED   raised (AT_SECURE, in "/"): w asks for a power
+ *                     caller's approval has too (whether this caller still
+ *                     holds it can't be known), for nothing at all (a
+ *                     caller not known), or for more and says `deputy`;
+ *   DP_START_REFUSED  w asks for more than caller's (or caller isn't
+ *                     known) and doesn't say `deputy`: it would act for a
+ *                     caller with less on that caller's argv, environment
+ *                     and descriptors (docs/M13.7-REVIEW.md, PR2). */
+enum dp_start { DP_START_PLAIN, DP_START_RAISED, DP_START_REFUSED };
+enum dp_start dp_exec_start(const struct wants *w, const struct wants *caller);
 /* The root resource's rights for a list's WANT_RIGHT_* (w->rights): what
  * the program's copy gets. Never RIGHT_TRANSFER: it can narrow its copy
  * (RIGHT_DUPLICATE), never pass it on. Never RIGHT_ROOT_JIT either: the

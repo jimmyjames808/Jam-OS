@@ -1,6 +1,6 @@
 /* The small parts of the ports formats (<pkgfmt.h>), each against what
  * its rule says: the version order, the path grammar, the program lists,
- * the ustar header (any one changed bit of the first header is refused),
+ * a built-with line past the bound (nothing written for it), the ustar header (any one changed bit of the first header is refused),
  * the page-hash table (against SHA-256 taken by hand, in pieces of any
  * size, in both modes), the ELF note finder (cut anywhere), the
  * repository's names, the index's lookups and the audit's range rule. */
@@ -79,14 +79,48 @@ static void lists(void)
     EXPECT(!pkg_list_refused((const uint8_t *)"posix\n", 6), "posix alone refused");
     EXPECT(!pkg_list_refused((const uint8_t *)"posix\nmount /data rw\nsvc net\n", 28),
            "an ordinary list refused");
+    static const char reads[] = "posix\nmount /esp r\nmount * r\nmount /usb* rw\n";
+    EXPECT(!pkg_list_refused((const uint8_t *)reads, strlen(reads)), "the ESP read refused");
     static const char *const refused[] = {
         "posix\nsvc session\n", "posix\nsvc init\n", "posix\nsvc devmgr\n", "posix\nsvc devmgr-ctl\n",
         "posix\nsvc volumes\n", "posix\nsvc net-sys\n", "posix\nsvc dns-sys\n", "posix\nsvc serve\n",
         "posix\nsvc net listen low\n", "posix\nright debug\n", "mount /data r\n", "svc net\n",
+        "posix\nmount /esp rw\n", "posix\nmount /data r\nmount * rw\n",   /* PR1: the next boot */
     };
     for (unsigned i = 0; i < sizeof(refused) / sizeof(refused[0]); i++)
         EXPECT(pkg_list_refused((const uint8_t *)refused[i], strlen(refused[i])) != NULL,
                "list %u (%s) passed", i, refused[i]);
+}
+
+/* One built-with line past PKG_DEPS_MAX is refused before anything is
+ * written for it: its revision once went 4 bytes past built_with[], into
+ * files[0] (docs/M13.7-REVIEW.md, PR8), inside the struct, where the
+ * sanitisers can't see it, so files[0] is filled with a pattern here and
+ * must keep it. */
+static void built_with_bound(void)
+{
+    static char text[4096];
+    struct pkgc_work *k = pkgc_work();
+    size_t n = (size_t)snprintf(text, sizeof(text),
+                                "jamos-pkg 1\nname vec\nversion 1.0\nrevision 1\n"
+                                "abi 0123456789abcdef\nlicence MIT\nsummary a test vector\n");
+    for (unsigned i = 0; i <= PKG_DEPS_MAX; i++)
+        n += (size_t)snprintf(text + n, sizeof(text) - n, "built-with b%03u 1.0 7\n", i);
+    n += (size_t)snprintf(text + n, sizeof(text) - n, "signature ");
+    memset(text + n, '0', 128);
+    n += 128;
+    text[n++] = '\n';
+    uint8_t *f0 = (uint8_t *)&k->m->files[0];
+    memset(f0, 0x5a, sizeof(k->m->files[0]));
+    const char *why = NULL;
+    EXPECT(pkg_manifest_parse_unchecked(text, n, k->m, &why) != OK, "%u built-with lines taken",
+           PKG_DEPS_MAX + 1);
+    EXPECT(why && !strcmp(why, "too many built-with lines"), "refused for %s",
+           why ? why : "nothing");
+    bool kept = true;
+    for (size_t i = 0; i < sizeof(k->m->files[0]); i++)
+        kept = kept && f0[i] == 0x5a;
+    EXPECT(kept, "the built-with line past the last wrote into files[0]");
 }
 
 static void headers(void)
@@ -292,6 +326,7 @@ unsigned pkgc_misc(void)
     versions();
     paths();
     lists();
+    built_with_bound();
     headers();
     tables();
     elf_notes();

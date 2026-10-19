@@ -392,7 +392,13 @@ status_t dp_table_read(const char *hash_hex, uint64_t size, handle_t *table)
  * init's namespace and the shell's root powers, past every view and grant;
  * the build allows it only for a service, a port or a test
  * (tools/checkwants.py). Nor the packages' prefix writable (`mount /data
- * rw pkg`, bin/pkg's): a program could spoil every package's files. */
+ * rw pkg`, bin/pkg's): a program could spoil every package's files. Nor
+ * the ESP writable (`mount /esp rw`, or `mount * rw`, every mount, /esp
+ * among them): it holds what the next boot runs (the kernel, bootfs with
+ * the update and ports keys in it, Limine's menu), and nothing checks
+ * those files at boot, so a program could make the next boot its own
+ * (docs/M13.7-REVIEW.md, PR1). Another disk's ESP, which `mount /usb* rw`
+ * reaches, fat keeps read-only to every view (<fatsvc.h>, FAT_ARG_ESP_TYPE). */
 static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_VOLUMES, SVC_INIT,
                                        SVC_NET_SYS, SVC_DNS_SYS, SVC_SERVE, SVC_NET_LISTEN_LOW,
                                        SVC_SESSION };
@@ -408,6 +414,9 @@ const char *dp_wants_refused(const struct wants *w)
         for (unsigned k = 0; k < sizeof(refused) / sizeof(refused[0]); k++)
             if (!strncmp(w->grant[i], "/svc/", 5) && !strcmp(w->grant[i] + 5, refused[k]))
                 return refused[k];
+    for (unsigned i = 0; i < w->n; i++)   /* what the next boot runs */
+        if (!strcmp(w->grant[i], "/esp:w") || !strcmp(w->grant[i], "*:w"))
+            return w->grant[i][0] == '/' ? "mount /esp rw" : "mount * rw";
     return NULL;
 }
 
@@ -455,6 +464,17 @@ bool dp_wants_within(const struct wants *w, const struct wants *of)
             return false;
     }
     return true;
+}
+
+enum dp_start dp_exec_start(const struct wants *w, const struct wants *caller)
+{
+    static const struct wants nothing;   /* a caller not known holds nothing we know of */
+    bool within = dp_wants_within(w, caller ? caller : &nothing);
+    if (caller && within && !w->rights)
+        return DP_START_PLAIN;
+    /* within: a power the caller's approval asks for too, or (not known)
+     * a list that asks for nothing at all */
+    return within || w->deputy ? DP_START_RAISED : DP_START_REFUSED;
 }
 
 bool dp_wants_mounts(const struct wants *w, const char *point)

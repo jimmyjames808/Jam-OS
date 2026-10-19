@@ -36,7 +36,8 @@
  *          exec_prog channel: the sealed program, waiting.
  *   start  on that channel: the job, argv and environment, the signal end
  *          and the caller's own program (its image, if it has one: whether
- *          the child is raised, "who is raised" below); the child is made
+ *          the child is raised, "who is raised" below, and refused if it
+ *          would be raised without saying `deputy`); the child is made
  *          and started (above), the channel closed.
  * From the seal on, the kernel checks every page of the program against
  * the approval as it is fetched (at the start, or whenever the program
@@ -98,7 +99,7 @@ struct prog {
     uint64_t     expires;     /* uptime ns: dropped then, unstarted */
     int          opener;      /* the opener that sealed it, while that one is open; -1 */
     bool         done;        /* its start was answered: free it */
-    bool         raised;      /* its list asks for more than its caller's (raised()) */
+    bool         raised;      /* its list asks for more than its caller's (start_kind()) */
     char        *path;        /* its path (malloc'd) */
     struct wants w;           /* its list, read from the sealed VMO */
 };
@@ -393,18 +394,30 @@ static const struct exec_ops open_ops = { .open = op_open };
  * power is raised whoever calls. Anything else is not known, and not
  * known is raised: no image (a boot-image program, a native caller that
  * sends none), a VMO that isn't sealed (a JIT VMO, a copy, a plain VMO
- * with a list of its own), one that doesn't read. */
-static bool raised(const struct prog *p, const handle_t *image, uint32_t n)
+ * with a list of its own), one that doesn't read.
+ *
+ * Who may be raised (docs/M13.7-REVIEW.md, PR2; the owner's answer to its
+ * Q2, 2026-10-20). A raised child acts with its own approval on argv, an
+ * environment and descriptors its caller chose, and a program that acts on
+ * its command line with everything it holds (a browser: every switch, no
+ * look at AT_SECURE) is then the caller's deputy. So a raised start is
+ * refused unless the child's list says `deputy` (<wants.h>: the program
+ * promises to trust its caller no further than the caller is trusted),
+ * with one exception: a child raised only by a power its caller's own
+ * approval asks for too (the caller's list covers the whole of the
+ * child's), which can't make the caller more than its own approval
+ * already did. dp_exec_start decides. */
+static enum dp_start start_kind(const struct prog *p, const handle_t *image, uint32_t n)
 {
     static struct wants caller;   /* the worker's */
     struct handle_info hi;
     uint64_t size;
     const rights_t need = RIGHT_READ | RIGHT_EXEC;
-    if (p->w.rights || n != 1 || jam_handle_info(image[0], &hi) != OK || hi.type != OBJ_VMO ||
-        (hi.rights & need) != need || !hi.related_koid ||
-        jam_vmo_get_size(image[0], &size) != OK || dp_wants_vmo(image[0], size, &caller) != OK)
-        return true;
-    return !dp_wants_within(&p->w, &caller);
+    bool known = n == 1 && jam_handle_info(image[0], &hi) == OK && hi.type == OBJ_VMO &&
+                 (hi.rights & need) == need && hi.related_koid &&
+                 jam_vmo_get_size(image[0], &size) == OK &&
+                 dp_wants_vmo(image[0], size, &caller) == OK;
+    return dp_exec_start(&p->w, known ? &caller : NULL);
 }
 
 /* What the child gets of the caller's hand-over (docs/CR-REVIEW-POSIX.md,
@@ -692,11 +705,17 @@ static status_t op_start(void *ctx, uint16_t argc, const uint8_t *strings, uint3
     static const char *argv[STRINGS_MAX + 1], *envp[STRINGS_MAX + 1];   /* the worker's */
     handle_t proc = HANDLE_INVALID, sub = HANDLE_INVALID;
     p->done = true;   /* one start, whatever comes of it */
-    p->raised = raised(p, image, image_len);
+    enum dp_start how = start_kind(p, image, image_len);
+    p->raised = how != DP_START_PLAIN;
     for (uint32_t i = 0; i < image_len; i++)
         jam_handle_close(image[i]);
     status_t st = kind_ok(job, OBJ_JOB, RIGHT_WRITE) && kind_ok(signals, OBJ_CHANNEL, 0) &&
                   split_strings(argc, strings, strings_len, argv, envp) ? OK : ERR_INVALID_ARGS;
+    if (st == OK && how == DP_START_REFUSED) {
+        printf("init: exec: %s asks for more than its caller was approved for, and its list "
+               "doesn't say `deputy`: not started raised\n", p->path);
+        st = ERR_ACCESS_DENIED;
+    }
     if (st == OK) {
         st = start_child(p, argv, argc, envp, job, signals, &proc, &sub);
         signals = HANDLE_INVALID;   /* spawn's, or closed there */

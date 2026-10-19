@@ -41,7 +41,9 @@ PORT_ENTRIES = {"recipe", "patches", "OVERRIDES", "override", "wants", "build.sh
                 "test", "LICENSE"}
 # What `allow` refuses a program on /data (user/services/shell/sh_allow.c),
 # on top of what tools/checkwants.py refuses any program outside
-# user/services/ and user/tests/: a package can't ask for them.
+# user/services/ and user/tests/: a package can't ask for them. (The ESP
+# writable, `mount /esp rw` and `mount * rw`, the C list's last two, is
+# checkwants's own rule: refused for every program outside them.)
 PACKAGE_REFUSED = {"svc devmgr", "right debug"}
 
 
