@@ -135,8 +135,8 @@ bool t_audio_out_args(void)
 
 /* ---- the streams ------------------------------------------------------------------ */
 
-/* Four streams of the program's opener, and a fifth refused; a closed one
- * gives its place back. */
+/* Four streams of the program's opener, and a fifth refused there but
+ * taken on an opener of our own; a closed one gives its place back. */
 bool t_audio_out_slots(void)
 {
     struct audio_out s[5];
@@ -147,6 +147,13 @@ bool t_audio_out_slots(void)
     for (unsigned i = 1; i < 4; i++)
         CHECK_ST(audio_open_fmt(&s[i], i % 2 ? 44100 : 48000, 1 + i % 2, AUDIO_F32, "ut-slot"), OK);
     CHECK_EQ(audio_open_fmt(&s[4], 48000, 2, AUDIO_S16, "ut-slot"), ERR_NO_RESOURCES);
+    /* A fifth on an opener of our own (audio_open_on), which counts its own. */
+    handle_t own = HANDLE_INVALID;
+    CHECK_ST(svc_open(SVC_AUDIO, &own), OK);
+    CHECK_ST(audio_open_on(&s[4], own, 48000, 2, AUDIO_F32, "ut-slot"), OK);
+    audio_close(&s[4]);
+    jam_handle_close(own);
+    CHECK_EQ(audio_open_on(&s[4], HANDLE_INVALID, 48000, 2, AUDIO_S16, "ut-slot"), ERR_NOT_FOUND);
     audio_close(&s[2]);
     CHECK_ST(audio_open_fmt(&s[2], 48000, 2, AUDIO_F32, "ut-slot"), OK);
     CHECK_EQ(audio_open_fmt(&s[4], 48000, 2, AUDIO_S16, "ut-slot"), ERR_NO_RESOURCES);

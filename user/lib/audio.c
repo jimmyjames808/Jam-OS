@@ -321,13 +321,19 @@ void audio_s16_from_f32(int16_t *out, const float *in, size_t samples, uint32_t 
 int audio_open_fmt(struct audio_out *a, unsigned rate, unsigned channels, enum audio_format fmt,
                    const char *name)
 {
+    /* HANDLE_INVALID: /svc/audio isn't ours (not on our list) */
+    return audio_open_on(a, svc_get(SVC_AUDIO), rate, channels, fmt, name);
+}
+
+int audio_open_on(struct audio_out *a, handle_t svc, unsigned rate, unsigned channels,
+                  enum audio_format fmt, const char *name)
+{
     memset(a, 0, sizeof(*a));
     if (rate < AUDIO_RATE_MIN || rate > AUDIO_RATE_MAX || (channels != 1 && channels != 2) ||
         (fmt != AUDIO_S16 && fmt != AUDIO_F32))
         return ERR_NOT_SUPPORTED;
-    handle_t svc = svc_get(SVC_AUDIO);
     if (svc == HANDLE_INVALID)
-        return ERR_NOT_FOUND;   /* /svc/audio isn't ours (not on our list) */
+        return ERR_NOT_FOUND;
     status_t st = mixer_open(svc, name, now() + OPEN_WAIT, &a->s);
     if (st != OK)
         return st;
