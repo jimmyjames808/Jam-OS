@@ -20,7 +20,20 @@
 # content_shell: each named so a stale link of it is redone, below), `keep=N` (ninja goes
 # on past N failures: -k) or
 # `stop=gen` (GN only, then stop).
-build() {
+#
+# plan (`ports.py build --plan`, run by tools/cr/build.sh start to size its
+# claim in the machine's budget): everything build does up to ninja, then
+# `ninja -n` to count what the build would do, and no build. GN is run
+# first if args.gn changed (ninja -n only says "Regenerating ninja files"
+# when it must, and would stop there). The counts are written to
+# $kept/plan.txt: `steps` (ninja's total), `compile` (CXX, CC, ASM, Rust),
+# `link` (LINK, SOLINK), `stamp` and `other`, or `unknown 1` when ninja
+# still asked for GN after a run of it. A program linked with other libraries
+# than the sysroot's now is put aside while ninja counts and put back, so its
+# link is among the steps and a plan changes no program (nor links.now, nor
+# a <program>.links); the kept tree's source, sysroot and tools are brought
+# up to date, as a build would.
+prepare() {
     top=$portdir/../..
     clang=$(dirname "$JAMOS_CLANG")
     node=$("$top/tools/cr/toolchain.sh" --dir node)/node-linux-x64
@@ -59,11 +72,12 @@ build() {
         echo "pkg_config = \"$PKG_CONFIG\""
     } > "$TMPDIR/args.gn"
     # Written only when it changes: a new args.gn makes ninja run GN again.
-    cmp -s "$TMPDIR/args.gn" "$out/args.gn" || cp "$TMPDIR/args.gn" "$out/args.gn"
-    if [ ! -f "$out/build.ninja" ] || [ "$stop" = gen ]; then
+    args_changed=0
+    cmp -s "$TMPDIR/args.gn" "$out/args.gn" || { cp "$TMPDIR/args.gn" "$out/args.gn"; args_changed=1; }
+    if [ ! -f "$out/build.ninja" ] || [ "$stop" = gen ] || { [ -n "${planning:-}" ] && [ "$args_changed" = 1 ]; }; then
         buildtools/linux64/gn gen "$out" || exit 1
     fi
-    if [ "$stop" = gen ]; then
+    if [ "$stop" = gen ] && [ -z "${planning:-}" ]; then
         echo "chromium: GN only ($kept/build.conf says stop=gen)"
         exit 3
     fi
@@ -76,16 +90,52 @@ build() {
                 "$JAMOS_SYSROOT"/lib/*.a "$JAMOS_SYSROOT"/lib/*.o | sha256sum | cut -c1-16)
     # This build's, for tools/cr/build.sh's summary: a program whose
     # <target>.links differs was linked by an earlier build (not a target).
-    echo "$links" > "$out/links.now"
+    # A plan changes none of this (the stale programs stay where they are).
+    stale=
     for t in $targets; do
-        if [ "$(cat "$out/$t.links" 2> /dev/null)" != "$links" ]; then
+        [ "$(cat "$out/$t.links" 2> /dev/null)" = "$links" ] || stale="$stale $t"
+    done
+    if [ -z "${planning:-}" ]; then
+        echo "$links" > "$out/links.now"
+        for t in $stale; do
             rm -f "$out/$t"
             echo "$links" > "$out/$t.links"
-        fi
-    done
+        done
+    fi
     ulimit -n 4096 2> /dev/null || true   # the big links open many files
+}
+
+build() {
+    prepare
     # shellcheck disable=SC2086 # the targets are words
     ninja -C "$out" -j "$jobs" -k "$keep" $targets
+}
+
+plan() {
+    planning=1
+    prepare
+    rm -f "$kept/plan.txt"
+    # The stale programs are put aside while ninja counts (a missing output is a
+    # step, their link) and put back, so a plan that is not followed by a build
+    # leaves them as they were.
+    for t in $stale; do
+        if [ -e "$out/$t" ]; then mv "$out/$t" "$out/$t.planhold"; fi
+    done
+    trap 'for t in $stale; do if [ -e "$out/$t.planhold" ]; then mv "$out/$t.planhold" "$out/$t"; fi; done' EXIT
+    pass=1
+    while :; do
+        # shellcheck disable=SC2086 # the targets are words
+        ninja -C "$out" -n $targets > "$TMPDIR/plan.ninja"
+        grep -q 'Regenerating ninja files' "$TMPDIR/plan.ninja" || break
+        if [ "$pass" = 2 ]; then   # GN ran and ninja wants it again: no count to give
+            echo "unknown 1" > "$kept/plan.txt"
+            return 0
+        fi
+        buildtools/linux64/gn gen "$out" || exit 1
+        pass=2
+    done
+    awk -f "$top/tools/cr/ninja-count.awk" "$TMPDIR/plan.ninja" > "$kept/plan.txt.new"
+    mv "$kept/plan.txt.new" "$kept/plan.txt"
 }
 
 # link <target> <path>: path made a symbolic link to target (a file or

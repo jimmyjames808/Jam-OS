@@ -778,7 +778,8 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # an offset, each image checked by extcheck (tools/jamext-test.sh), the
 # stick's images (ext /data by default, FAT when asked, the flashing tool's
 # data step: tools/image-test.sh), and the syscall scan (tools/cr/syscall-scan.py) passes a clean program and
-# catches a `syscall` of a program's own.
+# catches a `syscall` of a program's own, and the Chromium build's claim is sized to the work
+# (tools/cr/build-test.sh, faked ninja counts).
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
@@ -808,6 +809,7 @@ check: all
 	python3 tools/ports.py vectors
 	python3 tools/ports-server.py --self-test
 	CROSS=$(CROSS) python3 tools/cr/syscall-scan.py --selftest
+	bash tools/cr/build-test.sh
 	python3 tools/cr/sparsecopy.py --selftest
 	@for d in $$(cd third_party && ls -d */ | tr -d /); do \
 	    case " $(THIRD_PARTY_NOTICED) " in *" $$d "*) ;; \
