@@ -768,6 +768,8 @@ long lx_inotify_add_watch(long fd, long pathname, long mask_l, long d, long e, l
         p->nofollow = (mask & IN_DONT_FOLLOW) != 0;
         r = add_path(desc, p, mask);
     }
+    if (p)
+        path_done(p);   /* path_get's, refused or not (DL0) */
     jam_free(p);
     fd_put(desc);
     return r;
