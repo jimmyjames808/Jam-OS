@@ -1,0 +1,114 @@
+<!doctype html>
+<!-- cr-test.sh's sound page (docs/CR-PLAN.md section 11, CA1): Chromium's
+     sound through Jam OS's mixer, captured by QEMU (tools/cr/sound-check.py
+     reads the capture). In order, with silence between:
+       1. Web Audio: a pattern of 4 s of 16-bit values (xorshift32, the
+          check makes the same), stereo at 48 kHz, through an
+          AudioBufferSourceNode: the capture must hold its frames exactly,
+          in order, none twice; 1.5 s in, the context is suspended for 1 s
+          (Chromium stops the output stream: what was queued is dropped)
+          and resumed.
+       2. Web Audio: an OscillatorNode, 440 Hz at a quarter of full scale
+          for exactly 1.5 s; when it is heard, by the context's output
+          timestamp, is the start latency.
+       3. <audio>: tone.webm (Opus, 1000 Hz at a quarter of full scale,
+          3 s), paused 1.2 s in for 1 s, then played to its end.
+     Each step says a console line ("crsnd: ..."), which the browser logs. -->
+<title>Jam OS sound</title>
+<body style="font: 24px sans-serif">
+<p id="say">sound</p>
+<audio id="a" preload="auto"></audio>
+<script>
+const say = (s) => {
+  console.log("crsnd: " + s);
+  document.getElementById("say").textContent = s;
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RATE = 48000, FRAMES = 4 * RATE;
+
+// The pattern: frame k, channel c is the (2k + c)th value of xorshift32
+// from 0x9e3779b9, (x >>> 17) - 16384 (never 0: 0 becomes 1), over 32768.
+function pattern(buf) {
+  const l = buf.getChannelData(0), r = buf.getChannelData(1);
+  let x = 0x9e3779b9;
+  const next = () => {
+    x ^= x << 13; x >>>= 0;
+    x ^= x >>> 17;
+    x ^= x << 5; x >>>= 0;
+    const v = (x >>> 17) - 16384;
+    return (v === 0 ? 1 : v) / 32768;
+  };
+  for (let k = 0; k < FRAMES; k++) {
+    l[k] = next();
+    r[k] = next();
+  }
+}
+
+async function main() {
+  const ctx = new AudioContext();
+  await sleep(1000);
+  say("context " + ctx.sampleRate + " Hz " + ctx.state + " base " +
+      Math.round(ctx.baseLatency * 1000) + " ms output " +
+      Math.round(ctx.outputLatency * 1000) + " ms");
+
+  // 1. the pattern, suspended and resumed in the middle
+  const buf = ctx.createBuffer(2, FRAMES, RATE);
+  pattern(buf);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  const ended = new Promise((r) => (src.onended = r));
+  src.start(ctx.currentTime + 0.05);
+  await sleep(1500);
+  await ctx.suspend();
+  say("pattern suspended at " + ctx.currentTime.toFixed(3));
+  await sleep(1000);
+  await ctx.resume();
+  say("pattern resumed");
+  await ended;
+  say("pattern ended");
+  await sleep(700);
+
+  // 2. the oscillator, and when it is heard
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.frequency.value = 440;
+  gain.gain.value = 0.25;
+  osc.connect(gain).connect(ctx.destination);
+  const asked = performance.now();
+  const at = ctx.currentTime;
+  osc.start(at);
+  osc.stop(at + 1.5);
+  let latency = -1;
+  for (let i = 0; i < 400 && latency < 0; i++) {
+    const ts = ctx.getOutputTimestamp();
+    if (ts.contextTime >= at)
+      latency = ts.performanceTime - (ts.contextTime - at) * 1000 - asked;
+    else
+      await sleep(5);
+  }
+  say("osc latency " + Math.round(latency) + " ms output " +
+      Math.round(ctx.outputLatency * 1000) + " ms");
+  await sleep(2200);
+
+  // 3. <audio>, paused and played again
+  const a = document.getElementById("a");
+  a.src = "tone.webm";
+  const done = new Promise((r) => (a.onended = r));
+  await a.play();
+  say("audio playing");
+  await sleep(1200);
+  a.pause();
+  say("audio paused at " + a.currentTime.toFixed(3));
+  await sleep(1000);
+  await a.play();
+  say("audio playing again");
+  await done;
+  say("audio ended");
+  await sleep(700);
+  say("done");
+}
+
+main().catch((e) => say("failed: " + e));
+</script>
+</body>

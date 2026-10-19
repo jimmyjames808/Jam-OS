@@ -133,6 +133,19 @@
 #           SwiftShader's renderer, the pixels; none the second time), `ps`
 #           (one child more marked [jit] the first time: the GPU process) and
 #           the screenshots (the band where the canvas is); about 2 minutes
+#   sound   content_shell (CA1) as multi, its sound through Jam OS's mixer
+#           (ports/chromium's patch 0916: the audio service, a utility
+#           process, on libjam's <audio.h>) into QEMU's intel-hda, whose
+#           output goes to a WAV file (<outdir>/sound/run/sound.wav): it
+#           loads tools/cr/sound.html, which plays a Web Audio pattern
+#           (suspended and resumed half way), a 440 Hz OscillatorNode and
+#           an <audio> file (Opus in WebM, 1000 Hz, made by ffmpeg here;
+#           paused and played again); tools/cr/sound-check.py finds the
+#           pattern's frames exactly, in order and none twice, the tones'
+#           frequency, level and length, the oscillator heard within
+#           600 ms, the back end's streams in a process that isn't the
+#           browser's and the mixer's underruns (CR_SOUND_GAPS,
+#           CR_SOUND_UNDERRUNS); about 2 minutes
 #   bench   content_shell as jit, running parts of JetStream 2.2 and
 #           Speedometer 3.1 (tools/cr/toolchain.sh fetches them, pinned;
 #           tools/cr/bench-server.py serves them with a reporter that says
@@ -696,6 +709,42 @@ case_webgl() {
     sed 's/^/cr-test: /' "$dir/check.out"
 }
 
+# sound: QEMU's intel-hda writes what the mixer plays into a WAV file (as
+# tools/audio-api-test.sh); the page's <audio> file is made here by
+# ffmpeg (Opus in WebM, 1000 Hz at a quarter of full scale, 3 s: lavfi's
+# sine is an eighth, and the pan makes two equal channels, where -ac 2
+# would mix them 3 dB down).
+case_sound() {
+    dir=$out/sound
+    rm -rf "$dir"
+    mkdir -p "$dir/web" "$dir/run"
+    if ! ffmpeg -nostdin -loglevel error -f lavfi -i "sine=frequency=1000:sample_rate=48000:duration=3" \
+         -af "volume=2,pan=stereo|c0=c0|c1=c0" -c:a libopus -b:a 160k "$dir/web/tone.webm" \
+         > "$dir/ffmpeg.log" 2>&1; then
+        echo "FAIL (no tone.webm: ffmpeg with libopus, see $dir/ffmpeg.log)" > "$dir/result"
+        return
+    fi
+    wav=$dir/run/sound.wav
+    QEMU_EXTRA="${QEMU_EXTRA:-} -audiodev wav,id=snd0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16 \
+-device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0,mixer=off -trace hda_audio_overrun"
+    export QEMU_EXTRA
+    shell_run "$dir" tools/cr/sound.html tools/cr/sound.txt sound "${CR_MULTI_MEM:-6G}" 600
+    qrc=$?
+    unset QEMU_EXTRA
+    [ $qrc = 2 ] && [ -f "$dir/result" ] && return
+    if [ $qrc -ne 0 ]; then
+        grep -a -o 'crsnd: [^"]*' "$dir/run/sound.log" 2> /dev/null | uniq | sed 's/^/cr-test: page said: /'
+        echo "FAIL (the script: $(grep 'serial-feed: .*: no ' "$dir/qemu.out" | tail -1 | sed 's/^serial-feed: //'), see $dir/run/)" > "$dir/result"
+        return
+    fi
+    if python3 tools/cr/sound-check.py "$wav" "$dir/run/sound.log" "$dir/qemu.out" > "$dir/check.out" 2>&1; then
+        echo PASS > "$dir/result"
+    else
+        echo "FAIL (the checks, see $dir/check.out)" > "$dir/result"
+    fi
+    sed 's/^/cr-test: /' "$dir/check.out"
+}
+
 # bench: the benchmarks, served with the reporter (bench-server.py).
 serve_bench() {
     python3 tools/cr/bench-server.py "$bench_js" "$bench_sp" "$1" "$dir/bench.log"
@@ -761,8 +810,9 @@ for c in "$@"; do
     multi) case_multi ;;
     jit) case_jit ;;
     webgl) case_webgl ;;
+    sound) case_sound ;;
     bench) case_bench ;;
-    *) echo "cr-test: no case $c (hello, rust, base, shell-wl, headless, fonts, multi, jit, webgl, bench)" >&2
+    *) echo "cr-test: no case $c (hello, rust, base, shell-wl, headless, fonts, multi, jit, webgl, sound, bench)" >&2
        mkdir -p "$out/$c"
        echo "FAIL (no such case)" > "$out/$c/result" ;;
     esac
