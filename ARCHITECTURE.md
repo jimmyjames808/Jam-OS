@@ -1968,9 +1968,9 @@ restarts:
   `/data`, approval or not: a program there could pose as one of the
   system's services on the network (a web or a time server, the ssh
   server) or take its port before the service starts, and nothing the
-  owner reads at the prompt would make that plain. bin/serve alone has
-  it, so `serve <file> 80` works; a program with `svc net listen` is
-  still refused port 80.
+  owner reads at the prompt would make that plain. bin/serve and the SSH
+  server (bin/sshd, port 22) alone have it, so `serve <file> 80` works; a
+  program with `svc net listen` is still refused port 80.
 
 **The address.** `net.address = <address>/<prefix> [<gateway> [<dns>
 [<dns>]]]` in `/data/etc/settings` is a static address, given to netstack
@@ -2124,6 +2124,7 @@ a `make flash`.
 | sntp | `/svc/net-sys`, `/svc/dns-sys`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
 | bin/fetch | `/svc/net`, `/svc/dns`, the file (or pipe) its body goes to, the shell's stop channel | yes: HTTP answers (`<http.h>`) |
 | bin/serve | `/svc/net` and `/svc/net-low`; the files the shell hands it, read-only | yes: HTTP requests (`<http.h>`) |
+| bin/sshd | `/svc/net` and `/svc/net-low` (port 22), `/svc/session`; `/data` read-only through a view that shows `etc/ssh` and `etc/authorized_keys` and nothing else of `etc` | yes: tinyssh's key exchange and packets, in a process of its own for each connection |
 | bin/speed | `/svc/net` and `/svc/net-listen`, `/svc/dns`, the shell's stop channel | its own 16-byte hello and report |
 | init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's), volumes' ESP channel, `volesp` (`update`'s stick write) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
 
