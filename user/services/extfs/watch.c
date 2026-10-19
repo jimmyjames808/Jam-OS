@@ -36,7 +36,9 @@
  * or a death between the give and its put) is closed then: its client sees the mount's
  * watches end (libc's IN_UNMOUNT and IN_IGNORED) and asks again. A fresh
  * start (the state given up) closes every channel the same way, and so
- * does the service's end (watch_stop), each bell rung first. The queued
+ * does the service's end (watch_stop), each bell rung first; a dead
+ * instance its supervisor gives up has them closed by its keeper, which
+ * rings each kept bell (keepch.put's ring, keep_bell). The queued
  * events are the instance's memory, as are the open files' directories
  * and names (files.c): after a restart a file opened before it makes no
  * events in its directory's watch. */
@@ -601,14 +603,16 @@ static void ctx_of(unsigned i)
 
 /* Channel i's bell given: kept with the channel (one slot), if the keeper
  * can hold it (a keeper takes only what it can duplicate and hand on). If
- * not, the slot keeps the channel alone, and a restart closes it. */
+ * not, the slot keeps the channel alone, and a restart closes it. The
+ * keeper rings the bell if it closes the slot itself (it gave a dead
+ * instance up: IR's 7), as end() does here. */
 static void keep_bell(unsigned i)
 {
     const rights_t need = RIGHT_DUPLICATE | RIGHT_TRANSFER;
     const handle_t hs[2] = { w.chans[i].ch, w.chans[i].bell };
     struct handle_info info;
     if (jam_handle_info(hs[1], &info) == OK && (info.rights & need) == need)
-        (void)kept_put(XF_KEEP_WATCH(i), hs, 2);
+        (void)kept_put_ring(XF_KEEP_WATCH(i), FSWATCH_BELL, hs, 2);
 }
 
 /* Every watcher channel its client has closed, ended now: a close made

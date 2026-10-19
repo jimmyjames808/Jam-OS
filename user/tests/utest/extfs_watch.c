@@ -57,6 +57,8 @@
  *                       channel with its bell rung
  *   extfs_restart_reach (IR's 1) extfs ended between a rename's commit and
  *                       its events: the successor runs its reach check
+ *   extfs_restart_giveup (IR's 7) extfs killed and given up: the keeper
+ *                       closes the watcher channel and rings its bell
  *
  * Each disk is saved for Linux's e2fsck (tools/extfs-svc-test.sh). The
  * second process's mode is xwatch-<what>. */
@@ -1173,5 +1175,30 @@ bool t_extfs_restart_reach(void)
     unwatcher(&s);
     jam_handle_close(sub);
     CHECK(extfs_save(&xd, "restart-reach"));
+    return ramdisk_destroy(&xd);
+}
+
+/* IR's 7: a dead extfs its supervisor gives up (as volumes does past its
+ * restart limit) has its kept channels closed by the keeper, which rings
+ * each kept bell (keepch.put's ring): a client waiting on its bell alone
+ * (poll, epoll) wakes to find its channel closed. */
+bool t_extfs_restart_giveup(void)
+{
+    struct wat a;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_sup_start(&xd, NULL, 0));
+    struct fatrun *f = extfs_sup_run();
+    CHECK_ST(t_mkdir(f, "/d"), OK);
+    CHECK(watcher(f->fs, &a));
+    uint32_t id = add(&a, "/d", ALL);
+    CHECK(id);
+    CHECK_ST(t_mkdir(f, "/d/x"), OK);
+    EXPECT(&a, "before", { id, IN(CREATE) | IN(ISDIR), "x" });
+    CHECK(!rung(&a));
+    CHECK(extfs_sup_give_up(dl()));
+    CHECK_ST(jam_object_wait_one(a.bell, FSWATCH_BELL, now() + 5 * NS_PER_S, NULL), OK);
+    CHECK(closed(&a));
+    CHECK(extfs_sup_stop());
+    unwatcher(&a);
     return ramdisk_destroy(&xd);
 }

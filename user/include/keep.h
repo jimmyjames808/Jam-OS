@@ -43,6 +43,14 @@
  * than KEEP_SLOT_HANDLES, a txid) is refused by the generated server, its
  * handles closed, and counted as refused too.
  *
+ * **A ring** (keep_put_ring): a slot whose second handle is an event a
+ * client waits on (a watcher channel's bell) may ask the keeper to set
+ * bits of SIG_USER_ALL on it when the keeper closes the slot itself (it
+ * gives the service up, or can't hand the slot over), after the slot's
+ * other handles are closed: the client wakes to find its channel closed.
+ * A drop, or a put replacing the slot, rings nothing: the service ends
+ * its channels itself.
+ *
  * Telling the type apart: handle_info names it (and the handle's rights),
  * whatever the handle's other rights and state. utest's keep_refusals
  * pins this.
@@ -69,6 +77,12 @@
  * refuses what it would have kept, fail closed). Nothing is sent on an
  * error. */
 status_t keep_put(handle_t keep, uint32_t slot, const handle_t *hs, unsigned n);
+/* keep_put with a ring: bits of SIG_USER_ALL the keeper sets on hs[1] (an
+ * event with RIGHT_SIGNAL, n at least 2) when it closes the slot itself.
+ * ERR_INVALID_ARGS as well for a ring that can't be (the keeper would
+ * refuse the put). */
+status_t keep_put_ring(handle_t keep, uint32_t slot, signals_t ring, const handle_t *hs,
+                       unsigned n);
 /* The keeper forgets slot (closes its duplicates). Call it after the
  * state has forgotten it. Errors as channel_write's. */
 status_t keep_drop(handle_t keep, uint32_t slot);
@@ -100,6 +114,7 @@ status_t keep_restore(handle_t keep, uint64_t deadline_ns, keep_take_fn take, vo
 struct keep_slot {
     uint32_t id;                       /* the service's slot number */
     uint32_t n;                        /* handles in h[]; 0: this entry is free */
+    uint32_t ring;                     /* set on h[1] when we close it ourselves; 0: none */
     handle_t h[KEEP_SLOT_HANDLES];     /* our duplicates */
 };
 
@@ -115,6 +130,7 @@ struct keeper {
     uint32_t         refused;     /* messages refused (handles closed) */
     uint32_t         handled;     /* messages the protocol's handlers ran for (put, drop) */
     uint32_t         lost;        /* slots dropped because they couldn't be restored */
+    uint32_t         rung;        /* rings sounded (a slot closed by us with one) */
 };
 
 /* An empty keeper with no channel. */
@@ -143,10 +159,12 @@ bool     keeper_drain_upto(struct keeper *k, unsigned max);
 /* Hand the successor duplicates of every slot on k->ch (restore
  * batches, then done), after keeper_attach and after the service end
  * was sent to it (the kernel won't send a channel end whose queue holds
- * channel ends). A slot whose handles can't be sent is closed and counted
- * as lost, not retried. ERR_BAD_STATE: no channel; other errors (out of
- * message bytes): the successor must start fresh (keeper_release). */
+ * channel ends). A slot whose handles can't be sent is closed (its ring
+ * sounded) and counted as lost, not retried. ERR_BAD_STATE: no channel;
+ * other errors (out of message bytes): the successor must start fresh
+ * (keeper_release). */
 status_t keeper_restore(struct keeper *k);
-/* Close every slot and the channel: the service was given up on, retired
- * or stopped in order; its clients see ERR_PEER_CLOSED. */
+/* Close every slot (each ring sounded) and the channel: the service was
+ * given up on, retired or stopped in order; its clients see
+ * ERR_PEER_CLOSED. */
 void     keeper_release(struct keeper *k);

@@ -28,7 +28,13 @@ static void close_all(const handle_t *hs, unsigned n)
 
 status_t keep_put(handle_t keep, uint32_t slot, const handle_t *hs, unsigned n)
 {
-    if (!hs || n == 0 || n > KEEP_SLOT_HANDLES)
+    return keep_put_ring(keep, slot, 0, hs, n);
+}
+
+status_t keep_put_ring(handle_t keep, uint32_t slot, signals_t ring, const handle_t *hs,
+                       unsigned n)
+{
+    if (!hs || n == 0 || n > KEEP_SLOT_HANDLES || (ring & ~SIG_USER_ALL) || (ring && n < 2))
         return ERR_INVALID_ARGS;
     handle_t d[KEEP_SLOT_HANDLES];
     unsigned made = 0;
@@ -45,7 +51,7 @@ status_t keep_put(handle_t keep, uint32_t slot, const handle_t *hs, unsigned n)
     /* The duplicates are gone whatever the write's status (a send's handles
      * are always moved): never closed here again, as their values may
      * already be another thread's new handles. */
-    return keepch_put(keep, slot, 0, d, n);
+    return keepch_put(keep, slot, ring, d, n);
 }
 
 status_t keep_drop(handle_t keep, uint32_t slot)
@@ -202,13 +208,26 @@ static struct keep_slot *free_slot(struct keeper *k)
     return NULL;
 }
 
-/* Close a slot's handles and free its entry. */
-static void forget(struct keeper *k, struct keep_slot *s)
+/* Close a slot's handles and free its entry. `ours`: we close it without
+ * being told to (the service given up, the slot lost), so its ring sounds:
+ * on h[1] once the others are closed, so the client it wakes finds its
+ * channel closed. */
+static void forget(struct keeper *k, struct keep_slot *s, bool ours)
 {
-    close_all(s->h, s->n);
+    if (ours && s->ring) {
+        jam_handle_close(s->h[0]);
+        close_all(&s->h[2], s->n - 2);
+        /* RIGHT_SIGNAL and an event: put_slot checked */
+        if (jam_event_signal(s->h[1], 0, s->ring) == OK)
+            k->rung++;
+        jam_handle_close(s->h[1]);
+    } else {
+        close_all(s->h, s->n);
+    }
     k->nhandles -= s->n;
     k->nslots--;
     s->n = 0;
+    s->ring = 0;
 }
 
 /* A channel, VMO or event (handle_info), and one we can duplicate: a
@@ -222,13 +241,28 @@ static bool keepable(handle_t h)
            (i.rights & RIGHT_DUPLICATE);
 }
 
-/* Keep hs[0..n) as slot id (replacing what it held), or say why not. On
- * success the handles are the keeper's. */
-static const char *put_slot(struct keeper *k, uint32_t id, const handle_t *hs, unsigned n)
+/* A ring we can sound: user bits, on a second handle that is an event we
+ * may signal. */
+static bool ringable(signals_t ring, const handle_t *hs, unsigned n)
+{
+    struct handle_info i;
+    if (!ring)
+        return true;
+    if ((ring & ~SIG_USER_ALL) || n < 2 || jam_handle_info(hs[1], &i) != OK)
+        return false;
+    return i.type == OBJ_EVENT && (i.rights & RIGHT_SIGNAL);
+}
+
+/* Keep hs[0..n) as slot id (replacing what it held) with its ring, or say
+ * why not. On success the handles are the keeper's. */
+static const char *put_slot(struct keeper *k, uint32_t id, signals_t ring, const handle_t *hs,
+                            unsigned n)
 {
     for (unsigned i = 0; i < n; i++)
         if (!keepable(hs[i]))
             return "a handle of a kind it doesn't keep";
+    if (!ringable(ring, hs, n))
+        return "a ring it can't sound";
     struct keep_slot *s = find_slot(k, id);
     unsigned old = s ? s->n : 0;
     if (!s && k->nslots >= KEEP_MAX_SLOTS)
@@ -236,12 +270,13 @@ static const char *put_slot(struct keeper *k, uint32_t id, const handle_t *hs, u
     if (k->nhandles - old + n > KEEP_MAX_HANDLES)
         return "too many handles";
     if (s) {
-        forget(k, s);
+        forget(k, s, false);
         k->replaced++;
     } else {
         s = free_slot(k);   /* there is one: nslots < KEEP_MAX_SLOTS */
     }
     s->id = id;
+    s->ring = ring;
     s->n = n;
     for (unsigned i = 0; i < n; i++)
         s->h[i] = hs[i];
@@ -265,9 +300,8 @@ static void refuse(struct keeper *k, const char *why, const handle_t *hs, unsign
 static void on_put(void *ctx, uint32_t slot, uint32_t ring, const handle_t *hs, uint32_t n)
 {
     struct keeper *k = ctx;
-    (void)ring;
     k->handled++;
-    const char *why = n < 1 ? "a put of no handles" : put_slot(k, slot, hs, n);
+    const char *why = n < 1 ? "a put of no handles" : put_slot(k, slot, ring, hs, n);
     if (why)
         refuse(k, why, hs, n);
 }
@@ -279,7 +313,7 @@ static void on_drop(void *ctx, uint32_t slot)
     /* A drop of a slot we never kept (its put was refused) is no error. */
     struct keep_slot *s = find_slot(k, slot);
     if (s) {
-        forget(k, s);
+        forget(k, s, false);
         k->drops++;
     }
 }
@@ -390,7 +424,7 @@ static status_t flush(struct keeper *k, struct batch *b, unsigned n)
         if (st == ERR_ACCESS_DENIED || st == ERR_NOT_SUPPORTED || st == ERR_WRONG_TYPE) {
             printf("keep: slot %u can't be handed over (%s): dropped\n", b->s[i]->id,
                    status_str(st));
-            forget(k, b->s[i]);
+            forget(k, b->s[i], true);
             k->lost++;
         } else if (st != OK) {
             return st;
@@ -431,7 +465,7 @@ void keeper_release(struct keeper *k)
 {
     for (unsigned i = 0; i < KEEP_MAX_SLOTS; i++)
         if (k->slot[i].n)
-            forget(k, &k->slot[i]);
+            forget(k, &k->slot[i], true);
     if (k->ch != HANDLE_INVALID)
         jam_handle_close(k->ch);
     k->ch = HANDLE_INVALID;
