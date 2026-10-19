@@ -325,6 +325,11 @@ const char *fs_format_arg(const struct vol *b);
  * deliberate kill, FAT_ARG_CRASHED after any other end; NULL for a first
  * start (fat counts only crashes against the request in progress). */
 const char *fs_end_arg(const struct vol *b);
+/* FAT_ARG_ESP_TYPE for fat on a partition of the ESP's type that isn't
+ * the boot disk's (another stick's ESP, the drive's when Jam OS runs from
+ * a stick): every view of it is read-only (<fatsvc.h>). NULL for every
+ * other. */
+const char *fs_esp_arg(const struct vol *b);
 /* volumes.remount and volesp, before their task: can b (running) be
  * made writable or read-only? OK: already that way; IDL_LATER: it must
  * restart (fs_restart, in a task); ERR_BAD_STATE: its service isn't

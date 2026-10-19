@@ -397,7 +397,8 @@ status_t dp_table_read(const char *hash_hex, uint64_t size, handle_t *table)
  * among them): it holds what the next boot runs (the kernel, bootfs with
  * the update and ports keys in it, Limine's menu), and nothing checks
  * those files at boot, so a program could make the next boot its own
- * (docs/M13.7-REVIEW.md, PR1). */
+ * (docs/M13.7-REVIEW.md, PR1). Another disk's ESP, which `mount /usb* rw`
+ * reaches, fat keeps read-only to every view (<fatsvc.h>, FAT_ARG_ESP_TYPE). */
 static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_VOLUMES, SVC_INIT,
                                        SVC_NET_SYS, SVC_DNS_SYS, SVC_SERVE, SVC_NET_LISTEN_LOW,
                                        SVC_SESSION };

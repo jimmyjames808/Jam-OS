@@ -368,6 +368,20 @@ static bool part_fat(const struct disk *d, unsigned part)
                                            : fat_type(d->type[part]);
 }
 
+/* Is partition `part` of d of the ESP's type (MBR EF, GPT's EFI system
+ * partition)? */
+static bool part_esp(const struct disk *d, unsigned part)
+{
+    return d->scheme == STORAGE_SCHEME_GPT ? !memcmp(d->info[part].type_guid, guid_esp, 16)
+                                           : d->type[part] == TYPE_ESP;
+}
+
+const char *fs_esp_arg(const struct vol *b)
+{
+    const struct disk *d = disk_of(b);
+    return d && b->other && !b->ext && part_esp(d, b->part) ? FAT_ARG_ESP_TYPE : NULL;
+}
+
 static bool part_ext(const struct disk *d, unsigned part)
 {
     return d->scheme == STORAGE_SCHEME_GPT ? ext_guid(d->info[part].type_guid)

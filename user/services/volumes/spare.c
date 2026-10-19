@@ -403,12 +403,14 @@ static status_t promote(struct vol *b)
     }
     char mount[16];
     snprintf(mount, sizeof(mount), "%s", fs_mount_path(b));
-    const char *argv[4] = { b->name, mount };
+    const char *argv[5] = { b->name, mount };
     int argc = 2;
     if (fs_format_arg(b))
         argv[argc++] = fs_format_arg(b);
     if (fs_end_arg(b))   /* how the last instance ended: fat counts only crashes */
         argv[argc++] = fs_end_arg(b);
+    if (fs_esp_arg(b))   /* another computer's boot files: views read-only */
+        argv[argc++] = fs_esp_arg(b);
     struct standby_args a = { .hs = x, .rights = xr, .n = n, .argc = argc,
                               .argv = argv, .kill_ns = b->kill_at ? b->kill_at : b->ended_at };
     handle_t proc, job;

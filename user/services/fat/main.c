@@ -295,6 +295,8 @@ static void words(int argc, char **argv)
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], FAT_ARG_FORMAT))
             vol.may_format = true;
+        else if (!strcmp(argv[i], FAT_ARG_ESP_TYPE))
+            vol.esp_type = true;
         else if (!strcmp(argv[i], FAT_ARG_KILLED) || !strcmp(argv[i], FAT_ARG_CRASHED))
             vol.ended = argv[i];
         else if (!test_word(argv[i]))

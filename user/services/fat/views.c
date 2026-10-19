@@ -4,7 +4,10 @@
  * channel devmgr gave us, with its flags checked first (fs_view_dispatch),
  * one request per wakeup (main.c's loop). A view goes when its client closes it,
  * and every view goes when fat ends: a view never keeps the volume served
- * (main.c ends when the fs channel's clients are gone).
+ * (main.c ends when the fs channel's clients are gone). On another disk's
+ * partition of the ESP's type (FAT_ARG_ESP_TYPE) every view is read-only,
+ * whatever it asks for: a program's list never writes another computer's
+ * boot files.
  *
  * Each slot's flags and generation are in the state (kept->views); its
  * channel, a handle, is here, by the same index. A view's requests are
@@ -16,6 +19,7 @@
  * Each view's channel is put with the keeper (keeper.c) before the fs.view
  * that made it commits, and dropped there once the state has forgotten
  * it, so a successor is handed it back (views_take, views_adopt). */
+#include <fsview.h>
 #include "fat.h"
 
 static handle_t view_ch[FAT_VIEWS];   /* our end of slot i's channel */
@@ -58,6 +62,8 @@ static status_t attach(unsigned i, handle_t ch)
 status_t views_add(void *host, handle_t ch, uint32_t flags)
 {
     (void)host;
+    if (vol.esp_type)
+        flags |= FS_VIEW_READ_ONLY;   /* another computer's boot files (<fatsvc.h>) */
     for (unsigned i = 0; i < FAT_VIEWS; i++) {
         struct fat_view *v = &kept->views[i];
         if (v->used)
