@@ -603,7 +603,7 @@ numbers).
 | **DL0. libc: a path's reference** (built: [DL0 notes](#dl0-notes)) | 4.2's mechanics with no change of behaviour: `struct path`'s `at` (always NULL yet) and `path_done` at every user; `path_get`'s base joined in place (no `base[PATH_BYTES]`); dir.c `id_of`'s buffers on the heap | `user/posix/sys/files.h`, `user/posix/sys/path.c` and every `struct path` user: `user/posix/sys/dir.c`, `user/posix/sys/file.c`, `user/posix/sys/meta.c`, `user/posix/sys/fobj.c`, `user/posix/sys/procfs.c` | none (CBF6 is in); not beside IL2, PR, FF's libc part or LH (same files) | posixtest's default sections and `files`; `tools/shell-tests/posix-files.txt`, posix-fork; shell scripts basic, cmds, commands, files; init run | 0.5 | Sonnet 5.5 |
 | **DP. The protocol and the keeper's room** (built: [DP notes](#dp-notes)) | 2.2 and 2.6's keeper: `fs.opendir`, `rename_at`, `link_at`, `FEAT_DIRS` and the path rule in `fs.idl`; `keepch`'s `MAX_HANDLES` 2048; the keepers' job limits checked and raised | `abi/idl/fs.idl`, `abi/idl/keepch.idl`, the generated headers, `user/lib/keep.c` (its count), the keepers' limits (volumes', init's: *unsure* where), `user/tests/utest/keep.c` (a service past 1,024 handles) | IP merged (`fs.idl`); not beside RL or FF if they edit `fs.idl` | `make check` (genidl); utest `keep`; init run; shell scripts basic, cmds, commands, files and kdump save (an IDL changed) | 0.5 | **Opus** |
 | **DE0. extfs: the region** (built: [DE0 notes](#de0-notes)) | 3.2's first half, no change of behaviour: the walk and the views' checks on a region, `<fsview.h>`'s region questions, readdir's filter and subview roots on it; `phys` kept for `fs.resolve` | `user/services/extfs/walk.c`, `user/services/extfs/fsops.c`, `user/services/extfs/views.c`, `user/services/extfs/extfs.h`, `user/lib/fsview.c` and `user/include/fsview.h` (functions added) | WE2, IE2, RL and FF merged (the queue's order); never beside another extfs track | utest `extfs` (its views and links cases unchanged); `tools/extfs-svc-test.sh`; `tools/layout-test.sh` drive; init run | 1 | **Opus** |
-| **DE1. extfs: directory channels** | 2.1 to 2.4 and 3.1: `opendir`, the table (records, keeper slots, `XF_MADE_*`, port keys and channel ids, the per-process share), the walk from a directory and its `..`, `""`, the epoch and the cut-off, the dispatch's flags, `fs.resolve`'s place by climbing, `rename_at` and `link_at` with the reach check, `view`/`subview`/`watch` refused | a new user/services/extfs/dirs.c, `user/services/extfs/walk.c`, `user/services/extfs/fsops.c`, `user/services/extfs/views.c` (`views_lexical`), `user/services/extfs/request.c`, `user/services/extfs/main.c`, `user/services/extfs/extfs.h`, a new utest file user/tests/utest/extfs_dirs.c, `tools/shell-tests/extfs-svc.txt` (its count) | DE0 and DP merged | utest `extfs_dirs`: 26 levels of 255-byte names made, listed and removed through channels (no path over 300 bytes sent), a 4,095-byte relative path, `..` up to the view's root and `ERR_LINK_OUT` above it, links inside and out; each view flag through a channel (read-only, the guards, `HIDE_KEYS`, `NO_ETC`: `readdir("..")` at the root without `etc`); a channel opened from a channel keeps the narrower view; a subview's channel cut off when its directory moves above the root, a `HIDE_KEYS` one when moved into `etc/ssh`; `rename_at`/`link_at` (another directory, one the view doesn't reach refused, a removed one); 256 channels and the 257th `ERR_NO_RESOURCES`, 64 from one process; `tools/extfs-svc-test.sh`; init run | 1.5 | **Opus** |
+| **DE1. extfs: directory channels** (built: [DE1 notes](#de1-notes)) | 2.1 to 2.4 and 3.1: `opendir`, the table (records, keeper slots, `XF_MADE_*`, port keys and channel ids, the per-process share), the walk from a directory and its `..`, `""`, the epoch and the cut-off, the dispatch's flags, `fs.resolve`'s place by climbing, `rename_at` and `link_at` with the reach check, `view`/`subview`/`watch` refused | a new user/services/extfs/dirs.c, `user/services/extfs/walk.c`, `user/services/extfs/fsops.c`, `user/services/extfs/views.c` (`views_lexical`), `user/services/extfs/request.c`, `user/services/extfs/main.c`, `user/services/extfs/extfs.h`, a new utest file user/tests/utest/extfs_dirs.c, `tools/shell-tests/extfs-svc.txt` (its count) | DE0 and DP merged | utest `extfs_dirs`: 26 levels of 255-byte names made, listed and removed through channels (no path over 300 bytes sent), a 4,095-byte relative path, `..` up to the view's root and `ERR_LINK_OUT` above it, links inside and out; each view flag through a channel (read-only, the guards, `HIDE_KEYS`, `NO_ETC`: `readdir("..")` at the root without `etc`); a channel opened from a channel keeps the narrower view; a subview's channel cut off when its directory moves above the root, a `HIDE_KEYS` one when moved into `etc/ssh`; `rename_at`/`link_at` (another directory, one the view doesn't reach refused, a removed one); 256 channels and the 257th `ERR_NO_RESOURCES`, 64 from one process; `tools/extfs-svc-test.sh`; init run | 1.5 | **Opus** |
 | **DE2. extfs: removal and restarts** | 3.3 and 2.5: a held directory removed (orphan, `..` remembered, `ERR_NOT_FOUND` rules), replaced by a rename, renamed; orphan directories across a restart and at a mount; the records in the state (`XF_STATE_LAYOUT` bumped), adopt, a fresh start closing the channels; test powers that kill extfs between a `rmdir` of a held directory and its answer | user/services/extfs/dirs.c, `user/services/extfs/fsops.c`, `user/services/extfs/files.c` (`files_held` with the directories), `user/services/extfs/request.c` (`defer_drop`), `user/services/extfs/state.c`, `user/services/extfs/adopt.c`, `user/services/extfs/keeper.c`, `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, `user/tests/utest/extfs_restart.c`, user/tests/utest/extfs_dirs.c | DE1 merged; beside DL1 | utest `extfs_dirs`' removal cases (made again at the same name: the channel stays on the removed one; `..` from a removed one and from one whose parent went too; a rename over a held empty directory), `extfs_restart` (killed at each point with channels open, deep ones too: the same directories after; a held removed directory across a restart; a fresh start: the channels closed); `tools/extfs-svc-test.sh`; `tools/extfs-test.sh` basic (e2fsck after a deep tree and held removed directories); `tools/layout-test.sh` drive; init run | 1 | **Opus** |
 | **DL1. libc: descriptions and the *at calls** | 4.1 to 4.3: the channel in `struct dir`, `openat`'s directory by `fs.opendir`, `getdents`, `fstat`, `fsync`, `fstatfs`, the text fallback and the replacement after `ERR_PEER_CLOSED`, every *at call through `at`, `rename_at`/`link_at`, the `path` hook's replacement, files opened relative keeping their directory and name | `user/posix/sys/dir.c`, `user/posix/sys/path.c`, `user/posix/sys/files.h`, `user/posix/sys/file.c`, `user/posix/sys/meta.c`, `user/posix/sys/fobj.c`, `user/posix/sys/fd.h`, `user/posix/sys/spawnfd.c` (the hook), a new posixtest file user/posix/test/dirfd.c (section `dirfd`) and a new tools/shell-tests/posix-dirfd.txt, `user/posix/test/files2.c` (`deep_names`: 26 levels on ext, 15 on FAT) | DL0 and DE1 merged; beside DE2; not beside LH, PR or FF's libc part | posixtest `dirfd` on ext `/data`, on `/tmp`, and with `JAMOS_DATA_FS=fat` (today's answers): DeleteDeep copied (26 levels, `up`, the file, `DeletePathRecursively`'s calls); a rename of an open directory followed; a directory removed and made again; `renameat`/`linkat` across two descriptors; `O_PATH`; `AT_EMPTY_PATH`; 300 directories open (the fallback); posixtest `files`; posix-files; shell scripts basic, cmds, commands, files; init run | 1 | **Opus** |
 | **DL2. libc: the current directory, fork, exec, /proc** | 4.4 to 4.6: the current directory as a description, `chdir`, `fchdir`, `getcwd`, `chdir("..")` out of a removed one; the fork hook and the current directory's fork key; kind 15 and Q4's hand-over; `/proc/self/fd` and `cwd` | `user/posix/sys/path.c`, `user/posix/sys/dir.c`, `user/posix/sys/fd.c` (fork keys), `user/posix/sys/procfs.c`, `user/posix/sys/spawn.c`, `user/include/posixfds.h`, `user/lib/fdmsg.c`, `user/posix/crt/start.c`, `user/tests/utest/posixfds.c`, `user/tests/utest/posixfds_bad.c`, `user/posix/test/forkfd.c`, user/posix/test/dirfd.c | DL1 and DE2 merged; IL1, IL2 and PR merged (kinds, `procfs.c`, `forkfd.c`); not beside TP or LH | utest `posixfds` (kind 15, the version's cases); posixtest `dirfd`'s current-directory cases (deep, renamed, removed: `getcwd`, `..`; `fchdir`; a forked child's descriptors and directory; an exec'd child's; `/proc/self/fd` names), `fork`, `procfs`; `tools/shell-tests/posix-fork.txt`, posix-run; shell scripts basic, cmds, commands, files; kdump save; init run; one ktest pass at 4 CPUs | 1 | **Opus** |
@@ -845,6 +845,102 @@ Built (2026-10-19), 3.2's first half, with no change of behaviour:
   `tools/ssh-test.sh` (the SSH server's views) failed there only in its
   typed-ahead case, both tries, on a loaded PC, and passed alone on this
   branch and on its base.
+
+### DE1 notes
+
+Built (2026-10-19): extfs serves `fs.opendir`, `rename_at` and
+`link_at` (`FS_FEAT_DIRS` in its statfs), in a new
+`user/services/extfs/dirs.c` and walk.c's start, ".." and places:
+- **The table.** `struct xf_dir` per slot in the state (the directory's
+  inode and generation, the view's flags, root and root generation, the
+  opener's pid), `XF_DIRS` 256 per volume and `XF_DIRS_PROC` 64 from one
+  process (the opendir request's writer; a channel handed on still counts
+  for its opener); keeper slots `XF_KEEP_DIR` after the lock owners' (992
+  slots, 1,280 handles of the keeper's 1,024 and 2,048); port keys
+  `XF_KEY_DIR` (bit 58), channel ids `XF_CHAN_DIR` (kind 0 with bit 24:
+  the mount's own channels keep 1 to 3); `XF_MADE_DIR` 6. When the table
+  or the share is full, channels whose clients closed them and whose close
+  the loop hasn't seen yet are let go first (watch.c's reap).
+- **The walk** (3.1): a path that doesn't start with `/` starts at the
+  channel's directory; ".." there is the directory's own ".." entry, up to
+  the view's root (`ERR_LINK_OUT` above it, as from the root); a climb
+  that meets the volume's root first is `ERR_NOT_FOUND`. `phys` and its
+  4,095-byte limit are gone: a walk keeps only `rel`, the names below
+  where it started, which only `fs.resolve` reads; its INSIDE answer on a
+  directory channel names the directory by climbing (each name found by a
+  scan of its parent) and is `ERR_NAME_TOO_LONG` past 4,095 bytes. So
+  DeleteDeep's 26 levels walk through channels; libc's text descriptions
+  keep `PATH_BYTES` until DL1.
+- **Places and the epoch** (3.2). `struct xf_place` (walk.c's
+  `walk_place`): a directory's region, found by climbing its ".." entries
+  to the volume's root and naming the top two (a scan of the root, and of
+  `etc` only when it is under `etc`), kept with the epoch it was found at.
+  The epoch (memory, 1 at each start) goes up at a rename (`rename`,
+  `rename_at`) that moves a directory to another parent, or where either
+  name is in the top two levels, an exchange's second directory too; at
+  the change, before its commit (a request given up costs only climbs).
+  A place is kept for each directory channel's directory and its view's
+  root, each view's root (views.c) and each watcher channel's (watch.c's
+  `struct wchan`): so **DE0's finding 3 is fixed**: a subview whose root
+  is renamed into `etc` is guarded there, one renamed into `etc/ssh` with
+  the keys hidden hides everything (utest `extfs_dirs_views`). A new
+  view's or channel's place is the walk's that reached it.
+- **View roots have no text now**: `struct xf_view`'s and `struct
+  xf_wview`'s `root` (1 KiB each, 160 KiB of the state) went, with
+  `XF_ROOT_MAX` (a subview may be rooted at any depth); `struct xf_ctx`
+  has `root_at` (the root's place) for `root`/`root_len`, and watch.c's
+  record-built context fills it from its `struct wchan` (IR2's file: the
+  struct, `ctx_of`, `watch_new` and `view_ok`, nothing else).
+  `XF_STATE_LAYOUT` 10.
+- **The cut-off** (Q2): a directory channel checks its directory first at
+  every request, a `/` path's too, and `sync` and `statfs` (fs.idl's
+  "every request"): gone, its inode used again, outside its view's root
+  or where its view hides (`fs_region_hides`, any request's rule):
+  `ERR_NOT_FOUND`. Moved back, it works.
+- **`rename_at` and `link_at`**: `to_dir` placed by `dirs_of_id` (an
+  inode of this volume that is a directory, its climb passing the view's
+  root, not where the view hides; else `ERR_NOT_FOUND`), then rename's and
+  link's code with two contexts (`rename_in`, `link_in`).
+- **The dispatch's flags**: `views_lexical` gives a directory channel only
+  `FS_VIEW_READ_ONLY` (a relative `etc` is not the volume's: utest makes
+  `/a/etc` through a guarded channel on `/a`); `fs.view` on one is
+  `ERR_NOT_SUPPORTED` (`dirs_no_view`), as `subview` and `watch` are.
+- **Restarts, here and not in DE2** (my call): the records are in the
+  state and a successor takes the channels back as views.c's are
+  (`dirs_take`, `dirs_adopt`, `dirs_remake` for a reply that died,
+  `dirs_check`; adopt.c's take, `chan_of`, `unmake` and its range check),
+  each climbing once at its first request; a fresh start closes them.
+  adopt.c had to learn `XF_MADE_DIR` either way (a kind it doesn't know is
+  a fresh start, and `made` stays set after the request), and the
+  take-back is the views' few lines. utest `extfs_restart_dirs` covers a
+  channel carried on and two remade; DE2 keeps the rest of 2.5 (below).
+- **Left as they are** (my calls): a removed directory's channel is
+  `ERR_NOT_FOUND` to everything (its inode is freed after the answer;
+  DE2 holds it); `opendir` makes no inotify event (Linux's open of a
+  directory makes `IN_OPEN|IN_ISDIR` and its close `IN_CLOSE_NOWRITE`;
+  nothing here needs it yet); `volume` is the UUID's two halves XORed; a
+  generation of 0 is not checked (watch.c's `chain_of` rule); a climb
+  stops at 65,536 levels (`ERR_NAME_TOO_LONG`), a walk's stack at 2,049
+  below where it started, as before.
+
+**For DE2.** The orphan: `files_held` with the directories, a removed
+held directory's ".." remembered (a record field: `XF_STATE_LAYOUT` 11),
+`getattr`/`sync`/`statfs` on `""` and ".." answering on it (walk.c's
+start check and `dir_held` in fsops.c are where), the kill points with
+channels open (deep ones), a fresh start's test, e2fsck after held
+removed directories. A removed directory today: `start_of` in walk.c
+says `ERR_NOT_FOUND` before anything.
+
+**For DL1.** statfs says `FS_FEAT_DIRS` on ext; `opendir`'s `id` is
+getattr's; `fs.resolve` of `""` on a channel deeper than 4,095 bytes
+below its view's root is `ERR_NAME_TOO_LONG` (getcwd's `ERANGE`); a
+channel cut off or removed answers `ERR_NOT_FOUND` to everything (DL1's
+replacement after `ERR_PEER_CLOSED` is for a fresh start).
+
+Tests: utest `extfs_dirs`, `extfs_dirs_views`, `extfs_dirs_limits`,
+`extfs_restart_dirs` (user/tests/utest/extfs_dirs.c; `extfs_dirs_limits`
+starts three `utest xdirs-share` children and one `xdirs-full`); `extfs`'s
+statfs check gained `FS_FEAT_DIRS`; `tools/shell-tests/extfs-svc.txt` 46.
 
 ## 8. Tests
 
