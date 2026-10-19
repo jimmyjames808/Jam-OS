@@ -72,6 +72,32 @@
 #           the DOM dumps, the PNGs (size, colours at a few pixels) and what
 #           the servers saw (tools/cr/headless-server.py's logs); needs
 #           openssl and an ext /data; <outdir>/headless/ has them all
+#   fonts   headless_shell (the FONTS track) on tools/cr/fonts.html, a line of
+#           text in each of 29 scripts and symbol sets (English, Greek,
+#           Cyrillic, Chinese both ways, Japanese, Korean, Arabic, Hebrew,
+#           Hindi, Thai and the other Indic scripts, Georgian, Armenian,
+#           Ethiopic, Khmer, Lao, Myanmar, Sinhala, Odia, math, symbols,
+#           emoji), with the SYSTEM fonts found the way every program finds
+#           them: no FONTCONFIG_FILE, so fontconfig reads /etc/fonts/fonts.conf
+#           (libc serves it: user/posix/sys/etc.c), which includes the packages'
+#           /pkg/share/fonts/fonts.conf; ports/fonts-jamos and ports/fonts-noto-extra
+#           are built here and put on the stick's /data/pkg (tools/cr/base-stick.py
+#           --add-data), the program needing `mount /pkg r` (ports/chromium/wants).
+#           A headless_shell linked before the FONTS track has neither that
+#           want nor libc's /etc/fonts/fonts.conf: the case then fails at once
+#           saying so (relink it: tools/cr/build.sh start headless_shell), or
+#           with CR_FONTS_FCFILE=1 runs the interim way (the packages'
+#           fonts.conf files on the stick name /data/pkg, and FONTCONFIG_FILE
+#           points at the first).
+#           One boot (tools/cr/fonts.txt) runs --dump-dom (the page's own check:
+#           every cluster of every line drawn on a canvas and compared with the
+#           box Chromium draws for a character no font has) and --screenshot
+#           (1000x1400) with the system fonts, then both again with a fonts.conf
+#           of Inter alone, the control that must show boxes;
+#           tools/cr/fonts-check.py checks the DOM dumps, the PNGs and the log
+#           (no tofu in any line, each language's CJK face the right one, the
+#           control's tofu, fontconfig's cache written); needs an ext /data;
+#           <outdir>/fonts/ has the files
 #   multi   content_shell (track CB5) with every process type its own
 #           (--no-zygote --no-sandbox: Chromium's launcher forks and execs
 #           /proc/self/exe for the GPU process, the network and storage
@@ -457,6 +483,112 @@ case_headless() {
     sed 's/^/cr-test: /' "$dir/check.out"
 }
 
+# fonts: headless_shell on a page of text in every script, with the system
+# fonts (the packages fonts-jamos and fonts-noto-extra on the stick's
+# /data/pkg, found with no FONTCONFIG_FILE) and then with Inter alone.
+case_fonts() {
+    dir=$out/fonts
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    cr=${CR_DIR:-$HOME/cr}
+    version=$(awk '$1 == "version" { print $2 }' ports/chromium/recipe)
+    srcdir=$cr/$version/src/chromium-$version
+    paks="headless_lib_data.pak headless_lib_strings.pak headless_command_resources.pak"
+    for f in "$srcdir/out/jamos/headless_shell" $(for p in $paks; do echo "$srcdir/out/jamos/$p"; done); do
+        [ -f "$f" ] || { echo "FAIL (no $f: tools/cr/build.sh start headless_shell builds it)" > "$dir/result"; return; }
+    done
+    # the program's list must ask for /pkg (ports/chromium/wants): linked before
+    # the FONTS track it doesn't, and its libc doesn't serve /etc/fonts either
+    if [ "${CR_FONTS_FCFILE:-0}" != 1 ] &&
+       ! python3 tools/cr/fonts-check.py --has-pkg "$srcdir/out/jamos/headless_shell"; then
+        echo "FAIL (headless_shell was linked before the FONTS track: its list has no mount /pkg r and its libc does not serve /etc/fonts/fonts.conf; relink it, tools/cr/build.sh start headless_shell, or CR_FONTS_FCFILE=1 for the interim run)" > "$dir/result"
+        return
+    fi
+    image=${PORTS_TEST_IMAGE:-build/jamos.img}
+    [ -f "$image" ] || { echo "FAIL (no $image: make image first)" > "$dir/result"; return; }
+    if [ "$(python3 tools/mkimage.py --data-fs "$image")" != ext ]; then
+        echo "FAIL (the image's /data is not ext: the case reads its files out with jamext)" > "$dir/result"
+        return
+    fi
+    if ! make -s build/host/jamext > "$dir/jamext.out" 2>&1; then
+        echo "FAIL (no build/host/jamext, see $dir/jamext.out)" > "$dir/result"
+        return
+    fi
+    if ! build_ports "$dir/build.log" fonts-jamos fonts-noto-extra; then
+        echo "FAIL (the packages' build, see $dir/build.log)" > "$dir/result"
+        return
+    fi
+    # The packages as init's /pkg view shows them (/data/pkg); beside the
+    # program, the page, and the control's Inter with a fonts.conf naming it.
+    mkdir -p "$dir/add/out/jamos/fonts" "$dir/data/pkg"
+    cp -R build/ports/fonts-jamos/stage/share "$dir/data/pkg/share"
+    cp -R build/ports/fonts-noto-extra/stage/share/. "$dir/data/pkg/share/"
+    cp third_party/inter/Inter-Regular.ttf "$dir/add/out/jamos/fonts/"
+    printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
+        '<fontconfig><dir>/data/cr/out/jamos/fonts</dir><cachedir>/data/cr/tmp/fccache</cachedir></fontconfig>' \
+        > "$dir/add/out/jamos/fonts/fonts.conf"
+    cp tools/cr/fonts.html "$dir/add/out/jamos/fonts.html"
+    if [ "${CR_FONTS_FCFILE:-0}" = 1 ]; then
+        for f in "$dir/data/pkg/share/fonts/fonts.conf" "$dir/data/pkg/share/fonts/noto-extra/fonts.conf"; do
+            sed 's|/pkg/share|/data/pkg/share|g' "$f" > "$f.new" && mv "$f.new" "$f"
+        done
+    fi
+    # The shell cuts a command line at 240 characters (USING.md).
+    if awk '/^send / && length($0) > 245 { print "cr-test: fonts: line too long (" length($0) - 5 "): " $0; bad = 1 } END { exit bad }' tools/cr/fonts.txt; then
+        :
+    else
+        echo "FAIL (a send line of tools/cr/fonts.txt is over the shell's 240 characters)" > "$dir/result"
+        return
+    fi
+    stick=$dir/fonts-stick.img
+    if ! python3 tools/cr/base-stick.py --data-mib 2048 --programs headless_shell \
+         --program-dir "$srcdir/out/jamos" --out-files "$(echo $paks | tr ' ' ',')" --source-files "" \
+         --add "$dir/add" --add-data "$dir/data" "$image" "$stick" "$srcdir/out/jamos" "$srcdir" "$srcdir/out/jamos" \
+         > "$dir/stick.out" 2>&1; then
+        cat "$dir/stick.out"
+        echo "FAIL (the stick, see $dir/stick.out)" > "$dir/result"
+        return
+    fi
+    sed 's/^/cr-test: /' "$dir/stick.out"
+    rm -rf "$dir/add" "$dir/data"
+    # CR_FONTS_FCFILE=1: for a headless_shell linked before the FONTS track (a
+    # static program carries its libc, which serves /etc/fonts/fonts.conf, and
+    # its wants list, which now has `mount /pkg r`: relink it, tools/cr/build.sh
+    # start headless_shell): it has no /pkg, so the packages' two fonts.conf
+    # files name /data/pkg instead (on the stick only) and the system runs get
+    # FONTCONFIG_FILE pointing at the first.
+    if [ "${CR_FONTS_FCFILE:-0}" = 1 ]; then
+        sysenv='export FONTCONFIG_FILE=/data/pkg/share/fonts/fonts.conf'
+    else
+        sysenv='export FONTS_BY_DEFAULT=1'
+    fi
+    sed "s|@SYSENV@|$sysenv|" tools/cr/fonts.txt > "$dir/fonts.txt"
+    say "fonts: the system runs: $sysenv"
+    # the first launch scans about a hundred font files (two of them 20 MB):
+    # QEMU's time is long
+    QEMU_SAVE=$dir/saved.img QEMU_IMAGE=$stick QEMU_INPUT=$dir/fonts.txt QEMU_TIMEOUT=${QEMU_TIMEOUT:-1800} \
+        QEMU_MEM=${QEMU_MEM:-4G} QEMU_NET=1 \
+        tools/qemu-test.sh "$dir/run" fonts shell > "$dir/qemu.out" 2>&1
+    qrc=$?
+    rm -f "$stick"
+    # what the guest wrote, out of the saved stick
+    for f in dom-sys.html dom-ctl.html sys.png ctl.png; do
+        build/host/jamext -q --part 2 get "$dir/saved.img" "/cr/tmp/$f" "$dir/$f" > /dev/null 2>&1 ||
+            say "fonts: no $f on the stick"
+    done
+    rm -f "$dir/saved.img"
+    if [ $qrc -ne 0 ]; then
+        echo "FAIL (the script: $(grep 'serial-feed: .*: no ' "$dir/qemu.out" | tail -1 | sed 's/^serial-feed: //'), see $dir/run/)" > "$dir/result"
+        return
+    fi
+    if python3 tools/cr/fonts-check.py "$dir" > "$dir/check.out" 2>&1; then
+        echo PASS > "$dir/result"
+    else
+        echo "FAIL (see $dir/check.out)" > "$dir/result"
+    fi
+    sed 's/^/cr-test: /' "$dir/check.out"
+}
+
 case_multi() {
     dir=$out/multi
     rm -rf "$dir"
@@ -492,8 +624,9 @@ for c in "$@"; do
     base) case_base ;;
     shell-wl) case_shell_wl ;;
     headless) case_headless ;;
+    fonts) case_fonts ;;
     multi) case_multi ;;
-    *) echo "cr-test: no case $c (hello, rust, base, shell-wl, headless, multi)" >&2
+    *) echo "cr-test: no case $c (hello, rust, base, shell-wl, headless, fonts, multi)" >&2
        mkdir -p "$out/$c"
        echo "FAIL (no such case)" > "$out/$c/result" ;;
     esac

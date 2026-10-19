@@ -3,3 +3,4 @@ svc net
 svc dns
 svc wayland
 mount /data rw
+mount /pkg r

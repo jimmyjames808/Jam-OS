@@ -1,0 +1,155 @@
+<!doctype html>
+<!-- The page of cr-test.sh's `fonts` case (docs/CR-PLAN.md, FONTS notes): a line
+     of text in each script the system fonts cover, drawn in the page (the
+     screenshot) and checked by its own script (the DOM dump).
+     The check, for every line: each grapheme cluster of its text is drawn on a
+     canvas with the page's font settings and the line's lang, and its pixels
+     are compared with those of a character no font has (U+0378, which Chromium
+     draws as the primary font's .notdef box, the "tofu") and with nothing at
+     all. A cluster that draws the same as the box, or draws nothing, is
+     missing a glyph. The canvas and the page's text share one font stack
+     (FontCache, fontconfig, the fallback search by lang), so a cluster found
+     here is found in the page. The result is written into the DOM as lines of
+     <pre id="result">, which --dump-dom prints for tools/cr/fonts-check.py:
+       ref|<name>|<ink>|<hash>        a missing-character reference
+       row|<name>|<lang>|<clusters>|<missing>|<what is missing>
+       cjk|<lang>|<char>|<face>|<same as that face drawn by name: 1 or 0>
+     The rows' places in the screenshot are fixed (TOP, ROW below, in pixels),
+     which fonts-check.py knows. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fonts</title>
+<style>
+  html, body { margin: 0; background: #fff; color: #111; }
+  body { font-family: sans-serif; }
+  h1 { margin: 0; height: 40px; line-height: 40px; font-size: 22px; padding-left: 12px; background: #1e3a5f; color: #fff; }
+  .row { height: 46px; box-sizing: border-box; border-bottom: 1px solid #ddd; display: flex; align-items: center; overflow: hidden; }
+  .tag { width: 110px; flex: none; padding-left: 12px; font-size: 13px; color: #567; font-family: monospace; }
+  .txt { font-size: 26px; white-space: nowrap; }
+  #result { display: none; }
+</style>
+</head>
+<body>
+<h1>Jam OS system fonts</h1>
+<div id="rows"></div>
+<pre id="result">the script did not run</pre>
+<script>
+// name, lang, text. Each text is a short sentence or a pangram; the scripts of
+// fonts-noto-extra come after the Latin, Greek and Cyrillic that fonts-jamos has.
+var ROWS = [
+  ['english', 'en', 'The quick brown fox jumps over the lazy dog 0123456789'],
+  ['greek', 'el', 'Η γρήγορη καφέ αλεπού πηδά πάνω από το τεμπέλικο σκυλί'],
+  ['cyrillic', 'ru', 'Съешь же ещё этих мягких французских булок, да выпей чаю'],
+  ['chinese-simplified', 'zh-Hans', '敏捷的棕色狐狸跳过了那只懒狗，快乐的程序员学习汉语。'],
+  ['chinese-traditional', 'zh-Hant', '敏捷的棕色狐狸跳過了那隻懶狗，快樂的程式設計師學習漢語。'],
+  ['japanese', 'ja', 'いろはにほへと、素早い茶色の狐はのろまな犬を飛び越える。カタカナ'],
+  ['korean', 'ko', '다람쥐 헌 쳇바퀴에 타고파. 빠른 갈색 여우가 게으른 개를 뛰어넘는다'],
+  ['arabic', 'ar', 'نص حكيم له سر قاطع وذو شأن عظيم مكتوب على ثوب أخضر ومغلف بجلد أزرق'],
+  ['hebrew', 'he', 'דג סקרן שט בים מאוכזב ולפתע מצא לו חברה'],
+  ['hindi', 'hi', 'ऋषियों को सताने वाले दुष्ट राक्षसों के राजा रावण का सर्वनाश'],
+  ['thai', 'th', 'เป็นมนุษย์สุดประเสริฐเลิศคุณค่า กว่าบรรดาฝูงสัตว์เดรัจฉาน'],
+  ['bengali', 'bn', 'আমি বাংলায় গান গাই, বাংলা ভাষা অনেক মিষ্টি'],
+  ['tamil', 'ta', 'தமிழ் மொழி இனிமையான மொழி'],
+  ['telugu', 'te', 'తెలుగు భాష చాలా మధురమైనది'],
+  ['gujarati', 'gu', 'ગુજરાતી ભાષા ખૂબ સરસ છે'],
+  ['gurmukhi', 'pa', 'ਪੰਜਾਬੀ ਇੱਕ ਮਿੱਠੀ ਭਾਸ਼ਾ ਹੈ'],
+  ['kannada', 'kn', 'ಕನ್ನಡ ಒಂದು ಸುಂದರ ಭಾಷೆ'],
+  ['malayalam', 'ml', 'മലയാളം ഒരു മനോഹര ഭാഷയാണ്'],
+  ['georgian', 'ka', 'ქართული ენა ლამაზი ენაა'],
+  ['armenian', 'hy', 'Հայերենը գեղեցիկ լեզու է'],
+  ['ethiopic', 'am', 'አማርኛ ቆንጆ ቋንቋ ነው'],
+  ['khmer', 'km', 'ភាសាខ្មែរគឺជាភាសាដ៏ស្រស់ស្អាត'],
+  ['lao', 'lo', 'ພາສາລາວແມ່ນພາສາທີ່ງາມ'],
+  ['myanmar', 'my', 'မြန်မာဘာသာစကားသည် လှပသည်'],
+  ['sinhala', 'si', 'සිංහල භාෂාව ලස්සන භාෂාවකි'],
+  ['odia', 'or', 'ଓଡ଼ିଆ ଏକ ସୁନ୍ଦର ଭାଷା'],
+  ['math', 'en', '∀x∈ℝ: x² ≥ 0, ∑ ∫ √ ∞ ≈ ≠ ∂ ∇ 𝒜 ℍ'],
+  ['symbols', 'en', '☃ ♞ ✓ ★ ⌘ ⚠ ☂ ♫ → ⇒ ⬛ ┌─┐ ❤'],
+  ['emoji', 'en', '😀 🎉 🦊 👍 🌍 🚀 ❤️ 🇦🇺']
+];
+
+var TOP = 40, ROW = 46;   // fonts-check.py's row geometry: heading, then rows
+var rows = document.getElementById('rows');
+ROWS.forEach(function (r) {
+  var d = document.createElement('div');
+  d.className = 'row';
+  d.innerHTML = '<span class="tag"></span><span class="txt"></span>';
+  d.firstChild.textContent = r[0];
+  d.lastChild.textContent = r[2];
+  d.lastChild.lang = r[1];
+  rows.appendChild(d);
+});
+
+// ---- the check ----
+var out = [];
+var W = 96, H = 56;
+var canvas = document.createElement('canvas');
+canvas.width = W; canvas.height = H;
+canvas.style.cssText = 'position:absolute;left:-200px;top:0';
+document.body.appendChild(canvas);
+var ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+// the pixels of text drawn with a font, as a hash and the count of drawn pixels
+function draw(text, font, lang) {
+  canvas.setAttribute('lang', lang);
+  if ('lang' in ctx) ctx.lang = lang;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#000';
+  ctx.font = font;
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(text, 8, 38);
+  var px = new Uint32Array(ctx.getImageData(0, 0, W, H).data.buffer);
+  // a hash of the drawn pixels (those that are not 0) and where they are; a
+  // pixel is mostly its top byte, the alpha, so that is folded down before
+  // the multiply (a plain xor of the pixel keeps eight bits of it)
+  var h = 2166136261, n = 0;
+  for (var i = 0; i < px.length; i++) {
+    var v = px[i];
+    if (v) {
+      n++;
+      h = Math.imul(h ^ i, 16777619);
+      h = Math.imul(h ^ v ^ (v >>> 15) ^ (v >>> 24), 16777619);
+    }
+  }
+  return { hash: h >>> 0, ink: n };
+}
+var FONT = '28px sans-serif';
+
+// what a character no font has looks like (the primary font's box), from a few
+var refs = {};
+[0x378, 0x379, 0x5ff, 0xe00].forEach(function (cp) {
+  var r = draw(String.fromCodePoint(cp), FONT, 'en');
+  refs[r.hash] = true;
+  out.push('ref|U+' + cp.toString(16) + '|' + r.ink + '|' + r.hash);
+});
+
+var seg = new Intl.Segmenter('en', { granularity: 'grapheme' });
+ROWS.forEach(function (r) {
+  var name = r[0], lang = r[1], total = 0, missing = [];
+  Array.from(seg.segment(r[2])).forEach(function (s) {
+    var c = s.segment;
+    if (/^[\s​-‏]*$/.test(c)) return;
+    total++;
+    var d = draw(c, FONT, lang);
+    if (d.ink === 0 || refs[d.hash]) {
+      missing.push(Array.from(c).map(function (ch) { return 'U+' + ch.codePointAt(0).toString(16); }).join('+') + ':' + d.ink + ':' + d.hash);
+    }
+  });
+  out.push('row|' + name + '|' + lang + '|' + total + '|' + missing.length + '|' + missing.slice(0, 8).join(','));
+});
+
+// Han characters drawn differently by the regional faces: the fallback for the
+// language must be the same pixels as that face asked for by name
+var FACE = { ja: 'JP', ko: 'KR', 'zh-Hans': 'SC', 'zh-Hant': 'TC', 'zh-TW': 'TC', 'zh-HK': 'HK', 'zh-CN': 'SC' };
+Object.keys(FACE).forEach(function (lang) {
+  Array.from('直骨返刃令海草').forEach(function (ch) {
+    var fb = draw(ch, FONT, lang);
+    var by = draw(ch, '28px "Noto Sans CJK ' + FACE[lang] + '"', lang);
+    out.push('cjk|' + lang + '|' + ch + '|' + FACE[lang] + '|' + (fb.hash === by.hash && fb.ink > 0 ? 1 : 0) + '|' + by.hash);
+  });
+});
+document.getElementById('result').textContent = out.join('\n');
+</script>
+</body>
+</html>
