@@ -1810,7 +1810,10 @@ its caller says (`init: exec: <path> is raised (AT_SECURE): ...`), since a
 path is text and proves nothing about what the caller can reach. When
 directory handles land (docs/DIRHANDLE-PLAN.md, being written) the caller
 gives an open directory instead; `child_dir` is where that goes, and a
-raised child may then be given its caller's directory too.
+raised child may then be given its caller's directory too. (Built since by
+DL2: the caller's directory goes as a channel to a child that isn't raised;
+a raised one still starts in `/`, DL2's call, which is why base's launching
+tests still fail: [DC notes](#dc-notes).)
 
 **Security.** A raised program still gets none of its caller's unsecure
 variables (`TMPDIR`, `LD_*`, `NLSPATH`, ...: the crt drops them) and
@@ -5054,6 +5057,130 @@ every lock and kept none (`dup.c`), so `F_SETLK` never said `EAGAIN` and
   for `XF_KEY_LOCK_BIT` in `main.c`, `files.c`'s `xf_file_ops` and
   `close_file` lines, request.c's `take` (file requests read with the
   pid), `adopt.c`'s keeper slots and check.
+
+## DC notes
+
+Track DC (2026-10-20, branch `worktree-agent-a6c512f7ae1ac1637`; the DC row of
+[DIRHANDLE-PLAN](DIRHANDLE-PLAN.md#dc-notes)): Chromium's programs relinked
+against main with DL1's and DL2's libc, `base_unittests` measured again, the
+browser cases run on the new programs.
+
+- **The relink.** DL2 moved the ABI stamp (POSIXFDS_VERSION 3), so a program
+  linked before gets no hand-over from a parent that is linked after.
+  `tools/cr/build.sh start` (run 20261020-065011, `CR_JOBS=8 CR_MEM_MB=12288`)
+  linked all four in 213 s (peak 3.4 GB; nothing else to compile). Staged:
+  `base_unittests` 5ff8096e543b4110, `test_child_process` 1bcea3b9a743b65f,
+  `headless_shell` 966e7639a0f3bad1, `content_shell` ea7a14c3db3ae07b, each
+  "linked against this run's libc".
+- **The browser cases** on those programs, one batch (20065511): `headless`,
+  `shell-wl`, `multi`, `jit`, `webgl`, `fonts` (no env) and `sound`, all PASS
+  first time. DL2's current directory and channel hand-over reach Chromium's
+  own launcher (the multi case starts the GPU, network and renderer
+  processes) without a change.
+- **The listed tests measured again** (batch 20065511 with
+  `CR_BASE_ALL=1 CR_BASE_LISTED=1`, shards 1 to 5 and 6, which is empty:
+  **shards are 0 to 5**, so `0/6` ran in batch 20070336 and `6/6` is nothing;
+  and `CR_BASE_ONLY` globs are separated by commas or spaces: a colon is part
+  of the glob and matches no suite). 17 of the 34 listed now pass, so they
+  came off the list: `FileUtilTest.DeleteDeep` (DL1/DL2: the 26 levels of
+  255-byte names through directory descriptors); `ForkWithFlagsTest.UpdatesPidCache`
+  and `PlatformThreadTidCacheTest.MainThreadFirst`/`MainThreadSecond` (D1, the
+  main thread's tid is the pid); `ProcessUtilTest.LaunchProcess` (D10,
+  `CLONE_FS` for a process child); `LoggingTest.CheckCausesDistinctBreakpoints`
+  (SGR, the registers at a call's boundary); the eight `AlternateTestParams/
+  PartitionAllocTest.PurgeDiscardable*` and
+  `SamplingHeapProfilerTest.GetSamplesWithResidency` (D7, MC's exact
+  `mincore`); `PartitionAddressSpaceTest.ZeroSegmentInaccessibleEnd` (it reads
+  the last byte of the 64 KiB segment PartitionAlloc keeps and dies; by my
+  reading MH's top-down placement leaves nothing mapped there; `ZeroSegment` itself still
+  fails, 65,536 where it wants 4,097 MiB); and
+  `StackTraceDeathTest.StackDumpSignalHandlerIsMallocFree` (not understood
+  why: its listed reason was the `calloc` in `BeingDebugged()`'s open taking
+  the handler down; it passed in the listed run and again in the full one, so
+  it came off on two observations).
+  The tracks that made these pass did not run `base`. Still failing, each for
+  its group's old reason: `dlopen` 3, `mkfifo` 4, `fdopen(-1)`, the socket
+  sent over itself, `CheckAgainstProcMaps`, `ZeroSegment`, and the launching
+  six below.
+- **The launching group's cause changed.** `ProcessUtilTest.CurrentDirectory`,
+  `GetTerminationStatus*` and `KillSlowChild` (and `SystemMetricsTest.
+  MeasureChildCpuUsage`) start `base_unittests` again through `/svc/exec`, and
+  the log says `init: exec: .../base_unittests is raised (AT_SECURE): it
+  starts in /, not its caller's /data/cr/tmp`. DL2 gives the caller's directory
+  as a channel to a child that is not raised (and SX before it as text), but
+  `base_unittests`'s list has `right jit` since CR-e (the three
+  `PartitionAllocPageAllocatorTest` JIT cases), and init's `raised()` takes a
+  power in the child's list as raised whoever calls (a root can't be passed on,
+  so init can't see that the caller holds it). The two features pull against
+  each other: the JIT cases (3) or the launching ones (5, perhaps 6).
+  Recommendation: leave it; a second program for the JIT cases (a copy of
+  `base_unittests` with the power, started by hand) costs a link and one
+  more stage entry for 3 tests, and the 5 can wait for CR-f's kernel process
+  flag (CJR2's L3: `PR_SET_MDWE` not inherited across `/svc/exec`), which
+  could give init something to check about its caller.
+- **The row's runs** (batch 20070609, `CR_BASE_ONLY='FileUtilTest*,
+  ScopedTempDir*,FileEnumerator*'`: 4 suites, 140 tests): on the ext `/data`
+  (`TMPDIR` and `TEST_TMPDIR` at `/data/cr/tmp`) 135 OK and 5 on the list
+  (the 4 `mkfifo` tests and `FileToFILE`), and again with `CR_BASE_ENV=` so
+  the programs use init's `/tmp`: the same 135 OK, the same 5, `DeleteDeep`
+  among the OK in both. Nothing new in the ENOSYS logs (`dlopen`, ioctl
+  `0x80086601`, other processes' `/proc/<pid>/stat` and `task/0/status`,
+  `/proc/self/ns/user`: the groups on the list).
+- **The whole program** (batch 20070609, the six shards, ext `/data`,
+  threadsafe death tests, 285 to 662 s a shard):
+
+  | `/data` | pass | self-skip | on the skip list |
+  |---------|-----:|----------:|-----------------:|
+  | ext, BM1 (2026-10-18) | 8,700 | 37 | 219 |
+  | ext, IC | 8,874 | 37 | 45 |
+  | ext, DC | 8,901 | 37 | 18 |
+
+  Per shard (of 8,956): 1,234 + 3 + 1 of 1,238; 1,470 + 0 + 6 of 1,476;
+  2,010 + 4 + 1 of 2,015 (the one listed is `RecursiveWatch`, a **new failure**
+  in batch 20070609 and listed for batch 20073615: below); 1,543 + 9 + 3 of 1,555;
+  1,330 + 17 + 2 of 1,349; 1,314 + 4 + 5 of 1,323 (pass + self-skip + listed).
+  Against IC: +11 (taken off the list between IC and DC: CR-e's seven
+  FileLockingTest and three JIT cases, and one more) +17 (this track's) -1
+  (`RecursiveWatch`) = 8,901. No test missing in
+  any shard; no panic; the "killed by base_unittests" lines are the
+  `EnsureTerminationUndying`-style tests'.
+- **One new failure: `FilePathWatcherTest.RecursiveWatch`**, failed on both
+  tries (it passed in IC's run with all 165). It times out at
+  `file_path_watcher_unittest.cc:1103`, the step after "Touch `$dir`":
+  `TouchFile(dir)` is expected to make **two** events for the watched
+  directory (the test's own TODO: "why we're getting two events from
+  inotify"). Chromium's inotify watcher watches the target and every
+  directory above it, so a change of `dir` is told by `dir`'s own watch
+  (`IN_ATTRIB`) and by its parent's (`IN_ATTRIB` with the name). `TouchFile`
+  opens the directory and calls `futimens` on the descriptor; since DL1 that
+  descriptor is a directory channel, and libc (`meta.c` `change_at`: a
+  directory goes `path_of`, then `change_path`) sends `fs.setattr` with the
+  path `""` on it. extfs's `op_setattr` tells `ev_walk`, which sends to the
+  directory's watches with a name only when the walk's path ended in one
+  (`has_name`), and then to the inode's own: with `""` there is no name, the
+  parent's watch hears nothing, one event comes and the test waits for the
+  second. Before DL1 the descriptor's text path went through a whole walk and
+  both came. An open file keeps its directory and name for exactly this
+  (`files.c` `at[]`); a directory channel keeps neither (DE2's `up_ino` is
+  set only for a removed directory). **Read from the code, not shown by a
+  case of its own** (utest `extfs_watch` has no setattr on a directory
+  channel with a watch on its parent). The same would be true of `fchmod` and
+  `fchown` on a directory descriptor (no test in base_unittests does it
+  watched). Options for the owner, extfs side first: (a) a directory channel
+  remembers the directory and the name it was opened by (as `at[]`, followed
+  by a rename, DE2's `up_*` is the start of it) and a path-less change of it
+  tells the parent too: right, and it costs a slot field and the rename
+  follow-up; (b) libc sends a directory descriptor's attribute changes by
+  its last known text when its mount has watches: simple, but races with a
+  rename (the old DL0 problem) and breaks the "descriptor, not text" rule.
+  My recommendation: (a), in IE's area (the inotify tracks), with a utest
+  case and a posixtest one (`futimens` on a directory descriptor, a watch on
+  the parent). Until then the test is on the skip list ("[posix] DL1
+  regression") and the counts above have it as the 18th.
+- **Shard 2 again** with `RecursiveWatch` listed (batch 20073615, 479 s, with
+  `make check`): 2,010 OK, 4 self-skip, 1 listed, no new failure, none missing.
+  The final count is the five other shards of 20070609 and this one:
+  8,901 pass, 37 self-skip, 18 listed, 8,956 in all.
 
 ## Later
 

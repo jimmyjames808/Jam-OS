@@ -607,7 +607,7 @@ numbers).
 | **DE2. extfs: removal and restarts** (built: [DE2 notes](#de2-notes)) | 3.3 and 2.5: a held directory removed (orphan, `..` remembered, `ERR_NOT_FOUND` rules), replaced by a rename, renamed; orphan directories across a restart and at a mount; the records in the state (`XF_STATE_LAYOUT` bumped), adopt, a fresh start closing the channels; test powers that kill extfs between a `rmdir` of a held directory and its answer | user/services/extfs/dirs.c, `user/services/extfs/fsops.c`, `user/services/extfs/files.c` (`files_held` with the directories), `user/services/extfs/request.c` (`defer_drop`), `user/services/extfs/state.c`, `user/services/extfs/adopt.c`, `user/services/extfs/keeper.c`, `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, `user/tests/utest/extfs_restart.c`, user/tests/utest/extfs_dirs.c | DE1 merged; beside DL1 | utest `extfs_dirs`' removal cases (made again at the same name: the channel stays on the removed one; `..` from a removed one and from one whose parent went too; a rename over a held empty directory), `extfs_restart` (killed at each point with channels open, deep ones too: the same directories after; a held removed directory across a restart; a fresh start: the channels closed); `tools/extfs-svc-test.sh`; `tools/extfs-test.sh` basic (e2fsck after a deep tree and held removed directories); `tools/layout-test.sh` drive; init run | 1 | **Opus** |
 | **DL1. libc: descriptions and the *at calls** (built: [DL1 notes](#dl1-notes)) | 4.1 to 4.3: the channel in `struct dir`, `openat`'s directory by `fs.opendir`, `getdents`, `fstat`, `fsync`, `fstatfs`, the text fallback and the replacement after `ERR_PEER_CLOSED`, every *at call through `at`, `rename_at`/`link_at`, the `path` hook's replacement, files opened relative keeping their directory and name | `user/posix/sys/dir.c`, `user/posix/sys/path.c`, `user/posix/sys/files.h`, `user/posix/sys/file.c`, `user/posix/sys/meta.c`, `user/posix/sys/fobj.c`, `user/posix/sys/fd.h`, `user/posix/sys/spawnfd.c` (the hook), a new posixtest file user/posix/test/dirfd.c (section `dirfd`) and a new tools/shell-tests/posix-dirfd.txt, `user/posix/test/files2.c` (`deep_names`: 26 levels on ext, 15 on FAT) | DL0 and DE1 merged; beside DE2; not beside LH, PR or FF's libc part | posixtest `dirfd` on ext `/data`, on `/tmp`, and with `JAMOS_DATA_FS=fat` (today's answers): DeleteDeep copied (26 levels, `up`, the file, `DeletePathRecursively`'s calls); a rename of an open directory followed; a directory removed and made again; `renameat`/`linkat` across two descriptors; `O_PATH`; `AT_EMPTY_PATH`; 300 directories open (the fallback); posixtest `files`; posix-files; shell scripts basic, cmds, commands, files; init run | 1 | **Opus** |
 | **DL2. libc: the current directory, fork, exec, /proc** (built: [DL2 notes](#dl2-notes)) | 4.4 to 4.6: the current directory as a description, `chdir`, `fchdir`, `getcwd`, `chdir("..")` out of a removed one; the fork hook and the current directory's fork key; kind 15 and Q4's hand-over; `/proc/self/fd` and `cwd` | `user/posix/sys/path.c`, `user/posix/sys/dir.c`, `user/posix/sys/fd.c` (fork keys), `user/posix/sys/procfs.c`, `user/posix/sys/spawn.c`, `user/include/posixfds.h`, `user/lib/fdmsg.c`, `user/posix/crt/start.c`, `user/tests/utest/posixfds.c`, `user/tests/utest/posixfds_bad.c`, `user/posix/test/forkfd.c`, user/posix/test/dirfd.c | DL1 and DE2 merged; IL1, IL2 and PR merged (kinds, `procfs.c`, `forkfd.c`); not beside TP or LH | utest `posixfds` (kind 15, the version's cases); posixtest `dirfd`'s current-directory cases (deep, renamed, removed: `getcwd`, `..`; `fchdir`; a forked child's descriptors and directory; an exec'd child's; `/proc/self/fd` names), `fork`, `procfs`; `tools/shell-tests/posix-fork.txt`, posix-run; shell scripts basic, cmds, commands, files; kdump save; init run; one ktest pass at 4 CPUs | 1 | **Opus** |
-| **DC. Chromium's tests** | `FileUtilTest.DeleteDeep` off `tools/cr/base_unittests.skip` (and any `getcwd` entry CBF6 left), the stage relinked; what still fails listed with its reason | `tools/cr/base_unittests.skip`, `docs/CR-PLAN.md`'s rows | DL2 merged; no other agent running `base` | `CR_BASE_ONLY='FileUtilTest*:ScopedTempDir*:FileEnumerator*'` through `tools/cr-test.sh` on ext `/data` and once on `/tmp` | 0.5 | Sonnet 5.5 |
+| **DC. Chromium's tests** (built: [DC notes](#dc-notes)) | `FileUtilTest.DeleteDeep` off `tools/cr/base_unittests.skip` (and any `getcwd` entry CBF6 left), the stage relinked; what still fails listed with its reason | `tools/cr/base_unittests.skip`, `docs/CR-PLAN.md`'s rows | DL2 merged; no other agent running `base` | `CR_BASE_ONLY='FileUtilTest*:ScopedTempDir*:FileEnumerator*'` through `tools/cr-test.sh` on ext `/data` and once on `/tmp` | 0.5 | Sonnet 5.5 |
 | **DR. Independent review and fix** | everything above, findings first (a new docs/DIRHANDLE-REVIEW.md), then High and Medium fixed with a test each: can a channel reach past its view (a climb, an id, a hidden `etc` through `..`, a cut-off missed after a restart), can channels or orphans leak (a process that dies, a fork, a failed exec), can a removed directory's inode be reused while held, is a hand-over's channel ever dropped or doubled | the files its fixes need | DC | its own; hostile: 8 threads renaming directories in and out of a subview while others walk through channels, extfs killed every 200 ms during a deep `DeletePathRecursively`, a process holding 64 channels killed, a directory removed while 4 processes stand in it; full init run; the extfs and posix scripts | 1.5 | **Opus** |
 | **DJ. The join** | ARCHITECTURE (Storage: directory channels; the POSIX layer: the description), TESTING's rows, CR-PLAN, ROADMAP, HISTORY; this plan deleted when HISTORY covers it | the docs | DR | `make check` | 0.5 | Sonnet 5.5 |
 | **DF. fat** (only with Q3's (B)) | 3.4 on fat: FatFs's relative paths, channels by cluster, `f_getcwd`, removal marks, its state and keeper | `user/services/fat/` (a new dirs.c, fsops, its loop, state, keeper, adopt), `user/services/fat/ffport/ffconf.h`, a new utest file user/tests/utest/fat_dirs.c | DE2 merged (the pattern) | utest `fat_dirs`, `fat_restart` unchanged; posixtest `dirfd` with `JAMOS_DATA_FS=fat` | 1 | **Opus** |
@@ -1211,6 +1211,33 @@ init run (126 s; posixtest dirfd about 14 s of it), ktest at 4 CPUs,
 posix-files, the shell scripts basic, cmds, commands and files, kdump
 save; batch 20064324 with `JAMOS_DATA_FS=fat`: posix-dirfd (`/data` text,
 `/tmp` channels) and the init run passed.
+
+### DC notes
+
+Built (2026-10-20), on main with DL1 and DL2. The full account, with the
+numbers per shard, is [CR-PLAN's DC notes](CR-PLAN.md#dc-notes).
+- **Relinked:** the four programs, from main with DL2's libc (the ABI stamp
+  moved with it): `tools/cr/build.sh start` at 8 CPUs and 12 GB, run
+  20261020-065011, 213 s.
+- **`FileUtilTest.DeleteDeep` passes** on ext `/data` and on init's `/tmp`:
+  `CR_BASE_ONLY='FileUtilTest*,ScopedTempDir*,FileEnumerator*'`, 135 of 140
+  OK in both (the other 5 are on the list for other reasons); it is off the
+  skip list. It was the only getcwd or directory-descriptor entry left.
+- **The whole program:** 8,901 pass, 37 self-skip, 18 on the list (17 left
+  from before and `FilePathWatcherTest.RecursiveWatch`), no other failure;
+  the libc changes of DL0 to DL2 broke one test, below.
+- **One regression, `FilePathWatcherTest.RecursiveWatch`** (passed before
+  DL1): `base::TouchFile` opens the watched directory and calls `futimens`
+  on the descriptor; with DL1 that is a directory channel, libc sends
+  `fs.setattr` with the path `""`, and extfs tells the watches of the
+  directory's own inode but not those of its parent, which Linux's inotify
+  also tells (with the child's name; Chromium's watcher watches both and the
+  test expects both events: "getting two events from inotify"). An open
+  file keeps its directory and name for this (`files.c` `at[]`); a
+  directory channel keeps neither (DE2's `up_ino` is set only when the
+  directory is removed). Listed in `base_unittests.skip`; the fix is extfs's or libc's (see
+  the CR-PLAN notes) and a posixtest case for it (`fchmod`, `fchown` and
+  `futimens` on a directory descriptor with a watch on the parent).
 
 ## 8. Tests
 
