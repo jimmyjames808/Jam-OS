@@ -2,7 +2,7 @@
 # Host-side test of the machine's CPU budget (tools/remote-slots.py, and the
 # costs tools/remote-test.sh works out): a fake lock directory and fake
 # commands (sleep, a log of starts and ends), no ssh, no QEMU, no PC. About
-# 40 s.
+# 80 s.
 #   - the cost of each kind of command (JAMOS_REMOTE_COST_ONLY);
 #   - six commands of 3 CPUs on a budget of 8 never run more than two at
 #     once, and all six run;
@@ -16,6 +16,11 @@
 #     SIGTERM after JAMOS_REMOTE_KILL_GRACE;
 #   - an older command waiting past JAMOS_REMOTE_AGE is not passed by a
 #     younger small one (the big run isn't starved);
+#   - a run of the whole CPU budget, and one of the whole memory budget (a
+#     Chromium build beside tests), arriving 1 s into a stream of small
+#     arrivals, starts within the age and one run, and nothing that came
+#     after it was old enough starts ahead of it (SLOTS_TEST_AGE=1000 turns
+#     the rule off and this fails); it says so, and --status marks it;
 #   - JAMOS_REMOTE_SLOTS caps the commands, ~/work/.cpu-budget overrides the
 #     variables, the exit status and a missing command come through;
 #   - a --detach claim (a long build) returns at once, holds its CPUs while
@@ -67,6 +72,9 @@ c "4 2048 INIT_TEST_JOBS:4:2048:1" $R env INIT_TEST_JOBS=1 tools/init-test.sh bu
 c "$((np * 4)) $((np * 2048)) INIT_TEST_JOBS:4:2048:$np" env INIT_TEST_JOBS=99 $R tools/init-test.sh build/test/init
 c "2 2048" $R tools/update-menu-test.sh build/test/um   # its QEMUs are -smp 2
 c "2 1024" $R make check
+c "2 4096" $R tools/cr/build.sh start   # counts what ninja would do before it claims
+c "2 4096" $R tools/cr/build.sh start --gen
+c "2 1024" $R tools/cr/build.sh status
 c "2 1024" $R python3 tools/fatcheck.py --selftest
 c "1 1024" env JAMOS_REMOTE_LIGHT_CPUS=1 $R make check
 
@@ -261,6 +269,46 @@ t1=$(now)
 python3 -c "import sys; sys.exit(not ($t1 - $t0 >= 2))" || fail "a run started ahead of an older waiter it would have kept from fitting"
 wait
 unset JAMOS_REMOTE_AGE
+
+# ---- a big waiter behind a stream of small arrivals (track BC, 2026-10-20) ---------------------------------
+# A stream of small runs, one arriving every 0.15 s for 6 s, always another one that fits beside
+# the others, and 1 s into it a run that takes the whole budget (of CPUs, then of memory: a Chromium
+# build's 20 of 20 GB beside tests of 2 GB). Without the age rule it waits for the whole stream;
+# with it, nothing that arrives after it has waited JAMOS_REMOTE_AGE starts ahead of it, and it
+# starts within the age and the length of one run. SLOTS_TEST_AGE=1000 turns the rule off: this
+# test then fails (the run that shows the test sees what it is for).
+stream_test() {   # stream_test <name> <cpu budget> <mem budget GB> <stream cpus> <stream mem MB> <big cpus> <big mem MB>
+    local name=$1 i ab sb age=1.5 late=0
+    rm -rf "$JAMOS_REMOTE_LOCKDIR/.cpu" "$tmp/events"
+    export JAMOS_REMOTE_CPUS=$2 JAMOS_REMOTE_MEM_GB=$3 JAMOS_REMOTE_AGE=${SLOTS_TEST_AGE:-$age}
+    for i in $(seq 1 40); do
+        ( echo "arr$i $(now)" >> "$tmp/events"; $slots "$4" "$5" bash -c "job s$i 0.8" 2> /dev/null ) &
+        [ "$i" = 7 ] && { ( echo "arrbig $(now)" >> "$tmp/events"
+                            JAMOS_REMOTE_QUIET= JAMOS_REMOTE_SAY_EVERY=0.3 $slots "$6" "$7" bash -c "job big 0.5" 2> "$tmp/big.err" ) & }
+        [ "$i" = 18 ] && { $slots --status > "$tmp/big.status" 2>&1; }
+        sleep 0.15
+    done
+    wait
+    ab=$(awk '$1 == "arrbig" { print $2 }' "$tmp/events")
+    sb=$(awk '$1 == "+big" { print $2 }' "$tmp/events")
+    [ -n "$ab" ] && [ -n "$sb" ] || { fail "$name: the big run did not run: $(awk '{ printf "%s ", $1 }' "$tmp/events")"; return; }
+    python3 -c "import sys; sys.exit(not ($sb - $ab <= $age + 0.8 + 1.5))" ||
+        fail "$name: the big run started $(python3 -c "print('%.1f' % ($sb - $ab))") s after it arrived (the age is $age s, a run lasts 0.8 s)"
+    # no run that arrived after the big one had waited the age (and a poll) starts before it
+    for i in $(seq 1 40); do
+        a=$(awk -v n="arr$i" '$1 == n { print $2 }' "$tmp/events")
+        s=$(awk -v n="+s$i" '$1 == n { print $2 }' "$tmp/events")
+        [ -n "$s" ] || { fail "$name: stream run $i never ran"; continue; }
+        python3 -c "import sys; sys.exit(int($a > $ab + $age + 0.5 and $s < $sb))" || late=$((late + 1))
+    done
+    [ "$late" = 0 ] || fail "$name: $late runs that arrived after the big one was old enough to go first started before it"
+    unset JAMOS_REMOTE_AGE
+    export JAMOS_REMOTE_MEM_GB=20
+}
+stream_test "a run of the whole CPU budget" 8 20 2 512 8 512
+grep -q "nothing younger starts ahead of it" "$tmp/big.err" || fail "the waiting big run did not say that nothing younger starts ahead of it: $(cat "$tmp/big.err")"
+grep -q "waited past .* nothing younger starts ahead of it" "$tmp/big.status" || fail "--status does not show the old waiter: $(cat "$tmp/big.status")"
+stream_test "a run of the whole memory budget" 26 4 1 1024 6 4096
 
 # ---- a long claim: the deadlock of 2026-10-15 ---------------------------------------------------------
 # The Chromium build holds 16 of 26 CPUs for hours. A 12-CPU run (init-test.sh) can never fit
