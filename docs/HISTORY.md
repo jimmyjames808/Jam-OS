@@ -320,6 +320,41 @@ What changed:
   the only way Jam OS draws; the previous build is the way back from a bad
   build.
 
+The owner's answers (2026-10-07; "your recommendation for the rest unless
+unsure or very important", so all but one as recommended). The kernel: a
+send's handles are always moved; **the writer keeps paying for a message
+nobody reads** (first answered "the reader pays once the writer closes",
+reversed on 2026-10-09 after M12.1's kernel review); `handle_info`; a
+read-only DMA pin; a futex (private only, with requeue) and the FS base;
+five new error codes; one rule for time in arguments (deadlines,
+`sleep_until`); a dead service's kept objects stay charged to its job; a
+`vmo_pin` argument struct with a flags word; a port binding ends when its
+object has no handle left anywhere. The protocols: `u8[<=N]` and a checked
+`str[<=N]`, scalar arrays (records stay byte arrays until M14), one-way
+`event` methods that may carry handles, a protocol per kind of channel,
+`const` lines in each `.idl`, typed handle arguments checked by the
+generated server, the kernel dropping replies to calls that gave up, a
+pipe as a channel of byte messages, libos's heap reserving 1 GiB, the
+re-arm flag of `channel_reply_wait` left for the speed pass. The
+compositor: events go from server to client, `notify` split off, flow
+control by the kernel's count (JWL2), at most 28 handles queued a
+connection. The storage split: the new service named `volumes`, one shared
+supervision module, disks reaching it on fresh `disks` pairs, **a volumes
+crash ends its filesystem services and every stick remounts fresh** (a
+service that outlives its process waits for the drivers' milestone), and
+the disk protocols shaped for GPT and NVMe with nothing built for them.
+The one against the recommendation was `nocomp`, above. M12.1 is M12's
+independent review.
+
+Where it lives: the channel, handle and wait rules in `kernel/object/`
+(`channel.c`, `channel_send.c`, `handle.c`, `port.c`) and `kernel/sched/`;
+the calls and their contracts in `abi/syscalls.def` and `<jam/abi.h>`; the
+IDL's new shapes in `tools/genidl.py` and `abi/idl/` (every protocol id in
+`abi/idl/ids.txt`); the supervision module in `user/lib/supervise.c`; the
+storage split in `user/services/volumes/` and `user/services/devmgr/`; the
+compositor's transport in `user/lib/jwl_transport.c`. The four reviews
+(K, P, W, S) are in `docs/history/`.
+
 The PC sign-off: the build updated over the network, ACS isolation, `storm`
 at 10 and 100 kills a second (the copy matched), a stick pulled and put
 back, the network and sound, utest from the shell (594 passed), All tests

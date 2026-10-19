@@ -1,7 +1,7 @@
 # M12 review S: the storage split
 
 Status (2026-10-07): review S of M12's stage A, docs only. Written against
-main 56aa8904. It designs what [M12-PLAN.md](../M12-PLAN.md) decided (Q6 (A):
+main 56aa8904. It designs what [M12's plan](../HISTORY.md#m12-the-interface-review) decided (Q6 (A):
 a new service named **volumes**; Q7 (A): `storage` and `block` shaped for
 GPT and NVMe; Q8 (A): the file protocol changed now; handles always moved
 on send; events in the IDL; `u8[<=N]` and `str[<=N]`; one protocol per

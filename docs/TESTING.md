@@ -1814,7 +1814,7 @@ switch's line off and on in one run, and `perop` the per-operation lines.
 
 ## Channels, handles, threads and the other calls
 
-What [M12](M12-PLAN.md)'s fixes to the system calls are tested by. The
+What [M12](HISTORY.md#m12-the-interface-review)'s fixes to the system calls are tested by. The
 ktests run in every `ktest` (at 4 and 8 CPUs); the utests in the `init`
 run (`run utest only <name>` alone).
 
