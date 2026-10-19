@@ -28,6 +28,9 @@
  *   jittest power     exits 0 if it holds the power and MAP_JIT memory
  *                     runs, 1 if it holds none (MAP_JIT EPERM, PR_GET_MDWE
  *                     says refused), 2 for anything in between
+ *   jittest giveup    PR_SET_MDWE, then as `power`: 1 if the power is gone
+ *                     whole (utest's jit_mdwe starts it with two SR_JIT
+ *                     handles: docs/CR-REVIEW-JIT.md, CJR2 finding 4)
  *
  * Ends "jittest: PASS" (exit 0) or with a FAILED line for each check that
  * didn't hold (exit 1). The kernel's half is kernel/test/test_vmo_jit.c,
@@ -354,13 +357,15 @@ int main(int argc, char **argv)
         }
     } else if (argc == 2 && !strcmp(argv[1], "power")) {
         return power_check();
+    } else if (argc == 2 && !strcmp(argv[1], "giveup")) {
+        return prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0, 0, 0) ? 3 : power_check();
     } else if (argc == 1) {
         if (!holds_power())
             printf("jittest: no JIT power (its list's `right jit` wasn't given)\n");
         with();
         handed_on();
     } else {
-        fprintf(stderr, "usage: jittest [without | hold | power]\n");
+        fprintf(stderr, "usage: jittest [without | hold | power | giveup]\n");
         return 2;
     }
     printf("jittest: %s\n", fails ? "FAILED" : "PASS");

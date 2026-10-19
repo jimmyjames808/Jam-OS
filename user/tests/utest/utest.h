@@ -482,6 +482,7 @@ bool t_fat_view_limits(void);
  * "jit-text"). */
 bool t_jit(void);
 bool t_jit_spawn(void);
+bool t_jit_mdwe(void);
 int  jit_child(int argc, char **argv);
 /* fork.c: libjam's fork (jam_fork) and vmar_clone's arguments, each in a
  * mode of ours ("utest fork-<what>") in a job of its own. */
