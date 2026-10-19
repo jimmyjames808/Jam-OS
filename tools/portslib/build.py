@@ -9,6 +9,8 @@ Everything a port's build makes is under build/ports/<name>/ (the
     port.sha256 the hash of the port's directory (recipe, patches, files)
                 that built it: `ports.py package --from` checks it
     log         every command and its output
+    plan.log    the same for `ports.py build --plan` (below), which leaves
+                the stamp and the stage as they are
     sysroot/    build/sysroot plus the libraries it needs (toolchain.py)
     bin/        the cross tools under the target's names (toolchain.py)
     work/       the source, unpacked afresh (source.py)
@@ -17,7 +19,11 @@ Everything a port's build makes is under build/ports/<name>/ (the
     dropped.txt what the install made and the recipe didn't keep
 
 A `tree kept` port's source, sysroot and tools are in its kept tree
-instead (kept.py), which stays between builds.
+instead (kept.py), which stays between builds. `build --plan` does what a
+build does up to the recipe's own `plan` function (the kept tree brought up
+to date, the sysroot and tools made) and runs that instead of `build` and
+`install`: it says what the build would do (tools/cr/build.sh counts
+ninja's steps with it to size its claim) and builds and stages nothing.
 
 A port is out of date when its stamp changes: the SHA-256 of the
 builder's format, the recipe and every file in the port's directory, the
@@ -84,7 +90,7 @@ class Builder:
     """One run of the builder over a ports tree."""
 
     def __init__(self, tree, top, out, jobs=None, force=(), verbose=False, say=print,
-                 kept=None, clean=()):
+                 kept=None, clean=(), plan=False):
         self.tree = tree                  # tree.Tree
         self.top = top                    # the repository's top directory
         self.out = out                    # build/ports, or --out
@@ -92,6 +98,7 @@ class Builder:
         self.force = set(force) | set(clean)   # ports to build even when up to date
         self.kept = kept                  # a kept tree's directory (--kept), or None
         self.clean = set(clean)           # kept trees to remove first (--clean)
+        self.plan = plan                  # --plan: the recipe's plan() only, nothing built or staged
         self.verbose = verbose
         self.say = say
         self.sysroot = os.environ.get("JAMOS_BASE_SYSROOT",
@@ -175,12 +182,16 @@ class Builder:
         for name in todo:
             r = self.tree.recipes[name]
             self.stamps[name] = self.stamp(r)
-            if self.up_to_date(r, self.stamps[name]):
+            if self.plan and name not in names:   # a plan builds nothing: what it needs must be built
+                if not self.up_to_date(r, self.stamps[name]):
+                    raise BuildError("%s: %s is not built, so its plan can't be made" % (names[0], name))
+                continue
+            if self.up_to_date(r, self.stamps[name]) and not (self.plan and name in names):
                 self.say("%s: up to date" % name)
                 done.append((name, "up to date"))
                 continue
             self.build_one(r)
-            done.append((name, "built"))
+            done.append((name, "planned" if self.plan else "built"))
         return done
 
     def build_one(self, r):
@@ -188,20 +199,22 @@ class Builder:
                    toolchain.missing_tools(r, self.top))
         if missing:
             raise BuildError("%s: this machine lacks %s" % (r.name, ", ".join(missing)))
-        self.say("%s: building %s-%s r%d (%s, %s)" % (r.name, r.name, r.version, r.revision,
-                                                     r.style, r.place))
+        self.say("%s: %s %s-%s r%d (%s, %s)" % (r.name, "planning" if self.plan else "building", r.name,
+                                               r.version, r.revision, r.style, r.place))
         try:
             distfiles = [fetchmod.fetch(s, self.say) for s in r.sources]
         except fetchmod.FetchError as e:
             raise BuildError("%s: %s" % (r.name, e))
         base = self.base(r.name)
         stamp_path = os.path.join(base, "stamp")
-        if os.path.exists(stamp_path):
+        if os.path.exists(stamp_path) and not self.plan:
             os.remove(stamp_path)
         for d in ("sysroot", "bin", "work", "destdir", "stage", "tmp"):
+            if self.plan and d == "stage":   # the last build's stage and stamp stay as they are
+                continue
             shutil.rmtree(os.path.join(base, d), ignore_errors=True)
         os.makedirs(os.path.join(base, "tmp"))
-        self.log = os.path.join(base, "log")
+        self.log = os.path.join(base, "plan.log" if self.plan else "log")
         with open(self.log, "w") as f:
             f.write("%s %s-r%d, stamp %s\n" % (r.name, r.version, r.revision,
                                                self.stamps[r.name]))
@@ -210,6 +223,9 @@ class Builder:
             self._steps(r, base, distfiles)
         except (sourcemod.SourceError, stagemod.StageError, toolchain.ToolError) as e:
             raise BuildError("%s: %s" % (r.name, e))
+        if self.plan:
+            self.say("%s: planned in %.1f s (%s)" % (r.name, time.time() - start, self.log))
+            return
         with open(stamp_path, "w") as f:
             f.write(self.stamps[r.name] + "\n")
         with open(os.path.join(base, "port.sha256"), "w") as f:
@@ -249,6 +265,8 @@ class Builder:
         os.makedirs(paths["destdir"])
         env = toolchain.environment(r, bindir, sysroot, paths)
         self.run_style(r, srcdir, work, env, paths)
+        if self.plan:
+            return
         stage = os.path.join(base, "stage")
         programs, lines = stagemod.keep(r, paths["destdir"], srcdir, stage, paths["epoch"],
                                         self.say)
@@ -379,5 +397,5 @@ class Builder:
             self.run(["meson", "install", "-C", bdir, "--destdir", destdir], srcdir, env)
         else:
             sh = os.path.abspath(r.port_file("build.sh"))
-            for fn in ("build", "install"):
+            for fn in (("plan",) if self.plan else ("build", "install")):
                 self.run(["/bin/sh", "-ec", '. "$0"; %s' % fn, sh], srcdir, env)

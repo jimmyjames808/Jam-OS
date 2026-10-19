@@ -10,6 +10,11 @@ recipes in ports/, on the Mac or the test host's Linux
                                                 DIR (JAMOS_KEPT); --clean
                                                 removes it first (a clean
                                                 build of a huge port)
+             [--plan]                           only the recipe's plan(): what
+                                                the build would do (a kept
+                                                tree's ninja steps), nothing
+                                                built, stamp and stage as
+                                                they were
     ports.py lint [<port>...]                   check recipes (all of them:
                                                 make check runs it)
     ports.py fetch <port>...                    only download the sources
@@ -104,7 +109,8 @@ def cmd_build(args):
             print("ports: " + p)
         return 1
     b = buildmod.Builder(t, TOP, args.out, args.jobs, args.port if args.force else (),
-                         args.verbose, kept=args.kept, clean=args.port if args.clean else ())
+                         args.verbose, kept=args.kept, clean=args.port if args.clean else (),
+                         plan=getattr(args, "plan", False))
     try:
         b.build(args.port)
     except buildmod.BuildError as e:
@@ -197,6 +203,7 @@ def main(argv):
     b.add_argument("-j", "--jobs", type=int)
     b.add_argument("--kept", metavar="DIR", help="a kept tree's directory (portslib/kept.py)")
     b.add_argument("--clean", action="store_true", help="remove the named ports' kept trees first")
+    b.add_argument("--plan", action="store_true", help="only the recipe's plan(): what the build would do")
     b.add_argument("port", nargs="+")
     for name in ("lint", "graph"):
         sub.add_parser(name).add_argument("port", nargs="*")
