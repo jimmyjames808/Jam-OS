@@ -5,3 +5,4 @@ svc wayland
 mount /data rw
 right jit
 mount /pkg r
+svc audio

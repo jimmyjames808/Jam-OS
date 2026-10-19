@@ -63,6 +63,10 @@ use_pangocairo = false
 use_vaapi = false
 use_pulseaudio = false
 use_alsa = false
+# Sound through Jam OS's mixer (patches/0916: media/audio/jamos on libjam's
+# <audio.h>, the sysroot's include/jamos/libos); the program's list asks for
+# `svc audio`.
+use_jamos_audio = true
 use_cups = false
 use_kerberos = false
 use_nss_client_certs = false   # no NSS: Chrome's own root store verifies
