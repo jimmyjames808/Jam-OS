@@ -2571,7 +2571,7 @@ the layer; no Chromium patch, no kernel change.
 
 #### IC (2026-10-18)
 
-Track IC (branch `ic-inotify-base`, [INOTIFY-PLAN](INOTIFY-PLAN.md#ic-notes)):
+Track IC (branch `ic-inotify-base`, [HISTORY](HISTORY.md#file-watching-inotify)):
 the 165 `FilePathWatcher*` tests of `base/files/file_path_watcher_unittest.cc`
 on Jam OS's inotify (IP, IE1, IE2, IL1, IL2 merged).
 

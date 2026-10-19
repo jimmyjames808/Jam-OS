@@ -30,6 +30,103 @@ hashes are commits on main.
   2% of a process-to-process call; the cost was on the user side of the
   boundary.
 
+## File watching (inotify)
+
+*Planned 2026-10-17, built, reviewed and fixed 2026-10-18 to 2026-10-19.*
+`inotify_init` was `ENOSYS`, so Chromium's `base::FilePathWatcher` could not
+start and all 165 `FilePathWatcher*` tests of `base_unittests` sat on the
+skip list. The owner's rule (build the layer, don't patch Chromium) gave
+the design: the file services make the events, because only they see every
+change, through every view, by every process.
+
+What it is:
+- **The protocol.** A new `fs` method (`fs.watch`, 17) returns a *watcher
+  channel*; the `fswatch` protocol on it adds, removes and takes watches.
+  A kernel event with a user signal, "the bell", rings when a channel's
+  queue stops being empty. The queues, merge and overflow rules, ids with
+  generations and the caps are one library (`user/lib/fswatch.c`) that any
+  service links.
+- **extfs makes the events** (`user/services/extfs/watch.c`, with
+  `files.c`, `fsops.c`, `main.c`): every row of Linux's table (create,
+  delete, move with cookies, attrib, modify, open, close, `IN_DELETE_SELF`
+  when an orphan goes), held until the request's commit and queued then.
+  Watches are on inodes, so a change through `/jam` reaches a watch made
+  through `/tmp`'s view of the same volume. A close made before a request
+  is reported before that request's events (the order rule, which leans on
+  the port's order: utest `port_order` pins it).
+- **Views keep their rights.** A watcher channel is never wider than its
+  view: hidden names never appear in an event, and a watch whose inode a
+  rename takes out of the watcher's view ends (`IN_MOVE_SELF` if asked,
+  then `IN_IGNORED`).
+- **Restarts.** Watches and watcher records are in the state VMO, each
+  channel and its bell held by the keeper; a successor puts the watches
+  back and queues `IN_Q_OVERFLOW`, and rings the bell. A keeper that gives
+  a service up rings the bells itself (`keepch.put` carries a ring), so
+  `poll` and `epoll` wake when extfs is gone.
+- **libc's descriptor** (`user/posix/sys/inotify.c`): the four calls, a
+  kind whose readiness is the bell (so `poll`, `epoll` and `select` work as
+  for eventfd), `read` and `FIONREAD` taking records from each service and
+  handing out Linux's `struct inotify_event`. Watches in libc's own trees
+  (`/`, `/svc`, `/dev`, `/etc`, `/proc`, `/sys`) and on read-only mounts
+  are accepted and never fire ("quiet"). The limits are
+  `/proc/sys/fs/inotify/`: 8 descriptors a process (`EMFILE`), 1,024
+  watches a process on each volume and across its descriptors (`ENOSPC`),
+  512 queued events; a volume holds 8,192 watches.
+
+The owner's answers (2026-10-17, all three as recommended): **FAT watches
+later**: no track for fat, which answers `fs.watch` `ERR_NOT_SUPPORTED`,
+and libc refuses a watch on a writable FAT mount (`EOPNOTSUPP`; Chromium's
+watcher then stops at the first FAT component); **a watch whose inode
+leaves the watcher's view ends**, not Linux's way of following the inode;
+**the descriptor as `epoll`'s**: absent in a forked child, closed at
+`exec`, not handed to a spawned child. Decided as technical: events made
+by the services with one watcher channel per view, libc's cyclic `wd`s,
+Linux's merge rule, random cookie starts, a 0-byte `read` that never waits,
+and no kernel change (the one ABI change came later, with the review).
+
+The tracks: the protocol and library (IP), libc's descriptor (IL1), extfs's
+events (IE1), libc's limits and the fork and exec rules (IL2), extfs's
+rights and restarts (IE2), Chromium's tests (IC), the review (IR) and its
+follow-ups (IR2). **IC: all 165 `FilePathWatcher*` tests pass** on an ext
+`/data`, with `TMPDIR` on it or not; they moved to the FAT skip list.
+Nothing failed in libc's or extfs's watching; `RacyRecursiveWatch` takes
+208 to 337 s because each of its 2,000 make-write-remove cycles is a commit
+on extfs, not because of the watches (posixtest times both). The whole
+program: 8,874 pass / 37 self-skip / 45 listed, no regression.
+
+The review (docs/INOTIFY-REVIEW.md, by an agent that wrote none of it):
+0 High, 5 Medium, 8 Low. Fixed with a test each: a successor runs the reach
+check of a rename it answers from the journal; libc ends a removed watch
+whose `IN_IGNORED` an overflow dropped; a watch the reach check cannot
+place (deeper than 2,048 directories, unreadable) now ends instead of
+staying on; the reach check looks only where a rename can change a reach.
+Two design questions were answered by the main session: a process's share
+(1,024 watches on a volume across its channels, counted by the writer pid
+that `fs.watch` carries; libc counts across its descriptors; the volume's
+cap 4,096 to 8,192) and a given-up service's bells (the keeper's ring).
+IR2 added the hostile runs as utests on extfs itself: a rename storm with
+extfs killed every 200 ms (some 65,000 renames, none failed, only whole
+records, one overflow a restart), eight threads closing and renaming while
+another reads (each thread's records in order), protocol abuse, and a
+watcher that never reads (extfs's pages and handles flat). None found a
+High or Medium. Two Lows came out of them and were fixed later: a call with
+txid 0 is now dropped by every generated server (genidl), and a process at
+its limit can still change an existing watch's mask.
+
+Open, none on Chromium's path: fat's watches (the owner's "later"); a share
+per job, since eight processes can still fill a volume's 8,192 watches (the
+sandbox's renderers would be one job); a directory removed in the window of
+a crash loses its `IN_DELETE_SELF`; two closes before one request come in
+slot order, not close order; `max_user_instances` 8 counts a descriptor
+watching both `/data` and `/tmp` twice. The review lists each.
+
+What it taught: Linux's events were checked against its source before the
+table was written (a replaced rename target gets `IN_ATTRIB`;
+`RENAME_EXCHANGE` is two moves; `IN_ISDIR` is never on `IN_DELETE_SELF`),
+and the first notes' deviations (a bell with two bits so a `poll` cannot
+sleep through records another thread's take left) came from writing the
+tests against fake services before any real one existed.
+
 ## M12.1: the code check
 
 *2026-10-09 to 2026-10-11.* A check of what M12 and G1 changed, by fresh

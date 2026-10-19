@@ -110,7 +110,7 @@ On Chromium's path (in roughly this order, much of it in parallel):
     planned in [WRITEMAP-PLAN.md](WRITEMAP-PLAN.md) (about 1k in the
     kernel, 0.85k in extfs and libc);
   - file watching (inotify: base's `FilePathWatcher`, 165 tests): built
-    2026-10-18 ([INOTIFY-PLAN.md](INOTIFY-PLAN.md): the file services make
+    2026-10-18 ([HISTORY.md](HISTORY.md#file-watching-inotify): the file services make
     the events, extfs on ext, libc's descriptor; writable FAT refuses
     watches) and reviewed ([INOTIFY-REVIEW.md](INOTIFY-REVIEW.md)): all 165
     pass;
