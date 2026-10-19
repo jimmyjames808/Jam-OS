@@ -494,6 +494,11 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
  * naming each directory). ERR_NAME_TOO_LONG past FS_PATH_LEN bytes. */
 status_t walk_inside(const struct xf_ctx *c, const struct xf_walk *w, char *out,
                      uint32_t *out_len);
+/* The directory holding directory *in (its ".." entry) into *parent, and
+ * its one name there (a scan of it) into name (EXT_NAME_MAX + 1 bytes).
+ * ERR_NOT_FOUND: the volume's root, removed, or not a directory; ERR_IO. */
+status_t walk_parent(const struct ext_inode *in, struct ext_inode *parent, char *name,
+                     uint32_t *len);
 /* Where directory ino lies (generation gen; 0: not checked), into *p: as
  * found before, unless a directory moved since (walk_moved), else found
  * now by climbing ".." entries to the volume's root. stop (0: none): the

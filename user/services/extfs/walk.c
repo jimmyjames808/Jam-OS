@@ -151,6 +151,23 @@ static status_t name_of(uint32_t parent, uint32_t child, char *name, uint32_t *l
     return st == OK || st == ERR_NOT_FOUND ? ERR_IO : st;
 }
 
+status_t walk_parent(const struct ext_inode *in, struct ext_inode *parent, char *name,
+                     uint32_t *len)
+{
+    struct ext_inode dir = *in;
+    if (!is_dir(&dir) || dir.ino == EXT_ROOT_INO || !dir.d.links_count)
+        return ERR_NOT_FOUND;   /* the root, or removed: in no directory */
+    uint32_t up = parent_of(&dir);
+    if (!up)
+        return ERR_IO;
+    status_t st = ext_iget(&vol.fs, up, 0, parent);
+    if (st == OK && !is_dir(parent))
+        st = ERR_IO;
+    if (st == OK)
+        st = name_of(up, dir.ino, name, len);
+    return st == ERR_NOT_FOUND ? ERR_IO : st;
+}
+
 status_t walk_place(struct xf_place *p, uint32_t ino, uint32_t gen, uint32_t stop,
                     uint32_t stop_gen)
 {
