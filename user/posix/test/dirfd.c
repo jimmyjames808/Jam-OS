@@ -25,7 +25,7 @@
  *     namespace ("/"; on FAT it stops at the root, M13's rule);
  *   - forked: a forked child makes a file through a directory descriptor,
  *     and writes one opened from it (its open made again there);
- *   - many: 300 directories open at once, more than the 64 channels a
+ *   - many: 100 directories open at once, more than the 64 channels a
  *     process has of a volume: the rest are text descriptions (the log
  *     says so once), so a rename is followed by the first, not by the
  *     last; each is written in and listed. */
@@ -46,7 +46,7 @@
 
 #define EXT4_MAGIC 0xef53   /* statfs f_type of ext2, 3 and 4 */
 #define LEVELS     26       /* DeleteDeep's */
-#define MANY       300      /* directories open at once: past the 64 channels */
+#define MANY       100      /* directories open at once: past the 64 channels */
 #define TOP_MAX    64       /* "/data/ptdirfd" and the names under it */
 
 static char long_name[256];   /* NAME_MAX bytes of 'a' */
@@ -426,8 +426,8 @@ static void forked(const char *top, bool ext)
         close(tfd);
 }
 
-/* 300 directories open: a process's 64 channels of a volume, then text
- * descriptions. */
+/* 100 directories open (300 at first: the init run neared its 300 s
+ * cap): a process's 64 channels of a volume, then text descriptions. */
 static void many(const char *top, bool ext)
 {
     static int fds[MANY];
