@@ -387,7 +387,8 @@ static const struct exec_ops open_ops = { .open = op_open };
  * holding P's image is P, or a child of P's with all P has. Powers are
  * the exception: a root can't be passed
  * on (dp_root_rights: no RIGHT_TRANSFER), so no fork or posix_spawn child
- * of a program holds one, and init can't see whether the caller is the
+ * of a program holds one (the JIT power, SR_JIT, goes to a forked child,
+ * but the caller may have given it up), and init can't see whether the caller is the
  * program's first process, which does: a child whose list asks for a
  * power is raised whoever calls. Anything else is not known, and not
  * known is raised: no image (a boot-image program, a native caller that
@@ -585,8 +586,8 @@ static status_t start_child(struct prog *p, const char **argv, int argc, const c
     for (unsigned i = 0; i < p->w.n; i++)
         grants[i] = p->w.grant[i];
     grants[p->w.n] = NULL;
-    struct spawn_handle x[2] = { { SR_SIGNALS, signals } };
-    rights_t xr[2] = { RIGHT_SAME };
+    struct spawn_handle x[3] = { { SR_SIGNALS, signals } };
+    rights_t xr[3] = { RIGHT_SAME };
     unsigned nx = 1;
     status_t st = dp_job_create(job, sub);   /* its own message budget, inside the caller's */
     if (st == OK && p->w.rights) {
@@ -596,6 +597,14 @@ static status_t start_child(struct prog *p, const char **argv, int argc, const c
         if (st == OK) {
             x[nx].role = SR_RESOURCE;
             xr[nx++] = dp_root_rights(p->w.rights);
+        }
+    }
+    if (st == OK && (p->w.rights & WANT_RIGHT_JIT)) {
+        /* The JIT power alone, which it may hand on (<dataprog.h>). */
+        st = jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHT_SAME, &x[nx].h);
+        if (st == OK) {
+            x[nx].role = SR_JIT;
+            xr[nx++] = DP_JIT_RIGHTS;
         }
     }
     if (st != OK) {

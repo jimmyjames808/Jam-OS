@@ -257,6 +257,8 @@ status_t info_of(handle_t job, struct job_info *ji);
 status_t new_job(handle_t *out);
 /* Start "utest <mode> [arg]" in job, with up to one extra handle. */
 status_t child(const char *mode, const char *arg, handle_t job, handle_t extra, handle_t *proc);
+status_t child_as(const char *mode, const char *arg, handle_t job, uint32_t role, handle_t extra,
+                  handle_t *proc);
 /* Run a child to the end in a fresh job; *info says how it ended, and the
  * job must be empty afterwards. limit_kind/limit (0 = none) go on the job. */
 bool run_child(const char *mode, uint32_t limit_kind, uint64_t limit, struct process_info *info);

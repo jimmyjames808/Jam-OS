@@ -94,6 +94,7 @@ struct program {
     handle_t sealed;     /* a file's program sealed by /svc/exec: its exec_prog channel
                           * (init starts it), or 0 */
     handle_t handover;   /* with sealed: our end of the channel its hand-over goes on */
+    bool     self;       /* /proc/self/exe: this program again (self_program) */
 };
 
 /* /svc/exec's refusal as posix_spawn's errno value. */
@@ -175,8 +176,11 @@ static long self_program(struct program *p)
 {
     const char *exe = proc_exe();   /* never under /proc: procfs.c takes no such path */
     handle_t img = startup_handle(SR_SELF_IMAGE);
-    if (!img)
-        return exe ? program(exe, p) : -ENOENT;
+    if (!img) {
+        long e = exe ? program(exe, p) : -ENOENT;
+        p->self = true;   /* our own file, by its name */
+        return e;
+    }
     uint64_t size;
     status_t st = jam_vmo_get_size(img, &size);
     if (st == OK)
@@ -194,7 +198,8 @@ static long self_program(struct program *p)
  * may not run). */
 static long program(const char *abs, struct program *p)
 {
-    if (proc_is_exe(abs))
+    p->self = proc_is_exe(abs);
+    if (p->self)
         return self_program(p);
     char *name = p->name;
     for (unsigned i = 0; i < sizeof(boot_dirs) / sizeof(boot_dirs[0]); i++) {
@@ -579,7 +584,14 @@ static long exec_replace(const struct jam_spawn_req *r, struct spawnfd *t,
         return e;
     }
     exec_exe(p, exe);
-    struct spawn_handle x = { SR_SIGNALS, sig };
+    /* The JIT power goes on to this program again (docs/FORK-PLAN.md
+     * section 1.10, Q4 (A): Chromium's children are /proc/self/exe exec'd in
+     * a forked child), never to another program. */
+    struct spawn_handle x[2] = { { SR_SIGNALS, sig }, { SR_JIT, HANDLE_INVALID } };
+    unsigned nx = sig ? 1 : 0;
+    if (p->self && startup_handle(SR_JIT) &&
+        jam_handle_duplicate(startup_handle(SR_JIT), RIGHT_SAME, &x[nx].h) == OK)
+        x[nx++].role = SR_JIT;
     struct exec_job j = { r, t, ho, exe, false, 0 };
     struct spawn_args a = {
         .path = p->name,
@@ -591,8 +603,8 @@ static long exec_replace(const struct jam_spawn_req *r, struct spawnfd *t,
         .envp = r->envp ? (const char *const *)r->envp : no_env,
         .ns = NS_ALL,
         .stack_size = CHILD_STACK,
-        .extra = &x,
-        .nextra = sig ? 1 : 0,
+        .extra = x,
+        .nextra = nx,
         .before_start = exec_handover,
         .before_start_ctx = &j,
     };
@@ -621,7 +633,7 @@ static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
     struct spawnfd *t = NULL;
     struct posixfds_out ho = { 0 };
     struct program prog = { jam_malloc(PATH_MAX), HANDLE_INVALID, 0, HANDLE_INVALID,
-                            HANDLE_INVALID };
+                            HANDLE_INVALID, false };
     long e = prog.name ? spawnfd_begin(&t) : -ENOMEM;
     if (!e)
         e = spawnfd_apply(t, r->ops, r->nops);

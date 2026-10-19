@@ -1,23 +1,28 @@
 /* posixtest's jit section: MAP_JIT (docs/CR-PLAN.md section 12, track
  * CJ2) from a program without the power. posixtest's list has no `right
- * jit`, so neither the shell nor init's run gives it RIGHT_ROOT_JIT:
+ * jit`, so neither the shell nor init's run gives it the JIT power
+ * (SR_JIT), and its root never has RIGHT_ROOT_JIT:
  *
  *   - MAP_JIT is EPERM (writable and executable, writable, a PROT_NONE
  *     reservation), and execute on any other memory EACCES as ever;
  *   - MAP_JIT with MAP_SHARED, or over a descriptor, is EINVAL;
+ *   - prctl's PR_GET_MDWE says memory-deny-write-execute is in force
+ *     (PR_MDWE_REFUSE_EXEC_GAIN), PR_SET_MDWE with it is 0 and without it
+ *     EPERM (never undone), other flags or arguments EINVAL;
  *   - bin/jittest started by posix_spawn gets no root from us (a child
  *     gets nothing of its parent's powers), so its `without` mode finds
  *     MAP_JIT refused too, whatever its list says.
  *
- * With the power (a root that has it) the refusals are skipped, saying
- * so, and one MAP_JIT page is written and run instead. jittest's own run
- * with the power is the shell's (tools/shell-tests/jit.txt). */
+ * With the power the refusals are skipped, saying so, and one MAP_JIT page
+ * is written and run instead. jittest's own run with the power is the
+ * shell's (tools/shell-tests/jit.txt). */
 #include <stdio.h>
 #include <errno.h>
 #include <jamos/libjam.h>
 #include <spawn.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include "pt.h"
@@ -26,6 +31,12 @@
 #define RW   (PROT_READ | PROT_WRITE)
 #define RWX  (PROT_READ | PROT_WRITE | PROT_EXEC)
 #define ANON (MAP_PRIVATE | MAP_ANONYMOUS)
+
+#ifndef PR_SET_MDWE   /* Linux 6.3's; musl 1.2.6's <sys/prctl.h> has none */
+#define PR_SET_MDWE 65
+#define PR_GET_MDWE 66
+#define PR_MDWE_REFUSE_EXEC_GAIN 1
+#endif
 
 extern char **environ;
 
@@ -36,9 +47,9 @@ static bool refused(void *p, int err)
 
 static bool holds_power(void)
 {
-    handle_t root = startup_handle(SR_RESOURCE);
+    handle_t power = startup_handle(SR_JIT);
     struct handle_info hi;
-    return root && jam_handle_info(root, &hi) == OK && (hi.rights & RIGHT_ROOT_JIT);
+    return power && jam_handle_info(power, &hi) == OK && (hi.rights & RIGHT_ROOT_JIT);
 }
 
 static rights_t rights_of(handle_t h)
@@ -173,8 +184,17 @@ void pt_jit(char **argv)
         CHECK(refused(mmap(NULL, PG, RW, ANON | MAP_JIT, -1, 0), EPERM));
         CHECK(refused(mmap(NULL, 1ul << 30, PROT_NONE, ANON | MAP_NORESERVE | MAP_JIT, -1, 0),
                       EPERM));
+        /* Memory-deny-write-execute: in force for every process without
+         * the power, and never undone. */
+        CHECK(prctl(PR_GET_MDWE, 0L, 0L, 0L, 0L) == PR_MDWE_REFUSE_EXEC_GAIN);
+        CHECK(prctl(PR_SET_MDWE, (long)PR_MDWE_REFUSE_EXEC_GAIN, 0L, 0L, 0L) == 0);
+        CHECK(prctl(PR_SET_MDWE, 0L, 0L, 0L, 0L) == -1 && errno == EPERM);
+        CHECK(prctl(PR_SET_MDWE, 4L, 0L, 0L, 0L) == -1 && errno == EINVAL);
+        CHECK(prctl(PR_SET_MDWE, (long)PR_MDWE_REFUSE_EXEC_GAIN, 1L, 0L, 0L) == -1 &&
+              errno == EINVAL);
+        CHECK(prctl(PR_GET_MDWE, 1L, 0L, 0L, 0L) == -1 && errno == EINVAL);
     } else {
-        printf("posixtest: jit: our root holds RIGHT_ROOT_JIT: the refusals skipped\n");
+        printf("posixtest: jit: we hold the JIT power: the refusals skipped\n");
         unsigned char *p = mmap(NULL, PG, RWX, ANON | MAP_JIT, -1, 0);
         CHECK(p != MAP_FAILED);
         if (p != MAP_FAILED) {

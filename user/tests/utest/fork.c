@@ -22,8 +22,9 @@
  *     nothing is left (pages, handles, threads as before); once it can,
  *     the fork works, the child's charge shows while it lives and is back
  *     once it has gone.
- *   fork_jit: with the JIT power (as our SR_USER): the child gets no power
- *     and no root, our writable JIT mapping isn't in it, and our
+ *   fork_jit: with the JIT power (as our SR_JIT): the child gets a
+ *     duplicate of it (FORK-PLAN Q4 (A)) and makes JIT memory of its own
+ *     with it, but no root; our writable JIT mapping isn't in it, and our
  *     execute-only one runs there and can't be made writable (CJR's
  *     finding 1, FORK-PLAN section 1.10).
  *   fork_vmar_clone_args: vmar_clone's arrays: n past VMAR_CLONE_MAX,
@@ -537,20 +538,37 @@ typedef int (*ret_fn)(void);
 static int jit_fork_child(uint64_t w_at, uint64_t x_at, const handle_t *ours,
                           const uint64_t *koids)
 {
+    handle_t power = startup_handle(SR_JIT), vmar = startup_handle(SR_SELF_VMAR), v, x;
     MUST(!startup_handle(SR_USER) && !startup_handle(SR_RESOURCE));
-    for (unsigned i = 0; i < 3; i++)
+    MUST(power && koid_of(power) == koids[0]);   /* the power, a duplicate of ours */
+    struct handle_info hi;
+    MUST_ST(jam_handle_info(power, &hi), OK);
+    MUST(hi.rights == (RIGHT_ROOT_JIT | RIGHT_DUPLICATE | RIGHT_TRANSFER));
+    for (unsigned i = 1; i < 3; i++)
         MUST(stale(ours[i], koids[i]));
     struct map_info mi;
     int64_t n = jam_process_get_maps(startup_handle(SR_SELF_PROCESS), w_at, &mi, 1);
     MUST(n == 0 || (n == 1 && mi.base > w_at));   /* the writable JIT mapping: none */
     MUST(((ret_fn)(uintptr_t)x_at)() == 42);       /* the execute-only one runs */
     MUST_ST(jam_vmar_protect(startup_handle(SR_SELF_VMAR), x_at, PG, RW), ERR_ACCESS_DENIED);
+    /* JIT memory of its own, made with it (after the look at w_at: it may
+     * be placed there). */
+    uint64_t at = 0;
+    MUST_ST(jam_vmo_create(PG, 0, &v), OK);
+    MUST_ST(jam_vmo_make_jit(v, power, &x), OK);
+    MUST_ST(jam_vmar_map(vmar, x, 0, PG, RW | VMAR_EXEC, &at), OK);
+    volatile uint8_t *mine = (volatile uint8_t *)(uintptr_t)at;
+    mine[0] = 0xb8;   /* mov eax, 7; ret */
+    mine[1] = 7;
+    mine[2] = mine[3] = mine[4] = 0;
+    mine[5] = 0xc3;
+    MUST(((ret_fn)(uintptr_t)at)() == 7);
     return 0;
 }
 
 static int fork_jit(void)
 {
-    handle_t power = startup_handle(SR_USER), vmar = startup_handle(SR_SELF_VMAR), v, x, xr;
+    handle_t power = startup_handle(SR_JIT), vmar = startup_handle(SR_SELF_VMAR), v, x, xr;
     MUST(power);
     MUST_ST(jam_vmo_create(PG, 0, &v), OK);
     MUST_ST(jam_vmo_make_jit(v, power, &x), OK);
@@ -714,15 +732,16 @@ int fork_child_mode(int argc, char **argv)
 /* ---- the tests ------------------------------------------------------------------------ */
 
 /* Run "utest <mode>" to its end in a job of its own (kind/limit on it; 0:
- * none) with extra as its SR_USER: it exited with 0 and left the job
- * empty (its children all gone). */
-static bool run_mode(const char *mode, uint32_t kind, uint64_t limit, handle_t extra)
+ * none) with extra as its role (SR_USER: run_mode): it exited with 0 and
+ * left the job empty (its children all gone). */
+static bool run_mode_role(const char *mode, uint32_t kind, uint64_t limit, uint32_t role,
+                          handle_t extra)
 {
     handle_t job, proc;
     CHECK_ST(new_job(&job), OK);
     if (kind)
         CHECK_ST(jam_job_set_limit(job, kind, limit), OK);
-    CHECK_ST(child(mode, NULL, job, extra, &proc), OK);
+    CHECK_ST(child_as(mode, NULL, job, role, extra, &proc), OK);
     struct process_info info = { 0 };
     status_t st = spawn_wait(proc, 30 * NS_PER_S, &info);
     if (st != OK || info.killed || info.exit_code != 0)
@@ -738,6 +757,17 @@ static bool run_mode(const char *mode, uint32_t kind, uint64_t limit, handle_t e
             FAIL("\"%s\" left %lu units of job kind %u", mode, (unsigned long)ji.used[k], k);
     CHECK_ST(jam_handle_close(job), OK);
     return true;
+}
+
+static bool run_mode(const char *mode, uint32_t kind, uint64_t limit, handle_t extra)
+{
+    return run_mode_role(mode, kind, limit, SR_USER, extra);
+}
+
+/* run_mode with extra given as role. */
+static bool run_mode_as(const char *mode, uint32_t role, handle_t extra)
+{
+    return run_mode_role(mode, 0, 0, role, extra);
 }
 
 bool t_fork_memory(void)
@@ -762,13 +792,13 @@ bool t_fork_nomem(void)
 
 bool t_fork_jit(void)
 {
-    handle_t root = startup_handle(SR_RESOURCE), power;
-    if (!root || jam_handle_duplicate(root, RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_ROOT_JIT,
-                                      &power) != OK) {
-        printf("utest: %s: no RIGHT_ROOT_JIT on our root: skipped\n", utest_cur);
+    handle_t jit = startup_handle(SR_JIT), power;
+    if (!jit || jam_handle_duplicate(jit, RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_ROOT_JIT,
+                                     &power) != OK) {
+        printf("utest: %s: no JIT power (SR_JIT): skipped\n", utest_cur);
         return true;
     }
-    return run_mode("fork-jit", 0, 0, power);   /* power moved */
+    return run_mode_as("fork-jit", SR_JIT, power);   /* power moved */
 }
 
 bool t_fork_vmar_clone_args(void)

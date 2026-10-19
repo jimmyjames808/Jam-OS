@@ -62,17 +62,24 @@
  * Chromium's zero segment ask for theirs this way and check the answer.
  *
  * JIT memory (docs/CR-PLAN.md section 12): mmap with MAP_JIT (private
- * anonymous only, else EINVAL) in a program holding RIGHT_ROOT_JIT (its
- * list's `right jit`, approved) maps a JIT VMO (vmo_make_jit), the one
+ * anonymous only, else EINVAL) in a program holding the JIT power (SR_JIT:
+ * its list's `right jit`, approved, or a forked parent's) maps a JIT VMO
+ * (vmo_make_jit), the one
  * kind the kernel lets a mapping hold writable and executable; the table
  * marks it MT_JIT, and mmap and mprotect allow PROT_EXEC, alone or with
  * PROT_WRITE, there and nowhere else. A program may keep it writable and
  * executable (V8's way on x86-64), or switch it between PROT_READ |
  * PROT_WRITE and PROT_READ | PROT_EXEC with mprotect. Without the power
- * MAP_JIT is EPERM. MAP_FIXED | MAP_JIT over JIT memory decommits in place
- * as refresh_locked does; a MAP_FIXED without MAP_JIT over it (or with it
- * over other memory) replaces it, so a range is JIT memory exactly when the
- * last mmap there said MAP_JIT.
+ * MAP_JIT is EPERM. A MAP_FIXED of private anonymous memory over JIT
+ * memory, with MAP_JIT or without it, decommits in place as refresh_locked
+ * does, and the range stays JIT memory: that remap is how Linux programs
+ * decommit (PartitionAlloc's, under V8's WebAssembly code space, which
+ * makes the range executable again later). Where the kernel refuses the
+ * new protection there (a forked child's execute-only copy) it is replaced
+ * by plain memory instead. Any other MAP_FIXED over JIT memory replaces
+ * it, as MAP_FIXED | MAP_JIT replaces other memory; so a range is JIT
+ * memory from a MAP_JIT there until it is unmapped or something other
+ * than private anonymous memory is mapped over it.
  *
  * brk: a 1 GiB reservation (one VMO, mapped on the first call, in the
  * table like any mapping), the break moving inside it; pages above a
@@ -295,11 +302,11 @@ static long create_err(status_t st)
 }
 
 /* A new VMO of len bytes for a mapping of kind (MT_*): JIT memory for
- * MT_JIT (EPERM without RIGHT_ROOT_JIT on our root), else plain. */
+ * MT_JIT (EPERM without the JIT power, SR_JIT), else plain. */
 static long fresh_vmo(uint64_t len, uint32_t kind, handle_t *out)
 {
-    handle_t root = startup_handle(SR_RESOURCE), vmo;
-    if ((kind & MT_JIT) && !root)
+    handle_t power = startup_handle(SR_JIT), vmo;
+    if ((kind & MT_JIT) && !power)
         return -EPERM;
     status_t st = jam_vmo_create(len, 0, &vmo);
     if (st != OK)
@@ -308,8 +315,23 @@ static long fresh_vmo(uint64_t len, uint32_t kind, handle_t *out)
         *out = vmo;
         return 0;
     }
-    st = jam_vmo_make_jit(vmo, root, out);   /* vmo is gone, whatever the status */
+    st = jam_vmo_make_jit(vmo, power, out);   /* vmo is gone, whatever the status */
     return st == ERR_ACCESS_DENIED || st == ERR_WRONG_TYPE ? -EPERM : create_err(st);
+}
+
+bool mem_jit_power(void)
+{
+    lock_take(&mem_lock);
+    bool held = startup_handle(SR_JIT) != HANDLE_INVALID;
+    lock_give(&mem_lock);
+    return held;
+}
+
+void mem_jit_give_up(void)
+{
+    lock_take(&mem_lock);
+    startup_handle_drop(SR_JIT);
+    lock_give(&mem_lock);
 }
 
 /* What a mapping maps: a VMO made for it (vmo HANDLE_INVALID: a new
@@ -737,7 +759,11 @@ long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
     } else if ((flags & MAP_FIXED) && (src.kind & MT_ANON) && all_anon(at, at + size, src.kind)) {
         r = refresh_locked(at, size, perms, flags & MAP_POPULATE);
     } else if (flags & MAP_FIXED) {
-        r = replace_locked(at, size, perms, flags & MAP_POPULATE, &src);
+        r = -EACCES;
+        if (src.kind == MT_ANON && all_jit_locked(at, at + size))
+            r = refresh_locked(at, size, perms, flags & MAP_POPULATE);   /* JIT memory still */
+        if (r == -EACCES)
+            r = replace_locked(at, size, perms, flags & MAP_POPULATE, &src);
     } else {
         r = -EEXIST;
         if (src.vmo)

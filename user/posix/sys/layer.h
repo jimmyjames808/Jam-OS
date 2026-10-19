@@ -48,6 +48,11 @@ void mem_forget(uint64_t addr, uint64_t len);
 #define MEM_FILE    (1u << 1)   /* a read-only private mapping on a file's own pages */
 #define MEM_BRK     (1u << 2)   /* the break's reservation */
 uint32_t mem_kind_at(uint64_t addr);
+/* The JIT power (SR_JIT, docs/CR-PLAN.md section 12): whether we hold it,
+ * and giving it up for good (prctl's PR_SET_MDWE): closed under mem.c's
+ * lock, so no mmap of ours is using it meanwhile. */
+bool mem_jit_power(void);
+void mem_jit_give_up(void);
 /* The TSC's rate (Hz) from the time page, or 0 without one (time.c). */
 uint64_t time_tsc_hz(void);
 /* The soft limit of a resource (rlimit.c): RLIMIT_NOFILE and RLIMIT_DATA are

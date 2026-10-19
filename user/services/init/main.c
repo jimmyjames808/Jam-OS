@@ -42,6 +42,7 @@
  * does; they are stopped after volumes, before devmgr. A run without a
  * card or without `net.host` (every QEMU run but the network tests') is
  * exactly what it was. */
+#include <dataprog.h>
 #include <devmgr.h>
 #include <idl/devmgr.h>
 #include <os.h>
@@ -51,9 +52,10 @@
 
 #define MAX_WORDS     16
 /* The root's powers an init.cfg program gets (<jam/abi.h> RIGHT_ROOT_*;
- * the pager power for utest's own fat, which it supervises as volumes does),
- * and JIT memory (RIGHT_ROOT_JIT) only for one whose list says `right jit`
- * (utest's run of code it writes; test_root).
+ * the pager power for utest's own fat, which it supervises as volumes does);
+ * JIT memory only for one whose list says `right jit` (utest's run of code
+ * it writes; jit_wanted), as the shell and /svc/exec give it: SR_JIT, the
+ * power alone (<dataprog.h> DP_JIT_RIGHTS), never on the root.
  * RIGHT_WRITE is none of them: utest checks that it gives no power over
  * the root (the screen and the serial port have powers of their own). */
 #define TEST_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_VMEX | \
@@ -156,19 +158,16 @@ static status_t wait_program(handle_t proc, uint64_t timeout_ns, struct process_
     return jam_process_get_info(proc, info);
 }
 
-/* The root's powers for program path in bootfs: TEST_ROOT, and JIT memory
- * if its list asks for it (as the shell and /svc/exec give it: no list, no
- * JIT power). */
-static rights_t test_root(const char *path)
+/* Does program path in bootfs ask for JIT memory (`right jit`)? Then it
+ * gets SR_JIT, as the shell and /svc/exec give it: no list, no power. */
+static bool jit_wanted(const char *path)
 {
     static struct wants w;   /* one program at a time */
     const struct bootfs_view *fs;
     const void *data;
     uint64_t size;
-    if (bootfs_default(&fs) != OK || bootfs_lookup(fs, path, &data, &size) != OK ||
-        wants_read(data, size, &w) != OK)
-        return TEST_ROOT;   /* spawn says what's wrong with it */
-    return TEST_ROOT | (w.rights & WANT_RIGHT_JIT ? RIGHT_ROOT_JIT : 0);
+    return bootfs_default(&fs) == OK && bootfs_lookup(fs, path, &data, &size) == OK &&
+           wants_read(data, size, &w) == OK && (w.rights & WANT_RIGHT_JIT);
 }
 
 /* Run one program to completion. Returns true if it exited 0. */
@@ -186,17 +185,22 @@ static bool run(int argc, char **argv)
      * figures, the clock) and to make a VMO executable (utest's tests of
      * that); devmgr's channels are in our namespace (/svc), which it gets
      * whole. */
-    struct spawn_handle x[1] = { { SR_RESOURCE, HANDLE_INVALID } };
-    st = jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHTS_BASIC | test_root(argv[0]),
-                              &x[0].h);
+    struct spawn_handle x[2] = { { SR_RESOURCE, HANDLE_INVALID }, { SR_JIT, HANDLE_INVALID } };
+    unsigned nx = jit_wanted(argv[0]) ? 2 : 1;
+    st = jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHTS_BASIC | TEST_ROOT, &x[0].h);
+    if (st == OK && nx == 2)
+        st = jam_handle_duplicate(startup_handle(SR_RESOURCE), DP_JIT_RIGHTS, &x[1].h);
     if (st != OK) {
         init_say("init: %s: no handles for it (%s)", argv[0], status_str(st));
+        for (unsigned i = 0; i < nx; i++)
+            if (x[i].h)
+                jam_handle_close(x[i].h);
         jam_handle_close(job);
         return false;
     }
     struct spawn_args a = {
         .path = argv[0], .argc = argc, .argv = (const char *const *)argv, .job = job,
-        .extra = x, .nextra = 1, .ns = NS_ALL,
+        .extra = x, .nextra = nx, .ns = NS_ALL,
     };
     uint64_t t0 = now();
     st = spawn(&a, &proc);

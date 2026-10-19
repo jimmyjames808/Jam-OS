@@ -15,7 +15,8 @@
  * for every program in the boot image: the services and mounts it names,
  * each mount a view (read-only, or writable with the top-level etc left
  * alone: <fsview.h>), and the root resource with only the powers it names
- * (without RIGHT_TRANSFER: it can't pass them on).
+ * (without RIGHT_TRANSFER: it can't pass them on); `right jit` is the JIT
+ * power alone, SR_JIT, which it may pass on (<dataprog.h>).
  * Every program also gets its terminal: a PROGRAM-level console channel of
  * its own (console.new_client: write, keys while it runs, the screen; no
  * input sources, no new channels), and its output channel in a pipe. A
@@ -154,7 +155,7 @@ static bool find_program(const char *argv0, char *path, size_t cap)
     return st == OK && !dir;
 }
 
-#define RUN_HANDLES 4    /* the most program_handles gives, and a POSIX program's signal channel */
+#define RUN_HANDLES 5    /* the most program_handles gives, and a POSIX program's signal channel */
 
 /* The handles it starts with (see the top), each with the rights its copy
  * gets in xr; *out_r: its stdout's read end when stdout_pipe (we are in a
@@ -169,6 +170,11 @@ static unsigned program_handles(const struct wants *w, bool bg, bool stdout_pipe
     if (w->rights && sh_root() && jam_handle_duplicate(sh_root(), RIGHT_SAME, &h) == OK) {
         xr[nx] = dp_root_rights(w->rights);   /* never RIGHT_TRANSFER */
         x[nx++] = (struct spawn_handle){ SR_RESOURCE, h };
+    }
+    if ((w->rights & WANT_RIGHT_JIT) && sh_root() &&
+        jam_handle_duplicate(sh_root(), RIGHT_SAME, &h) == OK) {
+        xr[nx] = DP_JIT_RIGHTS;   /* the JIT power alone, which it may hand on */
+        x[nx++] = (struct spawn_handle){ SR_JIT, h };
     }
     if (!bg && console_new_client_until(sh_console(), now() + 5 * NS_PER_S, 2, &h) == OK) {
         xr[nx] = RIGHT_SAME;

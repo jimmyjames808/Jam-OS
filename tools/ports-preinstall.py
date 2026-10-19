@@ -114,6 +114,8 @@ def wants_text(lines):
             shown += ["net", "accepting connections from the network"]
         elif w[0] == "svc" and len(w) == 2:
             shown.append(w[1])
+        elif w == ["right", "jit"]:   # what it means, for the owner's yes
+            shown.append("may write and run its own code: JIT")
         elif w[0] == "right" and len(w) == 2:
             shown.append("the kernel's " + w[1])
         else:

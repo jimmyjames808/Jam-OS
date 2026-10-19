@@ -4,10 +4,11 @@
  * runs it, patches it in place and runs it again; an execute-only
  * duplicate runs the same bytes and can't write them, a write-only one
  * can't run them, and a duplicate passed on through a channel keeps
- * exactly its rights. Every other VMO keeps W^X. Needs RIGHT_ROOT_JIT on
- * our root (init's run: TEST_ROOT; the shell: our list's `right jit`);
- * without it the test checks the refusal and skips the rest. The kernel's
- * half of the rules is in kernel/test/test_vmo_jit.c. */
+ * exactly its rights. Every other VMO keeps W^X. Needs the JIT power,
+ * SR_JIT (init's run and the shell give it for our list's `right jit`;
+ * our root never has it); without it the test checks the root's refusal
+ * and skips the rest. The kernel's half of the rules is in
+ * kernel/test/test_vmo_jit.c. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -43,19 +44,20 @@ static rights_t rights_of(handle_t h)
 bool t_jit(void)
 {
     handle_t vmar = startup_handle(SR_SELF_VMAR), root = startup_handle(SR_RESOURCE);
-    handle_t power, v, x;
+    handle_t jit = startup_handle(SR_JIT), power, v, v2, x;
     uint64_t a = 0;
     /* A plain VMO: W+X refused by map and protect alike. */
     CHECK_ST(jam_vmo_create(PG, 0, &v), OK);
     CHECK_ST(jam_vmar_map(vmar, v, 0, PG, RW, &a), OK);
     CHECK_ST(jam_vmar_protect(vmar, a, PG, RWX), ERR_INVALID_ARGS);
     CHECK_ST(jam_vmar_unmap(vmar, a, PG), OK);
-    if (!root || jam_handle_duplicate(root, RIGHT_DUPLICATE | RIGHT_ROOT_JIT, &power) != OK) {
-        if (root)   /* our root without the power: refused, and v is gone */
-            CHECK_ST(jam_vmo_make_jit(v, root, &x), ERR_ACCESS_DENIED);
-        else
-            CHECK_ST(jam_handle_close(v), OK);
-        printf("utest: %s: no RIGHT_ROOT_JIT on our root: skipped\n", utest_cur);
+    if (root) {   /* our root never has the power: refused, and v2 is gone */
+        CHECK_ST(jam_handle_duplicate(v, RIGHT_SAME, &v2), OK);
+        CHECK_ST(jam_vmo_make_jit(v2, root, &x), ERR_ACCESS_DENIED);
+    }
+    if (!jit || jam_handle_duplicate(jit, RIGHT_DUPLICATE | RIGHT_ROOT_JIT, &power) != OK) {
+        CHECK_ST(jam_handle_close(v), OK);
+        printf("utest: %s: no JIT power (SR_JIT): skipped\n", utest_cur);
         return true;
     }
     rights_t before = rights_of(v);
@@ -158,9 +160,9 @@ bool t_jit(void)
  * the power write its starter's JIT memory. */
 bool t_jit_spawn(void)
 {
-    handle_t root = startup_handle(SR_RESOURCE), power, v, x, job, proc;
-    if (!root || jam_handle_duplicate(root, RIGHT_DUPLICATE | RIGHT_ROOT_JIT, &power) != OK) {
-        printf("utest: %s: no RIGHT_ROOT_JIT on our root: skipped\n", utest_cur);
+    handle_t jit = startup_handle(SR_JIT), power, v, x, job, proc;
+    if (!jit || jam_handle_duplicate(jit, RIGHT_DUPLICATE | RIGHT_ROOT_JIT, &power) != OK) {
+        printf("utest: %s: no JIT power (SR_JIT): skipped\n", utest_cur);
         return true;
     }
     const struct bootfs_view *fs;

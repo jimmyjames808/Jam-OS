@@ -75,9 +75,8 @@ static const uint32_t dup_roles[] = {
     SR_CONSOLE,
     SR_BOOTFS,
     SR_SELF_IMAGE,   /* its /proc/self/exe: the same pages, never writable */
-    /* CJR's handle holding the JIT power alone (its option (b); FORK-PLAN
-     * Q4 (A): every forked child keeps it) goes here once CJ2 gives it a
-     * startup role. */
+    SR_JIT,          /* the JIT power alone (CJR's option (b); FORK-PLAN Q4 (A): every
+                      * forked child keeps it, and one that shouldn't gives it up) */
 };
 
 /* What jam_fork_parent makes for the child, ours until moved or closed. */
