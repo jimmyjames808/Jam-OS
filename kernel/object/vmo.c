@@ -234,7 +234,7 @@
  *     everyone but writes through entries not yet shot down: every write
  *     fault, vmo_write (get_page's GET_PRIVATE, and so every pin and kernel
  *     mapping), decommit and size change waits for it to fall to 0
- *     (cow_wait, on one queue for all VMOs: protect_end wakes it), and a
+ *     (cow_wait, on the VMO's own queue: protect_end wakes it), and a
  *     fault installs nothing writable meanwhile, so a later write faults and
  *     waits too. A vmo_write copies its bytes after it got its page and let
  *     the lock go (GET_WRITE); the copies under way are counted
@@ -377,6 +377,9 @@ struct vmo {
      * finished (lock): a freeze waits for them (the file header's
      * "protecting"). */
     uint32_t         inflight;
+    /* Everyone waiting on this VMO's freezes: writers for `protecting` to
+     * fall to 0, freezes for `inflight` to. */
+    struct waitqueue protect_wq;
     /* A verified pager VMO's table (<jam/vmo_verify.h>), owned: set once,
      * under the lock, by vmo_seal_verified (a release store; lockless
      * readers load it with acquire), never changed after. */
@@ -480,14 +483,6 @@ void page_share_drop(struct page *p)
  * and the benchmark; relaxed). */
 uint64_t vmo_cow_copies, vmo_cow_waits;
 
-/* Everyone waiting for some VMO's `protecting` to fall to 0 (and the
- * freezes waiting for its `inflight` to): few and brief (a creation or a
- * clone; a copy of at most a page), so one queue, and each waiter looks
- * at its own VMO again when woken. */
-static struct waitqueue protect_wq = {
-    SPINLOCK_INIT("vmo protecting"), LIST_INIT(protect_wq.waiters)
-};
-
 /* A creation or a clone is sharing v's pages: wait for it to end (the
  * file header's "protecting"). No lock held. ERR_CANCELED if the thread
  * is killed (or its process replaced) meanwhile: someone else's freeze
@@ -498,7 +493,7 @@ static status_t cow_wait(struct vmo *v)
     status_t st = OK;
     uint64_t f = vlock(v);
     while (v->protecting && st == OK)
-        st = waitqueue_wait_cancellable(&protect_wq, &v->base.lock, &f, DEADLINE_NEVER);
+        st = waitqueue_wait_cancellable(&v->protect_wq, &v->base.lock, &f, DEADLINE_NEVER);
     vunlock(v, f);
     return st;
 }
@@ -510,7 +505,7 @@ static status_t cow_wait(struct vmo *v)
 static void freeze_drain_locked(struct vmo *v, uint64_t *f)
 {
     while (v->inflight)
-        waitqueue_wait(&protect_wq, &v->base.lock, f);
+        waitqueue_wait(&v->protect_wq, &v->base.lock, f);
 }
 
 /* A GET_WRITE page's copy is done: let a freeze that waits for it go on. */
@@ -520,7 +515,7 @@ static void write_done(struct vmo *v)
     bool wake = --v->inflight == 0 && v->protecting;
     vunlock(v, f);
     if (wake)
-        waitqueue_wake_all(&protect_wq);
+        waitqueue_wake_all(&v->protect_wq);
 }
 
 /* One creation or clone sharing v's pages is done with them: lower
@@ -531,7 +526,7 @@ static void protect_end(struct vmo *v)
     bool last = --v->protecting == 0;
     vunlock(v, f);
     if (last)
-        waitqueue_wake_all(&protect_wq);
+        waitqueue_wake_all(&v->protect_wq);
 }
 
 /* With the lock held: does absent page idx come from v's pager VMO? */
@@ -1049,6 +1044,7 @@ static struct vmo *vmo_alloc(enum vmo_kind kind, uint64_t size)
     list_init(&v->ranges);
     itree_init(&v->umaps);
     mutex_init(&v->resize, "vmo resize");
+    waitqueue_init(&v->protect_wq, "vmo protecting");
     return v;
 }
 
@@ -1649,7 +1645,7 @@ status_t vmo_set_size(struct vmo *v, uint64_t size)
     /* Frozen while a clone shares its pages (a creation holds resize);
      * a kill ends the wait (cow_wait's rule). */
     while (v->protecting && st == OK)
-        st = waitqueue_wait_cancellable(&protect_wq, &v->base.lock, &f, DEADLINE_NEVER);
+        st = waitqueue_wait_cancellable(&v->protect_wq, &v->base.lock, &f, DEADLINE_NEVER);
     uint64_t first = size >> PAGE_SHIFT, end = v->size >> PAGE_SHIFT;
     if (st == OK && first < end && ranges_overlap_locked(v, first, end))
         st = ERR_BAD_STATE;
