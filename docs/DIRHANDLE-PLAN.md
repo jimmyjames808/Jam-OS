@@ -608,7 +608,7 @@ numbers).
 | **DL1. libc: descriptions and the *at calls** (built: [DL1 notes](#dl1-notes)) | 4.1 to 4.3: the channel in `struct dir`, `openat`'s directory by `fs.opendir`, `getdents`, `fstat`, `fsync`, `fstatfs`, the text fallback and the replacement after `ERR_PEER_CLOSED`, every *at call through `at`, `rename_at`/`link_at`, the `path` hook's replacement, files opened relative keeping their directory and name | `user/posix/sys/dir.c`, `user/posix/sys/path.c`, `user/posix/sys/files.h`, `user/posix/sys/file.c`, `user/posix/sys/meta.c`, `user/posix/sys/fobj.c`, `user/posix/sys/fd.h`, `user/posix/sys/spawnfd.c` (the hook), a new posixtest file user/posix/test/dirfd.c (section `dirfd`) and a new tools/shell-tests/posix-dirfd.txt, `user/posix/test/files2.c` (`deep_names`: 26 levels on ext, 15 on FAT) | DL0 and DE1 merged; beside DE2; not beside LH, PR or FF's libc part | posixtest `dirfd` on ext `/data`, on `/tmp`, and with `JAMOS_DATA_FS=fat` (today's answers): DeleteDeep copied (26 levels, `up`, the file, `DeletePathRecursively`'s calls); a rename of an open directory followed; a directory removed and made again; `renameat`/`linkat` across two descriptors; `O_PATH`; `AT_EMPTY_PATH`; 300 directories open (the fallback); posixtest `files`; posix-files; shell scripts basic, cmds, commands, files; init run | 1 | **Opus** |
 | **DL2. libc: the current directory, fork, exec, /proc** (built: [DL2 notes](#dl2-notes)) | 4.4 to 4.6: the current directory as a description, `chdir`, `fchdir`, `getcwd`, `chdir("..")` out of a removed one; the fork hook and the current directory's fork key; kind 15 and Q4's hand-over; `/proc/self/fd` and `cwd` | `user/posix/sys/path.c`, `user/posix/sys/dir.c`, `user/posix/sys/fd.c` (fork keys), `user/posix/sys/procfs.c`, `user/posix/sys/spawn.c`, `user/include/posixfds.h`, `user/lib/fdmsg.c`, `user/posix/crt/start.c`, `user/tests/utest/posixfds.c`, `user/tests/utest/posixfds_bad.c`, `user/posix/test/forkfd.c`, user/posix/test/dirfd.c | DL1 and DE2 merged; IL1, IL2 and PR merged (kinds, `procfs.c`, `forkfd.c`); not beside TP or LH | utest `posixfds` (kind 15, the version's cases); posixtest `dirfd`'s current-directory cases (deep, renamed, removed: `getcwd`, `..`; `fchdir`; a forked child's descriptors and directory; an exec'd child's; `/proc/self/fd` names), `fork`, `procfs`; `tools/shell-tests/posix-fork.txt`, posix-run; shell scripts basic, cmds, commands, files; kdump save; init run; one ktest pass at 4 CPUs | 1 | **Opus** |
 | **DC. Chromium's tests** (built: [DC notes](#dc-notes)) | `FileUtilTest.DeleteDeep` off `tools/cr/base_unittests.skip` (and any `getcwd` entry CBF6 left), the stage relinked; what still fails listed with its reason | `tools/cr/base_unittests.skip`, `docs/CR-PLAN.md`'s rows | DL2 merged; no other agent running `base` | `CR_BASE_ONLY='FileUtilTest*:ScopedTempDir*:FileEnumerator*'` through `tools/cr-test.sh` on ext `/data` and once on `/tmp` | 0.5 | Sonnet 5.5 |
-| **DR. Independent review and fix** | everything above, findings first (a new docs/DIRHANDLE-REVIEW.md), then High and Medium fixed with a test each: can a channel reach past its view (a climb, an id, a hidden `etc` through `..`, a cut-off missed after a restart), can channels or orphans leak (a process that dies, a fork, a failed exec), can a removed directory's inode be reused while held, is a hand-over's channel ever dropped or doubled | the files its fixes need | DC | its own; hostile: 8 threads renaming directories in and out of a subview while others walk through channels, extfs killed every 200 ms during a deep `DeletePathRecursively`, a process holding 64 channels killed, a directory removed while 4 processes stand in it; full init run; the extfs and posix scripts | 1.5 | **Opus** |
+| **DR. Independent review and fix** (built: [DR notes](#dr-notes)) | everything above, findings first (a new docs/DIRHANDLE-REVIEW.md), then High and Medium fixed with a test each: can a channel reach past its view (a climb, an id, a hidden `etc` through `..`, a cut-off missed after a restart), can channels or orphans leak (a process that dies, a fork, a failed exec), can a removed directory's inode be reused while held, is a hand-over's channel ever dropped or doubled | the files its fixes need | DC | its own; hostile: 8 threads renaming directories in and out of a subview while others walk through channels, extfs killed every 200 ms during a deep `DeletePathRecursively`, a process holding 64 channels killed, a directory removed while 4 processes stand in it; full init run; the extfs and posix scripts | 1.5 | **Opus** |
 | **DJ. The join** | ARCHITECTURE (Storage: directory channels; the POSIX layer: the description), TESTING's rows, CR-PLAN, ROADMAP, HISTORY; this plan deleted when HISTORY covers it | the docs | DR | `make check` | 0.5 | Sonnet 5.5 |
 | **DF. fat** (only with Q3's (B)) | 3.4 on fat: FatFs's relative paths, channels by cluster, `f_getcwd`, removal marks, its state and keeper | `user/services/fat/` (a new dirs.c, fsops, its loop, state, keeper, adopt), `user/services/fat/ffport/ffconf.h`, a new utest file user/tests/utest/fat_dirs.c | DE2 merged (the pattern) | utest `fat_dirs`, `fat_restart` unchanged; posixtest `dirfd` with `JAMOS_DATA_FS=fat` | 1 | **Opus** |
 
@@ -1238,6 +1238,34 @@ numbers per shard, is [CR-PLAN's DC notes](CR-PLAN.md#dc-notes).
   directory is removed). Listed in `base_unittests.skip`; the fix is extfs's or libc's (see
   the CR-PLAN notes) and a posixtest case for it (`fchmod`, `fchown` and
   `futimens` on a directory descriptor with a watch on the parent).
+  (Fixed by DR, M1: off the list again, to be confirmed by a base run.)
+
+### DR notes
+
+Built (2026-10-20): the review is [DIRHANDLE-REVIEW.md](DIRHANDLE-REVIEW.md),
+findings first: 0 High, 1 Medium, 3 Low, 7 notes.
+- **Fixed:** M1, DC's `RecursiveWatch`: a path-less change of a directory
+  (`fs.setattr` of `""` on its channel, a path ending in `.` or `..`) now
+  tells its parent's watch, by the name found from its `..` entry at the
+  event (fsops.c `ev_walk`, walk.c `walk_parent`; my call: no table of
+  names, which a rename would have to follow and a restart would lose);
+  L1, libc's reopen after `ERR_PEER_CLOSED` keeps the new channel only
+  when the volume matches too, not just the inode number (dir.c
+  `replace_locked`; a libc change, no ABI change: Chromium picks it up at
+  its next relink); L2, DE2's finding: `ext_inode_used` (the inode
+  bitmap's bit) asked before a directory is taken for a removed one or
+  dropped (hardening: no path reaches it).
+- **Left:** L3 (a removed directory's `..` walks removed parents that lay
+  outside its view: their attributes only, with a wider process's help).
+- **Hostile runs** (all passed, nothing found): utest `extfs_dirs_storm`,
+  `extfs_dirs_killed`, `extfs_restart_deep` (the row's 8-thread subview
+  storm, a process with 64 channels killed, a deep removal under kills
+  every 200 ms), posixtest dirfd's `stand` (4 processes in a removed
+  directory) and `replaced` (DL1's reopen, on a fake service: it had no
+  case). The new utest cases save no disk for e2fsck: extfs-svc-test's
+  `/data` (64 MiB) is nearly full of the others' (the storm's save met
+  `ERR_NO_SPACE` after its checks passed), so `extfs_restart_deep` checks
+  that the free bytes come back instead.
 
 ## 8. Tests
 
@@ -1252,4 +1280,6 @@ numbers per shard, is [CR-PLAN's DC notes](CR-PLAN.md#dc-notes).
 | The Linux API through libc | posixtest `dirfd` (tools/shell-tests' posix-dirfd.txt), `files`, `fork`, `procfs` |
 | The hand-over | utest `posixfds`, `posixfds_bad` |
 | FAT keeps today's answers | posixtest `dirfd` with `JAMOS_DATA_FS=fat` |
+| The review's hostile runs | utest `extfs_dirs_storm`, `extfs_dirs_killed`, `extfs_restart_deep`; posixtest `dirfd`'s `stand` and `replaced` (DR) |
+| A directory's change heard by its parent's watch | utest `extfs_watch_nameless`; posixtest `inotify` (DR's M1) |
 | Chromium | `tools/cr-test.sh` base with `CR_BASE_ONLY` (DC) |
