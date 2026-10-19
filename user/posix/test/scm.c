@@ -5,8 +5,8 @@
  *     end written, a memfd mapped and written (the sender sees it), a file
  *     read at the sender's offset, /dev/zero read, a socketpair end and a
  *     SOCK_SEQPACKET end talked through, a directory (by its path: CB5) a
- *     start for fstatat and fsync'd, a file on /data unlinked while open
- *     (our own open crosses: CB5); the kinds that don't (an eventfd, an
+ *     start for fstatat and fsync'd, a file on an ext /data unlinked while
+ *     open (our own open crosses: CB5; FAT refuses the unlink); the kinds that don't (an eventfd, an
  *     epoll set) refused with EINVAL;
  *   - a memfd's read-only twin passed on stays read-only (no write, no
  *     writable mapping, no writable reopen), and a write-sealed memfd's
@@ -44,6 +44,7 @@
 #include <unistd.h>
 #include "../sys/maptable.h"
 #include "pt.h"
+#include "ptfiles.h"
 #include "ptscm.h"
 
 #define SELF "/boot/bin/posixtest"
@@ -201,8 +202,9 @@ static void check_kinds(const int *s)
     close(r);
     close(dir);
     /* A file unlinked while open (base's FLAG_DELETE_ON_CLOSE temp files: Chromium's browser
-     * gives each renderer one for its swap): no path to open again, so our own open crosses. */
-    if (access("/data", W_OK) == 0) {
+     * gives each renderer one for its swap): no path to open again, so our own open crosses.
+     * Only on an ext /data: FAT refuses to unlink a file that is open. */
+    if (access("/data", W_OK) == 0 && pt_data_ext()) {
         int u = open("/data/pt-scm-gone", O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
         CHECK(u >= 0 && unlink("/data/pt-scm-gone") == 0 && write(u, "gone", 4) == 4);
         r = pass_one(s, u);
