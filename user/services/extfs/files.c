@@ -306,8 +306,7 @@ static status_t op_stat(void *ctx, uint64_t *out_size, uint8_t *out_is_dir, uint
 static status_t op_sync(void *ctx)
 {
     struct xf_file *f = ctx;
-    status_t st = wback_file(f->ino, f->igen, &f->wb_seq);   /* its mappings' stores, and
-                                                              * an error it hasn't heard of */
+    status_t st = wback_file(f);   /* its mappings' stores, and an error it hasn't heard of */
     status_t fl = disk_flush();   /* every answered write is committed already; a failed
                                    * one's bytes too, on a disk with a cache */
     return st != OK ? st : fl;

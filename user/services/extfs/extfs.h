@@ -163,7 +163,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 11u           /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 12u           /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied
@@ -259,6 +259,20 @@ struct xf_made {
     uint32_t index;
 };
 
+/* The last file.sync whose open heard of a write-back error (wback.c),
+ * recorded before the mark: a successor that runs that request again (its
+ * slot not committed, so its answer never went out) puts the mark back
+ * first (adopt.c), and the run again reports the error as the first run
+ * did. */
+struct xf_heard {
+    uint64_t seq;             /* the request (the slot's seq); 0: none */
+    uint32_t file;            /* files[] whose wb_seq it moved ... */
+    uint32_t was;             /* ... from this ... */
+    uint32_t heard;           /* ... to this (maps[map]'s error_seq) */
+    uint32_t map;             /* maps[] whose error_seen it set ... */
+    bool     seen;            /* ... from this */
+};
+
 /* A watcher channel's view (watch.c), beside the library's record of it
  * (struct fsw_chan_rec: the view's flags and root inode): the rest of the
  * struct xf_ctx its adds are walked in. */
@@ -308,6 +322,7 @@ struct xf_state {
     struct xf_map   maps[XF_MAX_MAPS];
     uint64_t        map_seq;       /* the last key's sequence number (pager.c) */
     uint32_t        err_seq;       /* the last write-back error's number (wback.c) */
+    struct xf_heard heard;         /* ... and the last file.sync that reported one */
     struct xf_locks locks;         /* locks.c's */
     struct xf_dir   dirs[XF_DIRS]; /* dirs.c's */
     struct xf_watches watch;       /* watch.c's */
@@ -394,6 +409,8 @@ void     op_made(uint32_t kind, uint32_t index);
 uint32_t op_pid(void);
 /* A request runs (its transaction open): work after an answer waits for it. */
 bool     op_running(void);
+/* The running request's number (its slot's seq), or 0. */
+uint64_t op_seq(void);
 
 /* The volume may be changed: mounted writable, its journal open. */
 bool     writable(void);
@@ -701,11 +718,14 @@ void     wback_request(const struct pager_request *r);
  * itself, run if due (main.c's loop: at most once a second, idle or not). */
 uint64_t wback_due(void);
 void     wback_tick(void);
-/* file.sync of an open whose sample is *since: inode ino's shared VMO
- * written back whole; the error the file keeps if it came after *since
- * (reported once to each open, Linux's errseq: *since then catches up),
- * else OK. */
-status_t wback_file(uint32_t ino, uint32_t igen, uint32_t *since);
+/* file.sync of open f: its file's shared VMO written back whole; the
+ * error the file keeps if it came after f's sample (reported once to each
+ * open, Linux's errseq: the sample then catches up, kept->heard recording
+ * it for a run again), else OK. */
+status_t wback_file(struct xf_file *f);
+/* Request seq runs again (adopt.c: not committed): what its file.sync's
+ * open heard of put back, so it hears of it again. */
+void     wback_unhear(uint64_t seq);
 /* A new open's sample of inode ino's write-back errors: the last error's
  * number, or 0 while no open has heard of it (the new open does) or the
  * file has none kept. */
@@ -861,6 +881,8 @@ enum xf_die {
                                * batch committed, a run answered (wback.c) */
     XF_DIE_REMOVED,           /* a held directory's removal recorded (dirs.c: its ".."
                                * remembered), not committed */
+    XF_DIE_HEARD,             /* a file.sync's open heard of a write-back error (the mark
+                               * in the state, wback.c), the answer not committed */
     XF_DIE_COUNT,
 };
 bool     test_word(const char *w);
