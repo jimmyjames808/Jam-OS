@@ -476,7 +476,11 @@ every VMO it made.
   their last write-back began) or writing (that write-back has not ended).
   A clean or writing page is mapped read-only in every mapping, so a store
   faults and makes it dirty; dirty and writing pages are never evicted and
-  keep the VMO alive after its last handle and mapping go. The service
+  hold their VMO alive after its last handle and mapping go (the hold: a
+  store outlives `munmap`, the program and a restart of the service). A
+  pager may have a quarter of its budget dirty; a store that meets the
+  limit waits for write-back with a deadline (the pager's answer time),
+  never for ever, and a kernel copy that cannot wait gets `ERR_IO`. The service
   takes the dirty runs out with `pager_dirty` (`PAGER_DIRTY_BEGIN` makes
   them writing and write-protects them before they are copied, so a store
   after the copy dirties the page again), writes them to the file in one
@@ -489,7 +493,8 @@ every VMO it made.
   zeroed tail meet the mappers' bytes. Only ext does this; fat's mappings
   are read-only (`FILE_MAP_WRITE` is `ERR_NOT_SUPPORTED` there). A
   `MAP_PRIVATE` writable mapping is a copy-on-write child of the file's
-  VMO, which a store never reaches.
+  VMO, which a store never reaches. A file with a writable mapping cannot
+  be run, and a file being run cannot be mapped writable (`ERR_BUSY`, `ETXTBSY`).
 - **Write-back errors are heard once** (WR2), as Linux's errseq: a run
   that cannot be written (`ERR_IO`, or `ERR_NO_SPACE` for a full volume)
   becomes clean all the same, and the VMO keeps the error and a count that
@@ -2505,6 +2510,25 @@ writable open is lent and taken back); a file already unlinked has no path
 to open again, so the sender's own open is moved. The same records cross a
 socketpair as `SCM_RIGHTS` (`fdpass.c`).
 
+**The inotify descriptor** keeps nothing the services don't: it holds a
+*bell* (an event made at `inotify_init`, of which every watcher channel gets
+a duplicate) and a *channel per mount it watches* (`fs.watch` on the mount's
+`fs` channel the first time), and the watches are the services'. Its
+readiness arm is the bell, and a second user bit libc sets while it holds
+records no `read` has taken, so `poll`, `select` and `epoll` wait on one
+handle however many mounts it watches. `read` and `FIONREAD` take records
+from each service and hand out Linux's `struct inotify_event`; `wd`s are
+libc's, cyclic, so an ended watch's number is not handed out again soon. A
+channel that closes (the mount went, the service started fresh) gives
+`IN_UNMOUNT` and `IN_IGNORED` for its watches. The limits are
+`/proc/sys/fs/inotify`'s: 8 descriptors a process (`EMFILE`) and 1,024
+watches a process on a volume, counted across its descriptors (`ENOSPC`
+for a new watch; a call that changes the mask of a watch it holds still
+works). Like an `epoll` set it is absent in a forked child, closed at
+`exec` and never handed to a spawned child. Watches in libc's own trees
+(`/`, `/svc`, `/dev`, `/etc`, `/proc`, `/sys`) and on read-only mounts are
+quiet: accepted, and never fired.
+
 ### Paths, files and directories
 
 libc finds a path's mount in the namespace and sends the rest of it to
@@ -3683,24 +3707,33 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
 - **File watching** ([docs/HISTORY.md](docs/HISTORY.md#file-watching-inotify),
   reviewed in [docs/INOTIFY-REVIEW.md](docs/INOTIFY-REVIEW.md)): there is
   no kernel file system, so the service that serves a volume makes the
-  events, the one place every change to it is seen. `fs.watch` gives a
-  watcher channel on the view it was asked through (`abi/idl/fswatch.idl`:
-  `add`, `remove`, `take`; its first message is the client's bell, an
-  event the service rings when the channel's queue gets a first record).
-  extfs keeps the watches by inode (user/lib/fswatch.c, the library any
-  service links), queues Linux's events at each request's commit, handles
-  a close made before a request ahead of it, never names an entry the
-  channel's view hides and ends a watch a rename takes out of its view's
-  reach; the watches outlive a restart in its state, with an
-  `IN_Q_OVERFLOW` for what died. fat and the boot image answer
+  events, the one place every change to it, through every view and by
+  every process, is seen. `fs.watch` (method 17 of `fs`) gives a watcher
+  channel on the view it was asked through; the `fswatch` protocol (id 49,
+  `abi/idl/fswatch.idl`) adds, removes and takes watches on it, and its
+  first message is the client's bell (`fswatch_bell`, id 52), an event
+  with a user signal that the service rings when the channel's queue stops
+  being empty. The watches, queues, merge and overflow rules and ids are
+  one library any service links (`user/lib/fswatch.c`). extfs makes the
+  events (`user/services/extfs/watch.c`): every row of Linux's table,
+  held until the request's transaction commits (so a watcher never hears
+  of a change that is not on the disk), on inodes, so a change through
+  `/jam` reaches a watch made through `/tmp`'s view of the same volume. A
+  close made before a request is handled before that request's events (the
+  order rule, which relies on a port delivering in order). A channel never
+  sees more than its view does: hidden names never appear in an event, and
+  a watch whose inode a rename takes out of its view's reach ends
+  (`IN_MOVE_SELF`, then `IN_IGNORED`). The watches and watcher records are
+  in the state VMO and each channel and bell with the keeper, so a successor
+  puts them back and queues an `IN_Q_OVERFLOW` for what died; a keeper that
+  gives a service up rings the bells itself (`keepch.put` carries a ring), so
+  `poll` and `epoll` wake when extfs is gone. fat and the boot image answer
   `ERR_NOT_SUPPORTED`: libc then makes a watch on a read-only mount quiet
   (the path is checked and the watch never fires) and refuses one on a
-  writable FAT mount with `EOPNOTSUPP`. libc's inotify descriptor
-  (`user/posix/sys/inotify.c`) is one event over every mount it watches, a
-  channel per mount and the records in Linux's form (a process holds at
-  most 1,024 watches and 8 descriptors; a service queues 16 KiB of records
-  for a descriptor on its mount before an `IN_Q_OVERFLOW`); it is absent
-  after `fork` and closed at `exec`.
+  writable FAT mount with `EOPNOTSUPP`. A service holds 8,192 watches and 32
+  watcher channels (8 from one process) a volume and queues 16 KiB of
+  records for a channel before an `IN_Q_OVERFLOW`. The libc side is in
+  [The POSIX layer](#descriptors-and-the-hand-over).
 
 ### extfs: the ext4 service
 
@@ -3723,11 +3756,17 @@ port as fat's service is, serving the `fs` and `file` protocols, and a
 pager for the volume's mapped files.
 
 - **The disk is the state.** Every request that changes the volume is one
-  journal transaction, committed with FUA before its answer: an answered
-  write is on the medium, and the same recovery serves a power cut and a
-  restart ([Services that outlive their process](#services-that-outlive-their-process)).
-  New blocks' data goes to the disk first, to blocks the committed bitmaps
-  still call free (ordered mode); overwrites go in place.
+  journal transaction, committed before its answer, and the same recovery
+  serves a power cut and a restart ([Services that outlive their
+  process](#services-that-outlive-their-process)). New blocks' data goes to
+  the disk first, to blocks the committed bitmaps still call free (ordered
+  mode); overwrites go in place. What "on the disk" means depends on the
+  disk: drv/nvme writes with FUA (volumes starts extfs on an NVMe drive
+  with `EXTFS_ARG_FUA`), so an answered write is on the medium; a USB
+  stick's writes land in its volatile cache in any order, so there extfs
+  flushes (`block.sync`, SCSI SYNCHRONIZE CACHE) before the commit block,
+  before the log's tail moves, before the log is marked empty and before
+  an answer, only if something was written since the last flush.
 - **What POSIX gains over FAT.** Symbolic links (to 4,095 bytes) and hard
   links; the inode's mode, link count, owner and three nanosecond times
   (`fs.getattr`, `fs.setattr`; reads don't update the access time);
@@ -3795,6 +3834,18 @@ pager for the volume's mapped files.
   once ([Pagers](#pagers-and-mapped-files)); the mark and the request that
   moved it are in the state, so a `file.sync` run again after a death
   reports what the first run did.
+- **One cache for mapped files.** extfs keeps one writable VMO per file,
+  keyed by the inode and found again while it lives, so a mapping, `read`
+  and `write` see one file: `file.write` stays write-through (an answered
+  write is on the medium) and also writes the bytes into the pages that
+  are present, and `read` takes dirty pages' bytes over the disk's.
+  Write-back (`wback.c`) is a journal transaction of its own, a batch of
+  dirty runs clipped to the file's size, holes and unwritten extents filled
+  in ordered mode, begun by age (once a second, for pages older than the
+  `files.writeback` setting), by `file.sync`, `fs.sync`, the dirty limit
+  and an orderly stop; a death before its commit has the successor write
+  the pages again, after it the pages are written again before the request
+  is answered.
 - **In memory.** `bin/extfs` can serve an ext volume on a VMO instead of a
   disk (`EXTFS_SR_RAM`): init's `/tmp` when nothing better is there.
 - **Tools.** `tools/jamext` makes a volume's image from a directory and
@@ -3814,6 +3865,11 @@ confirmation checked in the driver too). Every other drive, Windows' among
 them, is read-only whatever any other process says, and `diskro` (the
 driver's `ro`) makes every drive so. Writes are FUA, and `block.sync` is
 a flush. `tools/checknvme.py` holds the write commands to the gated files.
+
+A drive is called `nvme<unit>` by its place among the machine's NVMe
+functions in PCI order (bus, device, function: `disks.attach` carries the
+`unit`), so it keeps its name on every boot whichever driver answers first;
+a USB stick takes the lowest free number in the order sticks come.
 
 volumes mounts a drive's partitions read-only as `/nvmeN`, except that the
 first Jam OS drive's ext data partition is `/jam`, read-write when its
@@ -3955,10 +4011,12 @@ file the system trusts by where it is.
   one `key = value` a line, `#` comments (`<settings.h>` has the format
   and the keys: `timezone`, `rtc`, `volume`, `music.volume`,
   `music.folder`, and the network's `net.address`, `net.host`,
-  `netlog`, `ntp` and `ntp.server`: [Networking](#networking); the
-  packages' `pkg.repo` ([the ports system](docs/M13.7-PLAN.md#po6-notes)); the
+  `netlog`, `ntp` and `ntp.server`: [Networking](#networking); `ssh`
+  (`off` keeps the SSH server from starting); the
+  packages' `pkg.repo` ([the ports system](#packages-and-the-ports-system)); the
   compositor's `display.layout` and `display.hz`; the terminals'
-  `terminal.font`). init reads them when `/data`
+  `terminal.font`; extfs's `files.writeback`, how many seconds a store
+  into a mapped file may wait before it is written back). init reads them when `/data`
   comes (the clock, the network's address, the window layout, the
   terminals' font) and when the mixer, the music
   player, netstack, netlog and the compositor start; the shell's
