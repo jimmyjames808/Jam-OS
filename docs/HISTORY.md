@@ -30,6 +30,185 @@ hashes are commits on main.
   2% of a process-to-process call; the cost was on the user side of the
   boundary.
 
+## Directory handles
+
+*Planned 2026-10-18, built 2026-10-18 to 2026-10-20, reviewed and fixed
+2026-10-20.* A directory description in libc was its absolute path as text,
+and so was the current directory, while the `fs` protocol takes paths of at
+most 4,095 bytes from a view's root. Chromium's `FileUtilTest.DeleteDeep`
+makes 26 levels of 255-byte names through `mkdirat` and `openat` on each
+level's descriptor (about 6.6 KB deep) and deletes them through descriptors
+alone: its 16th level was `ENAMETOOLONG`. Text cost elsewhere too:
+`chdir("..")` out of a removed directory failed, a directory made again at
+the same path counted as the one removed, the descriptor of a renamed open
+directory kept the old name, and `struct path` (4,120 bytes) sat on stacks
+beside a second 4 KiB buffer (an `openat` frame was 8.4 KiB). The owner:
+"fix everything".
+
+What it is:
+- **A directory is an `fs` channel.** `fs.opendir` (method 18) gives a
+  channel whose paths start at that directory; a path that starts with `/`
+  still starts at the view's root, so every path sent before means what it
+  meant. Every `fs` method works on it but `view`, `subview` and `watch`
+  (`ERR_NOT_SUPPORTED`); `""` is the directory itself and `..` climbs to the
+  view's root and stops (`ERR_LINK_OUT` above it, as from the root). A call
+  sends one relative path of at most 4,095 bytes however deep the directory
+  lies. The channel keeps a copy of the view it was opened through, so it
+  never sees or changes more than a path through its mount could. There is
+  no new protocol: fat, the boot image and ramfs answer the new methods
+  `ERR_NOT_SUPPORTED` with no change, and `FS_FEAT_DIRS` in `statfs` says a
+  service has them. `fs.rename_at` and `fs.link_at` (19, 20) name the second
+  directory by its id, because a request the keeper replays carries no
+  handle; the service places it by climbing, in the view of the channel the
+  request came on, and `fs.opendir` also answers a `volume`, so libc knows
+  whether two directories can meet in one call (else `EXDEV`). The kernel
+  changed nothing.
+- **extfs** (`user/services/extfs/dirs.c`, `walk.c`, `fsops.c`, `views.c`):
+  the walk starts at the channel's inode. The view checks, which read a
+  place as text from the volume's root, now read a *region*: the depth below
+  the root and the class of the first two names (`<fsview.h>`), exact at any
+  depth. That swap went in first with no change of behaviour (DE0), checked
+  against the old text code on 2.6 million awkward paths. A channel's place
+  is found by climbing its `..` entries and kept with an *epoch* that goes up
+  at every rename that moves a directory to another parent or touches the
+  top two levels, so a directory moved where its view cannot reach (above a
+  subview's root, into a hidden `etc/ssh`) is cut off, `ERR_NOT_FOUND`, and
+  works again if moved back. A subview's root is a place too: one renamed
+  into `etc` is guarded there.
+- **Held directories.** One removed while a channel holds it stays on ext's
+  orphan list with no name and its inode is not used again: its channel
+  answers `""` and `.` (link count 0), `sync`, `statfs` and `opendir` of
+  `""`, and `..` as the parent it had (remembered in the slot), and
+  `ERR_NOT_FOUND` to the rest. The last close drops it and frees its blocks,
+  as ext4 does at the inode's end. A renamed directory is followed, since the
+  channel holds the inode.
+- **Limits and restarts.** 256 channels a volume and 64 from one process
+  (the writer pid of the `opendir` request, also for a channel handed on).
+  The records are in the state VMO (`XF_STATE_LAYOUT` 11) and the channels
+  with the keeper, as views are: a successor takes them back and each
+  climbs again at its first request; a fresh start closes them. `keepch`'s
+  `MAX_HANDLES` went to 2048. A full service is not an error: libc makes a
+  text description instead and logs it once a process.
+- **libc** (`user/posix/sys/dir.c`, `path.c`, `file.c`, `fobj.c`,
+  `meta.c`): a directory description on a mount with `FS_FEAT_DIRS` holds
+  the channel (fat, the boot image, `/`, `/svc` and libc's own trees stay
+  text). `struct path` has `at`, the description a relative path starts
+  from, and `path_done` ends it; `tools/checkpathdone.py`, in `make check`,
+  finds a function that makes a path and never ends it, since a leaked
+  description is one of 256. The *at calls send the program's path on the
+  channel; `getdents`, `fstat` and `fsync` go to it; a file opened from a
+  channel keeps a duplicate of it and its name, so its reopen opens the name
+  there. After a fresh start (the channel's peer closed) libc opens the last
+  known text once and keeps the new channel only when it is the same inode
+  on the same volume, else the descriptor answers `ENOENT`.
+- **The current directory** is a description too: `chdir` is `fs.opendir`
+  without the read bit, `fchdir` shares the descriptor's description,
+  `getcwd` is `fs.resolve("")` on the channel (`ENOENT` when removed,
+  `ENAMETOOLONG` past a page), `chdir("..")` out of a removed directory
+  reaches the parent it had, and `/proc/self/cwd` and a directory's
+  `/proc/self/fd` link say the same, with " (deleted)" for a removed one.
+- **fork, exec, spawn, sockets.** `fork` duplicates each channel. The
+  hand-over has a kind for it (15, `POSIXFDS_DIR_CHANNEL`) and a flag for the
+  current directory's channel (`POSIXFDS_CWD`): `POSIXFDS_VERSION` 3, in the
+  ABI stamp, so a static program linked before reads no hand-over until it
+  is relinked (Chromium's programs were, once). Init's `/svc/exec`
+  (`user/services/init/exec.c`) passes the caller's directory channel to a
+  child that isn't raised; a raised child still starts in `/`. A directory
+  with a channel crosses `SCM_RIGHTS` as the channel and the receiver does
+  not believe its text. A child given grants (`posix_spawnattr_setgrants_np`)
+  starts in its current directory as text, never the channel, which would
+  reach past its grants.
+
+The owner's answers (2026-10-18: he delegated the four questions; decided as
+recommended): **a handle reaches its view**, `..` up to the view's root
+(Fuchsia's, stopping at the directory, would fail every program that walks
+up from a descriptor, and `fs.subview` already gives it to whoever wants
+it); **a directory moved out of its channel's view is cut off**, as the
+inotify plan's watches are; **FAT later**: it keeps text descriptions (4,095
+bytes of depth, renames not followed), since Chromium's tests and a drive
+boot are on ext; **the current directory's channel survives `exec`**
+(`POSIXFDS_VERSION` 3, one relink). Decided as technical: directories as
+`fs` channels and not a new protocol, whole paths unchanged, the second
+directory by id with the reach check, regions in place of text, 256 and 64,
+a text description past the limit, a channel opened again from its text once
+after a fresh start, `getcwd` asking the service every time, and the main
+session's calls on the way (the lint, restarts in DE1's track, the channel
+over a socketpair, a whole path given with a removed directory's descriptor
+going through the mount).
+
+The tracks: DP (the protocol and the keeper's room), DL0 (libc's path
+reference), DE0 (the region), DE1 (extfs's channels, with their restarts),
+DL1 (libc's descriptions and the *at calls), DE2 (removal and orphans), DL2
+(the current directory, fork, exec, `/proc`), DC (Chromium's tests), DR (the
+review). **DC: `FileUtilTest.DeleteDeep` passes** on ext `/data` and on
+init's `/tmp` and is off the skip list; the whole of `base_unittests` was 8,901
+pass, 37 self-skip and 18 listed, and it found the one regression, below.
+
+The review (docs/DIRHANDLE-REVIEW.md, by an agent that wrote none of it): 0
+High, 1 Medium, 3 Low, 8 notes. No channel reached past its view by any path
+tried, no held inode was freed, no hand-over dropped or doubled a channel.
+Fixed with a case that fails without each fix: the Medium (DC's lead),
+`FilePathWatcherTest.RecursiveWatch`, because `futimens`, `fchmod` and
+`fchown` on a directory descriptor send `fs.setattr` with the path `""` and
+the walk ended in no name, so the parent's watch heard nothing (Linux's
+does); extfs now finds the directory's parent by its `..` entry and its name
+by a scan, at the event, with no table of names for a rename to follow and a
+restart to lose. L1: libc's reopen after a fresh start compared the inode
+number and not the volume. L2: a freed directory inode read as a removed
+held one (no path reached it; ext gained `ext_inode_used`, which asks the
+bitmap). The hostile runs found nothing: 8 threads moving directories in and
+out of a subview under 4 walkers (29,684 moves, none answered from outside),
+extfs killed every 200 ms in the middle of DeleteDeep's tree (86 rounds), a
+process holding its 64 channels killed, and 4 processes standing in a
+removed directory.
+
+Left, none on Chromium's path:
+- **L3.** A removed directory's `..` can name removed parents that lay
+  outside its view: their attributes only, and it needs a wider process's
+  help.
+- **N5.** The reopen compares an inode number without its generation: after
+  a fresh start dropped a removed directory, a directory made later at the
+  same text that took the freed number is taken for it. `fs.opendir` answers
+  no generation, so closing it is an IDL change, to go in with the next one.
+- **N7.** A full keep channel fails the request: extfs sends every put and
+  drop to its keeper without waiting, so a keeper 1,024 messages behind
+  fails the open that made the handle (`ERR_SHOULD_WAIT`). volumes takes
+  everything at each event, so only utest's slow supervisor met it.
+  Recommended: a put that waits a little for room.
+- **DF, fat.** FatFs's relative paths (`FF_FS_RPATH`) would give channels by
+  first cluster, with removal marks and no pin; built only if a FAT `/data`
+  needs more than text (the owner's "later").
+- **The rest** (each in the review or the plan): an inherited directory
+  descriptor of a narrowed child crosses as its channel, as a file's does
+  (N1); a cycle of sockets queued in each other pins a channel until a fresh
+  start (N2, by design: no in-kernel GC); four processes can take a volume's
+  256 and everyone else then gets text descriptions (N3); `opendir` makes no
+  inotify event (`IN_OPEN` with `IN_ISDIR`); `openat2` stays `ENOSYS`;
+  `RecursiveWatch` is off the skip list and a `base_unittests` run is still
+  to confirm it.
+
+Tests worth knowing: utest `extfs_dirs`, `extfs_dirs_views`,
+`extfs_dirs_limits` and `extfs_dirs_gone` (`user/tests/utest/extfs_dirs.c`:
+DeleteDeep's tree through channels, the view flags, the cut-off, the 256 and
+64, removal), `extfs_restart_dirs`, `extfs_restart_gone` and
+`extfs_restart_tree` (extfs killed at each point with channels open), the
+hostile `extfs_dirs_storm`, `extfs_dirs_killed` and `extfs_restart_deep`, and
+`extfs_watch_nameless`; `fs_no_dirs` and `fs_view_dirs` (the servers without
+channels, the view code); utest `posixfds_*` for kind 15 and `POSIXFDS_CWD`
+(59 malformed forms); posixtest's `dirfd` section (`user/posix/test/dirfd.c`,
+on `/data` and `/tmp`, also with `JAMOS_DATA_FS=fat`, which keeps today's
+answers: DeleteDeep copied, renamed and removed directories, the current
+directory deep, renamed, removed, forked and exec'd, `stand` and `replaced`);
+`tools/extfs-svc-test.sh` (53 cases, every disk judged by `e2fsck`) and
+`tools/extfs-test.sh basic` (`exttest dirs`: a deep tree and held removed
+directories). [TESTING.md](TESTING.md) has each.
+
+What it taught: the swap that changes nothing goes first and is checked
+against the old code (DE0), so the track that adds behaviour has one thing to
+get wrong. And the one regression was found by the whole Chromium run and by
+no case of ours: a descriptor that is a channel has no name in it, and an
+event that wanted the name had to find it at the service.
+
 ## Writable file mappings (on ext)
 
 *Planned 2026-10-16, built 2026-10-16 to 2026-10-18, reviewed and fixed

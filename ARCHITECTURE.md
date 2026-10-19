@@ -2551,7 +2551,8 @@ description on extfs (`FS_FEAT_DIRS`) holds the directory's own `fs`
 channel (`fs.opendir`), so `openat`, `mkdirat`, `unlinkat`, `fstatat` and
 the rest send one relative path on it however deep the directory is,
 `getdents64` and `fstat` go to it, and a rename of the directory is
-followed. A directory on FAT, the boot image, `/`, `/svc` and libc's own
+followed (and a service that started fresh is asked again by the
+description's last known text, once, [Storage](#extfs-the-ext4-service)). A directory on FAT, the boot image, `/`, `/svc` and libc's own
 trees stays text (its absolute path), as does one past the service's 64
 channels a process, said once in the log. The **current directory** is a
 description too: `chdir` opens one, `fchdir` shares it, `getcwd` asks the
@@ -2560,9 +2561,10 @@ works, as on Linux). Directories cross `fork` (a duplicate of the
 channel), `posix_spawn` and `execve` (the channel itself, in the
 hand-over: `POSIXFDS_DIR_CHANNEL`, and `POSIXFDS_CWD` for the current
 directory), `/svc/exec` and a socketpair (the channel by itself, its text
-not believed). Two exceptions that narrow: a child given grants gets a
-directory as text, never the channel, and a raised `/svc/exec` child
-starts in `/`. A rename or a link between two directory descriptors is
+not believed). Two exceptions narrow the current directory: a child given
+grants starts in it as text, never the channel (a directory descriptor it
+inherits is still the channel, as a file descriptor is), and a raised
+`/svc/exec` child starts in `/`. A rename or a link between two directory descriptors is
 `fs.rename_at` or `fs.link_at` (`EXDEV` across volumes).
 
 A path that leaves a mount's view is continued from libc's own `/`, link by
@@ -3807,22 +3809,32 @@ pager for the volume's mapped files.
   256 open files and 256 mapped files at once, for the whole volume (on a
   drive boot one extfs serves `/data`, `/jam`, `/tmp` and every program's
   views of them).
-- **Directory channels** (`fs.opendir`). A directory is a channel of the
-  `fs` protocol whose paths start at that directory, so a call sends one
-  relative path of at most 4,095 bytes however deep the directory lies;
-  paths that start with `/` still start at the view's root. The channel
-  keeps a copy of the view it was opened through, so it never sees or
-  changes more than a path through its mount could, and its `..` climbs
-  to the view's root and stops. `fs.rename_at` and `fs.link_at` name a
-  second directory by its id. extfs pins a directory while a channel holds
-  it: one removed meanwhile stays on the orphan list with no name, and its
-  channels answer `""` and `.`, `..` as the parent it had, and
+- **Directory channels** (`fs.opendir`, [history](docs/HISTORY.md#directory-handles),
+  reviewed in [docs/DIRHANDLE-REVIEW.md](docs/DIRHANDLE-REVIEW.md)). A
+  directory is a channel of the `fs` protocol whose paths start at that
+  directory, so a call sends one relative path of at most 4,095 bytes
+  however deep the directory lies; paths that start with `/` still start at
+  the view's root. The channel keeps a copy of the view it was opened
+  through, so it never sees or changes more than a path through its mount
+  could, and its `..` climbs to the view's root and stops; `view`,
+  `subview` and `watch` on it are `ERR_NOT_SUPPORTED`. `fs.rename_at` and
+  `fs.link_at` name a second directory by its id, placed in the first
+  channel's view. extfs judges the views' hiding rules on a *region* (the
+  depth below the volume's root and the class of the first two names)
+  rather than on the path's text, and pins a directory while a channel
+  holds it: one removed meanwhile stays on the orphan list with no name, and
+  its channels answer `""` and `.`, `..` as the parent it had, and
   `ERR_NOT_FOUND` to the rest; a renamed one is followed; one moved where
   the view cannot reach it (above a subview's root, or into a hidden
   directory) is `ERR_NOT_FOUND` while it lies there. 256 channels a
   volume, 64 from one process (the writer of the `opendir` request, also
   for a channel it hands on). The state and the keeper carry them across
-  a restart. fat and the boot image answer `ERR_NOT_SUPPORTED` (libc keeps
+  a restart, as views; a fresh start closes them, and libc then opens the
+  directory again by its last known text, once, keeping the new channel only
+  if it is the same inode on the same volume. A change made on a directory's
+  own channel (`futimens` on the descriptor) is heard by its parent's watch
+  too: the service finds the name from the directory's `..` entry at the
+  event. fat and the boot image answer `ERR_NOT_SUPPORTED` (libc keeps
   those directories as text).
 - **Record locks** (`file.lock`, `file.getlock`, `file.lockowner`, behind
   `fcntl`'s `F_SETLK` family, the `F_OFD_` ones and `flock`). The service

@@ -38,7 +38,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M12.7 | NVMe: read-only first, then writes to a Jam OS disk, then installing Jam OS to it | built and reviewed ([M12.7-REVIEW.md](M12.7-REVIEW.md): stages 2 and 3), and checked on the PC: stage 1 on 2026-10-11 (Windows' drive's own write counter unmoved across Jam OS boots); stages 2 and 3 on 2026-10-18 (the second drive made a Jam OS disk by `disk prepare`, every write to Windows' drive refused, `install nvme1`, and the PC boots Jam OS from that drive with the stick out while Windows still starts from the firmware's boot menu). The power cut in the middle of writes was not tried on the real drive (QEMU's cut tests cover it). The drives are named in PCI order. Joined into [HISTORY](HISTORY.md#m127-nvme-and-the-installer) |
 | M13 | POSIX on musl | built and reviewed ([M13-PLAN.md](M13-PLAN.md); reviews of [the kernel's part](M13-REVIEW-KERNEL.md), [the POSIX layer](M13-REVIEW-POSIX.md) and [the terminals, sessions, SSH and shell](M13-REVIEW-TERMINAL.md)): musl 1.2.6 over handles with files and directories, pipes, `/dev` and `/etc`, `poll` and `epoll`, signals, threads, `posix_spawn`, TCP, UDP and `AF_UNIX` sockets, terminals, ptys and sessions, mapped files, and the shell's descriptors, redirections and pipelines. Ported: sbase, Lua, libc-test and tinyssh (`ssh` into Jam OS works on the PC). Chromium's layers were added to it afterwards (below). Joined into [HISTORY](HISTORY.md#m13-posix-on-musl); [M13-PLAN.md](M13-PLAN.md) stays as the design reference |
 | M13.5 | A real POSIX shell, made the default | its first half is built and reviewed: libc's `fork` and `vfork` and an `exec` in place, so Chromium's launcher runs unpatched ([FORK-PLAN.md](FORK-PLAN.md): [kernel review](FORK-REVIEW-KERNEL.md), [libc review](FORK-REVIEW-LIBC.md)). The shell itself (mksh) comes after Chromium |
-| M13.6 | A Unix filesystem: symlinks, permissions, large files, case-sensitive names | built and reviewed ([history](HISTORY.md#m136-the-ext-filesystem), [M13.6-REVIEW.md](M13.6-REVIEW.md)): extfs, our own code in ext4's on-disk format with its journal, the Jam OS drive's `/jam`, and the stick's `/data` by default since 2026-10-15; running on the PC from the installed drive since 2026-10-18. File watching ([history](HISTORY.md#file-watching-inotify), reviewed), record locks per inode, directory handles ([DIRHANDLE-PLAN.md](DIRHANDLE-PLAN.md): built, its review under way) and writable file mappings ([history](HISTORY.md#writable-file-mappings-on-ext), reviewed) were added for Chromium. Joined into [HISTORY](HISTORY.md#m136-the-ext-filesystem) |
+| M13.6 | A Unix filesystem: symlinks, permissions, large files, case-sensitive names | built and reviewed ([history](HISTORY.md#m136-the-ext-filesystem), [M13.6-REVIEW.md](M13.6-REVIEW.md)): extfs, our own code in ext4's on-disk format with its journal, the Jam OS drive's `/jam`, and the stick's `/data` by default since 2026-10-15; running on the PC from the installed drive since 2026-10-18. File watching ([history](HISTORY.md#file-watching-inotify), reviewed), record locks per inode, directory handles ([history](HISTORY.md#directory-handles), reviewed) and writable file mappings ([history](HISTORY.md#writable-file-mappings-on-ext), reviewed) were added for Chromium. Joined into [HISTORY](HISTORY.md#m136-the-ext-filesystem) |
 | M13.7 | The ports system: recipes, dependency order, packages | built except its last rungs ([M13.7-PLAN.md](M13.7-PLAN.md)): the recipe format and builder, signed packages and the Mac's repository, `pkg` on Jam OS (approval by package, the package area on `/jam`, power cuts settled at boot), and the ports zlib, bzip2, xz, libarchive, the Wayland pieces, two font packages and the Chromium recipe. Not built, because nothing needs them yet: make, ncurses and vim (PO10, PO11) and the builder's CVE audit (PO12); they wait until after Chromium. Its review (PR) and the join (PJ) are open |
 | M10 | ACPI power, tickless idle | not started: after Chromium (the owner, 2026-10-20) |
 | M10.5 | S3 sleep | not started: after Chromium |
@@ -143,8 +143,9 @@ store: no CA store needed) and libc++ come with it, statically linked.
   inode, so SQLite and leveldb in several processes meet each other;
 - directory handles: a directory descriptor is the file service's own
   channel, the current directory is one, and both cross `fork`, `exec` and
-  sockets ([DIRHANDLE-PLAN.md](DIRHANDLE-PLAN.md): built; its review under
-  way);
+  sockets (`DeleteDeep`'s 26 levels pass; built and reviewed:
+  [history](HISTORY.md#directory-handles),
+  [DIRHANDLE-REVIEW.md](DIRHANDLE-REVIEW.md); FAT keeps text descriptions);
 - `AF_UNIX` sockets with descriptor passing (`SCM_RIGHTS`: Mojo, Wayland)
   and named sockets (built: CU1, CU2);
 - launching other programs: Chromium's own launcher, unpatched, on libc's
@@ -319,11 +320,16 @@ ones below are the design questions M8 left open
 - **Small hardening** (2026-10-20): `syncfs` on extfs has
   no error sequence (a write-back error reaches `fsync` and `msync` of the
   file, not `sync`); `ext_iget` should say from the bitmap that an inode is
-  free (a freed inode reads like a removed one); a kernel freeze that
+  free (a freed inode reads like a removed one; directory channels ask the
+  bitmap already, `ext_inode_used`); directory handles' leftovers
+  ([history](HISTORY.md#directory-handles)): `fs.opendir` should answer the
+  inode's generation with the next IDL change (N5), and extfs's keeper put
+  should wait a little for room (N7); a kernel freeze that
   would begin while a writer waits should back off (FR1, option (b), before
-  the sandbox: track FZ is on it); `FilePathWatcherTest.RecursiveWatch` is on
-  base's skip list until a directory descriptor's `futimens` tells the
-  parent's watch (the directory handles' review is on it).
+  the sandbox: track FZ is on it); `FilePathWatcherTest.RecursiveWatch` is
+  off base's skip list again (a directory descriptor's `futimens` now tells
+  the parent's watch: the directory handles' review's M1), and a base run is
+  still to confirm it.
 - **The init run is near its time cap** (186 to 292 s of 300 under load on
   the PC): if the run grows, move the tests out of the boot image (13 of
   its about 29 MiB are tests) rather than raise the cap. That is RW11 of
