@@ -69,24 +69,32 @@ bool dir_is(const struct fd_desc *d)
 
 /* ---- the listing ------------------------------------------------------------- */
 
-/* The id of p ("." or ".."), or 1 if it can't be asked. */
+/* The id of abs + more ("" for ".", "/.." for ".."), or 1 if it can't be
+ * asked. Its buffers are on the heap: they are 8 KiB, and a listing's
+ * first call comes with whatever stack the caller has. */
 static uint64_t id_of(const char *abs, const char *more)
 {
-    char buf[PATH_BYTES + 3];
-    struct path p;
-    struct path_info i;
-    snprintf(buf, sizeof(buf), "%s%s", abs, more);
-    return !path_set(buf, &p) && !path_info_follow(&p, &i) && i.id ? i.id : 1;
+    struct {
+        char             text[PATH_BYTES + 3];
+        struct path      p;
+        struct path_info i;
+    } *w = jam_malloc(sizeof(*w));
+    if (!w)
+        return 1;
+    snprintf(w->text, sizeof(w->text), "%s%s", abs, more);
+    uint64_t id = 1;
+    if (!path_set(w->text, &w->p) && !path_info_follow(&w->p, &w->i) && w->i.id)
+        id = w->i.id;
+    path_done(&w->p);
+    jam_free(w);
+    return id;
 }
 
-/* Ask the service for cookie's batch. d->lock. */
-static long fetch(const struct dir *x, struct dir *w, uint32_t cookie)
+/* Ask the service for cookie's batch of the directory p. d->lock. */
+static long fetch_path(const struct path *p, struct dir *w, uint32_t cookie)
 {
-    struct path p;
     handle_t fs;
-    long r = path_set(x->path, &p);
-    if (!r)
-        r = path_fs(&p, &fs);
+    long r = path_fs(p, &fs);
     if (r)
         return r;
     if (!w->batch && !(w->batch = jam_malloc(FS_READDIR_BYTES))) {
@@ -95,7 +103,7 @@ static long fetch(const struct dir *x, struct dir *w, uint32_t cookie)
     }
     uint32_t len, next = 0, blen = 0;
     uint16_t count = 0;
-    const char *rel = path_rel(&p, &len);
+    const char *rel = path_rel(p, &len);
     w->bvalid = false;
     status_t st = fs_readdir_within(fs, FILE_TIMEOUT, rel, len, cookie, &next, &count, w->batch,
                                     &blen);
@@ -103,12 +111,23 @@ static long fetch(const struct dir *x, struct dir *w, uint32_t cookie)
     if (st == ERR_LINK_OUT)
         return -ENOENT;   /* the directory's place is a link out now */
     if (st != OK)
-        return path_err_read(&p, st);
+        return path_err_read(p, st);
     if (!count && next)
         return -EIO;   /* an empty batch that isn't the last: a broken service */
     *w = (struct dir){ .path = w->path, .batch = w->batch, .blen = blen, .bcookie = cookie,
                        .bnext = next, .bcount = count, .bvalid = true };
     return 0;
+}
+
+/* Ask the service for cookie's batch. d->lock. */
+static long fetch(const struct dir *x, struct dir *w, uint32_t cookie)
+{
+    struct path p;
+    long r = path_set(x->path, &p);
+    if (!r)
+        r = fetch_path(&p, w, cookie);
+    path_done(&p);
+    return r;
 }
 
 /* Entry k of the kept batch into *e (name, ino, type). */
@@ -188,9 +207,10 @@ static long entry_at(struct fd_desc *d, int64_t pos, struct entry *e)
     }
     struct path p;
     long r = path_set(x->path, &p);
-    if (r)
-        return r;
-    return p.where == PATH_MOUNT ? mount_entry(d, pos, e) : top_entry(x, pos, e);
+    if (!r)
+        r = p.where == PATH_MOUNT ? mount_entry(d, pos, e) : top_entry(x, pos, e);
+    path_done(&p);
+    return r;
 }
 
 long dir_put(void *buf, size_t room, const char *name, uint64_t ino, uint8_t type,
@@ -277,22 +297,31 @@ static long dir_stat(struct fd_desc *d, struct stat *st)
         r = path_info_follow(&p, &i);
     if (!r)
         path_fill_stat(&p, &i, st);
+    path_done(&p);
     return r;
+}
+
+/* fs.sync of p's mount. */
+static long sync_mount(const struct path *p)
+{
+    handle_t fs;
+    long r = path_fs(p, &fs);
+    if (r)
+        return r;
+    status_t st = fs_sync_within(fs, FILE_TIMEOUT);
+    jam_handle_close(fs);
+    return st == OK ? 0 : path_err(p, st);
 }
 
 static long dir_sync(struct fd_desc *d)
 {
     const struct dir *x = d->priv;
     struct path p;
-    handle_t fs;
     long r = path_set(x->path, &p);
-    if (r || p.where != PATH_MOUNT)
-        return r;
-    if ((r = path_fs(&p, &fs)) != 0)
-        return r;
-    status_t st = fs_sync_within(fs, FILE_TIMEOUT);
-    jam_handle_close(fs);
-    return st == OK ? 0 : path_err(&p, st);
+    if (!r && p.where == PATH_MOUNT)
+        r = sync_mount(&p);
+    path_done(&p);
+    return r;
 }
 
 static const char *dir_path(struct fd_desc *d)
@@ -350,10 +379,12 @@ long dir_new(const struct path *p, uint32_t status, struct fd_desc **out)
 long dir_adopt_fd(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
                   struct fd_desc **out)
 {
-    struct path p;
-    if (rec->offset > INT64_MAX || path_set(data, &p))   /* data: a string (the reader's check) */
+    if (rec->offset > INT64_MAX)
         return -EINVAL;
-    long r = dir_new(&p, rec->status, out);
+    struct path p;
+    /* data: a string (the reader's check) */
+    long r = path_set(data, &p) ? -EINVAL : dir_new(&p, rec->status, out);
+    path_done(&p);
     if (!r)
         (*out)->offset = (int64_t)rec->offset;
     return r;
@@ -411,6 +442,7 @@ long lx_mkdirat(long dirfd, long pathname, long mode, long d, long e, long f)
         do
             r = mkdir_path(&p, bits);
         while (path_again(&p, &r));
+    path_done(&p);
     return r;
 }
 
@@ -465,6 +497,7 @@ long lx_unlinkat(long dirfd, long pathname, long flags, long d, long e, long f)
         do
             r = remove_path(&p, flags & AT_REMOVEDIR ? FS_UNLINK_DIR : 0);
         while (path_again(&p, &r));
+    path_done(&p);
     return r;
 }
 
@@ -534,6 +567,7 @@ long lx_renameat2(long olddirfd, long oldpath, long newdirfd, long newpath, long
     if (!two)
         return -ENOMEM;
     long r = path_get(olddirfd, (const char *)(uintptr_t)oldpath, &two[0]);
+    two[1].at = NULL;   /* if the second path_get is not made, path_done still can be */
     if (!r)
         r = path_get(newdirfd, (const char *)(uintptr_t)newpath, &two[1]);
     two[0].nofollow = two[1].nofollow = true;   /* rename moves a link, never its target */
@@ -545,6 +579,8 @@ long lx_renameat2(long olddirfd, long oldpath, long newdirfd, long newpath, long
                   : flags & RENAME_NOREPLACE ? 0 : FS_RENAME_REPLACE;
     if (!r)
         r = rename_paths(&two[0], &two[1], ff);
+    path_done(&two[0]);
+    path_done(&two[1]);
     jam_free(two);
     return r;
 }
@@ -589,6 +625,7 @@ long lx_chdir(long pathname, long b, long c, long d, long e, long f)
         while (path_again(&p, &r));
     if (!r)
         path_cwd_set(p.abs);
+    path_done(&p);
     return r;
 }
 
