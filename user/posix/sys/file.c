@@ -84,10 +84,14 @@ static bool write_alone_may(uint32_t s, long r)
 /* errno for a service's answer about f (EROFS needs its mount). */
 static long file_err(const struct file *f, status_t st)
 {
-    struct path p;
     if (st != ERR_ACCESS_DENIED)
         return path_err(NULL, st);
-    return f->path && !path_set(f->path, &p) ? path_err(&p, st) : -EACCES;
+    if (!f->path)
+        return -EACCES;
+    struct path p;
+    long r = path_set(f->path, &p) ? -EACCES : path_err(&p, st);
+    path_done(&p);
+    return r;
 }
 
 /* ---- the kind ------------------------------------------------------------------ */
@@ -258,9 +262,13 @@ static long size_now(const struct file *f, uint64_t *size)
     if (!f->o) {
         struct path p;
         struct path_info i;
-        long r = f->path ? path_set(f->path, &p) : -EBADF;
-        if (!r)
-            r = path_info_follow(&p, &i);
+        long r = -EBADF;
+        if (f->path) {
+            r = path_set(f->path, &p);
+            if (!r)
+                r = path_info_follow(&p, &i);
+            path_done(&p);
+        }
         *size = r ? 0 : i.size;
         return r;
     }
@@ -345,12 +353,13 @@ static long kind_stat(struct fd_desc *d, struct stat *st)
         lock_give(&f->o->lock);
         r = s == OK ? 0 : file_err(f, s);
     }
-    if (r)
-        return r;
-    path_fill_stat(&p, &i, st);
-    if (!f->path && !i.has_attr)
-        st->st_mode = S_IFREG | 0644;
-    return 0;
+    if (!r) {
+        path_fill_stat(&p, &i, st);
+        if (!f->path && !i.has_attr)
+            st->st_mode = S_IFREG | 0644;
+    }
+    path_done(&p);
+    return r;
 }
 
 /* fsync, or ftruncate (len >= 0). */
@@ -418,6 +427,7 @@ static long reopen(const struct file *f, uint32_t s, handle_t *ch, handle_t *buf
         if (!path_again(p, &r))
             break;
     }
+    path_done(p);
     jam_free(p);
     return r;
 }
@@ -433,9 +443,13 @@ static void lend_locked(struct fd_desc *d, const struct file *f)
     struct path_info i;
     if (!o->lent) {
         fobj_lend_locked(o);
-    } else if (!path_set(f->path, &p) && !path_info(&p, &i)) {
-        follow_end_locked(d, o->lent_end, i.size);
-        o->lent_end = i.size;
+    } else {
+        bool known = !path_set(f->path, &p) && !path_info(&p, &i);
+        path_done(&p);
+        if (known) {
+            follow_end_locked(d, o->lent_end, i.size);
+            o->lent_end = i.size;
+        }
     }
     lock_give(&o->lock);
 }
@@ -580,8 +594,14 @@ long file_setattr_fd(struct fd_desc *d, uint32_t mask, uint32_t mode, uint32_t u
                               : ERR_IO;
     lock_give(&f->o->lock);
     if (st == ERR_ACCESS_DENIED) {   /* not the owner, or a view that may not change it */
-        struct path p;
-        return f->path && !path_set(f->path, &p) && path_read_only(&p) ? -EROFS : -EPERM;
+        long r = -EPERM;
+        if (f->path) {
+            struct path p;
+            if (!path_set(f->path, &p) && path_read_only(&p))
+                r = -EROFS;
+            path_done(&p);
+        }
+        return r;
     }
     return st == OK ? 0 : file_err(f, st);
 }
@@ -722,33 +742,29 @@ static long open_path(struct path *p, long flags, uint32_t mode, struct fd_desc 
     return open_file(p, flags, mode, out);
 }
 
-long lx_openat(long dirfd, long pathname, long flags, long mode, long e, long f)
+/* openat's open of p (resolved, its nofollow the caller's): the new
+ * descriptor, or -errno. */
+static long open_resolved(struct path *p, long flags, long mode)
 {
-    long r = open_flags_ok(flags);
-    struct path p;
-    if (!r)
-        r = path_get(dirfd, (const char *)(uintptr_t)pathname, &p);
-    if (r)
-        return r;
-    p.nofollow = (flags & O_NOFOLLOW) || (flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL);
+    p->nofollow = (flags & O_NOFOLLOW) || (flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL);
     uint32_t perm = (flags & O_CREAT) ? ((uint32_t)mode & 07777u) & ~lx_umask_now()
                                       : FS_MODE_FILE_DEFAULT;
-    long fd = -1;
+    long r, fd = -1;
     struct fd_desc *d = NULL;
     for (;;) {   /* again from where a link out of a mount led */
-        enum path_libc which = path_libc(&p);
+        enum path_libc which = path_libc(p);
         if (which != LIBC_NONE && fd >= 0)
             fd_free(fd);
         if (which == LIBC_DEV)
-            return dev_open(p.abs, (int)flags, (mode_t)mode);
+            return dev_open(p->abs, (int)flags, (mode_t)mode);
         if (which == LIBC_ETC)
-            return etc_open(p.abs, (int)flags);
+            return etc_open(p->abs, (int)flags);
         if (which == LIBC_PROC)
-            return proc_open(&p, flags);
+            return proc_open(p, flags);
         if (fd < 0 && (fd = fd_alloc(0)) < 0)   /* EMFILE before anything is made, as Linux */
             return fd;
-        r = open_path(&p, flags, perm, &d);
-        if (!path_again(&p, &r))
+        r = open_path(p, flags, perm, &d);
+        if (!path_again(p, &r))
             break;
     }
     if (r) {
@@ -757,6 +773,19 @@ long lx_openat(long dirfd, long pathname, long flags, long mode, long e, long f)
     }
     fd_place(fd, d, flags & O_CLOEXEC);
     return fd;
+}
+
+long lx_openat(long dirfd, long pathname, long flags, long mode, long e, long f)
+{
+    long r = open_flags_ok(flags);
+    if (r)
+        return r;
+    struct path p;
+    r = path_get(dirfd, (const char *)(uintptr_t)pathname, &p);
+    if (!r)
+        r = open_resolved(&p, flags, mode);
+    path_done(&p);
+    return r;
 }
 
 long lx_open(long pathname, long flags, long mode, long d, long e, long f)
@@ -784,14 +813,16 @@ static long truncate_open(struct path *p, struct fd_desc **out)
 
 long lx_truncate(long pathname, long len, long c, long d, long e, long f)
 {
+    if (len < 0)
+        return -EINVAL;
     struct path p;
-    long r = len < 0 ? -EINVAL : path_get(AT_FDCWD, (const char *)(uintptr_t)pathname, &p);
-    if (r)
-        return r;
+    long r = path_get(AT_FDCWD, (const char *)(uintptr_t)pathname, &p);
     struct fd_desc *desc = NULL;
-    do
-        r = truncate_open(&p, &desc);
-    while (path_again(&p, &r));
+    if (!r)
+        do
+            r = truncate_open(&p, &desc);
+        while (path_again(&p, &r));
+    path_done(&p);
     if (r)
         return r;
     r = kind_truncate(desc, len);

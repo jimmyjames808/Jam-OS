@@ -47,6 +47,13 @@
 # and the stamp agree and the image is there, the build is skipped without
 # asking the budget for its CPUs. JAMOS_REMOTE_REBUILD=1 builds anyway.
 #
+# The copy keeps the Mac's file times out (rsync -rlpgoD --checksum, no -t): a
+# file it writes has the time it arrived on the PC. Each build (under the lock)
+# first touches every file that arrived since the previous build began
+# (build/.build-start), so an edit that landed while an older copy of the file
+# was being built is newer than the object made from the older copy, and make
+# rebuilds that object and nothing else (tools/remote-sync-test.sh shows it).
+#
 # Several commands from one copy (tools/pc-batch.sh does this):
 #   tools/remote-test.sh --prepare     copy and build only, run nothing
 #                                      (JAMOS_REMOTE_COPY_ONLY=1: copy only)
@@ -158,9 +165,15 @@ if [ "$nosync" != 1 ]; then
     "$sshr" "${ssh_opts[@]}" "$host" "wsl --cd ~ mkdir -p $dir" < /dev/null
     # Several runs from one checkout copy it one at a time (lockf, the Mac's
     # flock): two rsyncs into one directory at once failed.
+    # The Mac's file times are not copied (no -t, so -a's -rlptgoD without the
+    # t, and --checksum to tell what changed): a file the copy writes gets the
+    # PC's own time of its arrival. The build (below) can then tell the files
+    # that arrived while an older build ran from the objects that build wrote;
+    # with the Mac's times a file edited while the PC built the version before
+    # it ended up older than that version's object, and make kept the object.
     lock=()
     command -v lockf > /dev/null && lock=(lockf -k build/.remote-sync.lock)
-    ${lock[@]+"${lock[@]}"} rsync -az --delete --exclude .git --exclude /build --exclude /.claude --exclude test.bin \
+    ${lock[@]+"${lock[@]}"} rsync -rlpgoDz --checksum --delete --exclude .git --exclude /build --exclude /.claude --exclude test.bin \
         --exclude compile_commands.json --rsync-path="wsl --cd ~ rsync" \
         -e "$sshr ${ssh_opts[*]}" ./ "$host:$dir/" ||
         { echo "remote-test: copying to $host failed" >&2; exit 2; }
@@ -188,6 +201,15 @@ remote_script() {
     echo 'img=build/jamos.img; [ "${KTESTS:-1}" = 0 ] && img=build/noktests/jamos.img
 (
     flock 9 || exit 1
+    mkdir -p build
+    # Every file the copy wrote since the last build began (build/.build-start;
+    # a copy may land at any moment, also while a build ran) is touched, so it
+    # is newer than every object that build wrote: that build may have read the
+    # version before the copy, and make would keep its object. A tree with no
+    # marker (never built under this rule) is touched whole: one full build.
+    if [ -e build/.build-start ]; then newer="-newer build/.build-start"; else newer=; fi
+    find . \( -path ./build -o -path ./build-remote.log -o -name __pycache__ \) -prune -o -type f $newer -exec touch -- {} +
+    touch build/.build-start
     stamp=build/.remote-built-k${KTESTS:-1}
     fp=$({ echo "KTESTS=${KTESTS-} JAMOS_VLAN=${JAMOS_VLAN-} JAMOS_DATA_FS=${JAMOS_DATA_FS-}"
            find . \( -path ./build -o -path ./build-remote.log -o -name __pycache__ \) -prune -o ! -type d -printf "%y %P %s %T@ %l\n" |

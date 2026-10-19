@@ -205,7 +205,7 @@ static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint3
     if (!may(&w->in, 4))
         return ERR_ACCESS_DENIED;
     uint64_t pos = cookie;
-    uint32_t len = 0, base = w->phys_len;
+    uint32_t len = 0;
     uint16_t count = 0;
     *out_next = 0;
     for (;;) {
@@ -221,21 +221,8 @@ static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint3
             continue;
         /* What the view hides wholly is left out where it lies (the root's
          * `etc`, however the listing was reached). */
-        if (c->flags & FS_VIEW_NO_ETC) {
-            w->phys_len = base;
-            w->phys[base] = '\0';
-            if (base + 1 + e.name_len <= FS_PATH_LEN) {
-                if (base)
-                    w->phys[w->phys_len++] = '/';
-                memcpy(w->phys + w->phys_len, e.name, e.name_len + 1u);
-                w->phys_len += e.name_len;
-            }
-            bool hide = fs_view_hides(c->flags, w->phys, true);
-            w->phys_len = base;
-            w->phys[base] = '\0';
-            if (hide)
-                continue;
-        }
+        if (fs_region_hides(c->flags, fs_region_child(w->region, e.name, e.name_len), true))
+            continue;
         struct ext_inode in;
         st = ext_iget(fs, e.ino, 0, &in);
         if (st != OK)

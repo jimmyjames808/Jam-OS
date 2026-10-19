@@ -368,11 +368,14 @@ static bool from_argv0(const struct bootfs_view *fs, bool boot)
         /* the shell's "bin/x", or a bare name as its run finds it */
         snprintf(name, PATH_BYTES, "%s%s", strchr(argv0, '/') ? "" : "bin/", argv0);
         ok = boot && boot_is_us(fs, name) && found("/boot/", name);
-    } else if (name && p && argv0 && !path_set(argv0, p)) {
-        if (boot_name(p->abs, name))
-            ok = boot && boot_is_us(fs, name) && found("/boot/", name);
-        else
-            ok = file_is_us(p) && found("", p->abs);
+    } else if (name && p && argv0) {
+        if (!path_set(argv0, p)) {
+            if (boot_name(p->abs, name))
+                ok = boot && boot_is_us(fs, name) && found("/boot/", name);
+            else
+                ok = file_is_us(p) && found("", p->abs);
+        }
+        path_done(p);
     }
     jam_free(p);
     jam_free(name);
@@ -387,6 +390,8 @@ static bool from_handover(void)
     const char *given = lx_handover_exe();
     struct path *p = given ? jam_malloc(sizeof(*p)) : NULL;
     bool ok = p && !path_set(given, p) && path_libc(p) == LIBC_NONE && found("", p->abs);
+    if (p)
+        path_done(p);
     jam_free(p);
     return ok;
 }
@@ -862,9 +867,10 @@ long proc_adopt(const struct posixfds_fd *rec, const void *data, const handle_t 
 {
     struct path p;
     struct at a;
-    if (path_set(data, &p) || !proc_path(p.abs))   /* data: a string (the reader's check) */
-        return -EINVAL;
-    long r = lookup(p.abs, &a);   /* our /proc's answer: another's pid is ENOENT here */
+    long r = -EINVAL;
+    if (!path_set(data, &p) && proc_path(p.abs))   /* data: a string (the reader's check) */
+        r = lookup(p.abs, &a);   /* our /proc's answer: another's pid is ENOENT here */
+    path_done(&p);
     if (r)
         return r;
     if (!is_file(a.node))

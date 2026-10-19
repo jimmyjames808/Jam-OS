@@ -774,6 +774,7 @@ static const struct {
     { "fat_attr_views", t_fat_attr_views },
     { "fs_attr_ns", t_fs_attr_ns },
     { "fs_no_dirs", t_fs_no_dirs },
+    { "fs_view_dirs", t_fs_view_dirs },
     { "extfs_basic", t_extfs_basic },
     { "extfs_links", t_extfs_links },
     { "extfs_perms", t_extfs_perms },

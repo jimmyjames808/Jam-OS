@@ -140,17 +140,30 @@ static void ending(const char *in, size_t n, struct path *out)
     out->must_dir = in[n - 1] == '/' || out->last_dot || out->last_dotdot;
 }
 
-/* in (n bytes) against base into out; out's nofollow and hops are the
- * caller's. */
-static long resolve(const char *base, const char *in, size_t n, struct path *out)
+/* out->abs holds the directory a path starts from, "/" or the text of a
+ * current directory or a directory description (absolute and clean, which
+ * is what they keep; on a mount with links as written, as walk would copy
+ * it): its length, with out's mount noted. The base is taken as it stands
+ * and the path walked on from its end, so no copy of it is needed. */
+static size_t start_at(struct path *out)
 {
-    size_t len = 1;
-    out->abs[0] = '/';
+    size_t len = strlen(out->abs);
     out->mount_len = 0;
     out->links = false;
-    long r = walk(base, out, &len);
-    if (!r)
-        r = walk(in, out, &len);
+    if (len > 1) {
+        const char *end = memchr(out->abs + 1, '/', len - 1);
+        out->mount_len = (uint32_t)(end ? (size_t)(end - out->abs) : len);
+        out->links = mount_links(out);
+    }
+    return len;
+}
+
+/* in (n bytes) onto the directory out->abs holds (start_at); out's
+ * nofollow and hops are the caller's. */
+static long resolve(const char *in, size_t n, struct path *out)
+{
+    size_t len = start_at(out);
+    long r = walk(in, out, &len);
     if (r)
         return r;
     out->abs[len] = '\0';
@@ -164,11 +177,19 @@ static long resolve(const char *base, const char *in, size_t n, struct path *out
     return 0;
 }
 
-/* The directory a relative path starts from. */
-static long base_of(long dirfd, char base[PATH_BYTES])
+/* in (an absolute path, n bytes) from "/" into out. */
+static long resolve_abs(const char *in, size_t n, struct path *out)
+{
+    out->abs[0] = '/';
+    out->abs[1] = '\0';
+    return resolve(in, n, out);
+}
+
+/* The directory a relative path starts from, as text into out->abs. */
+static long base_of(long dirfd, struct path *out)
 {
     if (dirfd == AT_FDCWD) {
-        path_cwd(base);
+        path_cwd(out->abs);
         return 0;
     }
     struct fd_desc *d = fd_get(dirfd);
@@ -176,9 +197,9 @@ static long base_of(long dirfd, char base[PATH_BYTES])
         return -EBADF;
     long r = -ENOTDIR;
     if (dir_is(d)) {
-        memcpy(base, d->ops->path(d), strlen(d->ops->path(d)) + 1);
+        memcpy(out->abs, d->ops->path(d), strlen(d->ops->path(d)) + 1);
         r = 0;
-    } else if (proc_dir_base(d, base)) {
+    } else if (proc_dir_base(d, out->abs)) {
         r = 0;
     }
     fd_put(d);
@@ -187,6 +208,7 @@ static long base_of(long dirfd, char base[PATH_BYTES])
 
 long path_get(long dirfd, const char *in, struct path *out)
 {
+    out->at = NULL;
     long len = in ? uc_strnlen(in, PATH_BYTES) : -EFAULT;   /* the caller's string */
     if (len < 0)
         return len;
@@ -198,20 +220,28 @@ long path_get(long dirfd, const char *in, struct path *out)
     out->nofollow = false;
     out->hops = 0;
     if (in[0] == '/')
-        return resolve("", in, n, out);
-    char base[PATH_BYTES];
-    long r = base_of(dirfd, base);
-    return r ? r : resolve(base, in, n, out);
+        return resolve_abs(in, n, out);
+    long r = base_of(dirfd, out);
+    return r ? r : resolve(in, n, out);
 }
 
 long path_set(const char *abs, struct path *out)
 {
+    out->at = NULL;
     size_t n = strnlen(abs, PATH_BYTES);
     if (!n || n == PATH_BYTES)
         return -ENAMETOOLONG;
     out->nofollow = false;
     out->hops = 0;
-    return resolve("", abs, n, out);
+    return resolve_abs(abs, n, out);
+}
+
+void path_done(struct path *p)
+{
+    if (p->at) {
+        fd_put(p->at);
+        p->at = NULL;
+    }
 }
 
 /* ---- links that lead out of a mount ------------------------------------------- */
@@ -259,7 +289,8 @@ static long go_on(struct path *p, uint8_t kind, const char *next, char *buf)
             return -EIO;
     }
     bool must_dir = p->must_dir, dot = p->last_dot, dotdot = p->last_dotdot;
-    long r = resolve("", buf, strlen(buf), p);
+    path_done(p);   /* p becomes a whole path from "/": nothing it starts from now */
+    long r = resolve_abs(buf, strlen(buf), p);
     p->must_dir |= must_dir;
     p->last_dot |= dot;
     p->last_dotdot |= dotdot;
@@ -561,6 +592,7 @@ long path_program(const char *abs, char *out)
     }
     if (!r)
         memcpy(out, p->abs, strlen(p->abs) + 1);
+    path_done(p);
     jam_free(p);
     return r;
 }
@@ -621,9 +653,12 @@ static void cwd_start_locked(void)
 {
     cwd_ready = true;
     const char *given = NULL;
-    struct path p;
-    if (lx_handover(&given) && given && given[0] == '/' && !path_set(given, &p))
-        memcpy(cwd, p.abs, strlen(p.abs) + 1);
+    if (lx_handover(&given) && given && given[0] == '/') {
+        struct path p;
+        if (!path_set(given, &p))
+            memcpy(cwd, p.abs, strlen(p.abs) + 1);
+        path_done(&p);
+    }
 }
 
 void path_cwd(char out[PATH_BYTES])
@@ -652,6 +687,7 @@ bool path_cwd_removed(void)
         long r = path_info(&w->p, &i);
         gone = r == -ENOENT || r == -ENOTDIR;   /* a service that's slow or refuses doesn't count */
     }
+    path_done(&w->p);
     jam_free(w);
     return gone;
 }

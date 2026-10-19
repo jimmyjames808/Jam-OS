@@ -264,12 +264,15 @@ long fobj_open(const struct path *p, uint32_t ff, uint32_t mode, struct fobj **o
 
 long fobj_adopt(handle_t ch, handle_t buf, uint32_t ff, const char *path, struct fobj **out)
 {
-    struct path p;
     char m[NS_NAME_MAX] = "";
     uint32_t features = 0;
-    if (path && !path_set(path, &p) && p.where == PATH_MOUNT) {
-        mount_of(&p, m);
-        features = path_features(&p);
+    if (path) {
+        struct path p;
+        if (!path_set(path, &p) && p.where == PATH_MOUNT) {
+            mount_of(&p, m);
+            features = path_features(&p);
+        }
+        path_done(&p);
     }
     return fresh_obj(ch, buf, ff, m, features, out);
 }
@@ -291,9 +294,12 @@ status_t fobj_back_locked(struct fobj *o, const char *path)
     struct path p;
     handle_t ch, buf;
     uint64_t size, id;
-    if (!path || path_set(path, &p) || p.where != PATH_MOUNT)
+    if (!path)
         return ERR_IO;   /* never: only a file with its path is given, so lent */
-    status_t st = fobj_open_settled(&p, o->lent_flags, &ch, &buf);
+    status_t st = ERR_IO;
+    if (!path_set(path, &p) && p.where == PATH_MOUNT)
+        st = fobj_open_settled(&p, o->lent_flags, &ch, &buf);
+    path_done(&p);
     if (st == OK)
         st = jf_map(ch, buf, o->lent_flags, true, &o->jf, &size, &id);
     if (st != OK)

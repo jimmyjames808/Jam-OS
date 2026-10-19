@@ -9,7 +9,8 @@
  * (FS_VIEW_NO_ETC, every program's) refuses every request at or under it,
  * a stat of it too, and leaves it out of the root's listing; the SSH
  * server's views (`:rk`, `:ra`) show its own files of etc and nothing else
- * of it; and fs_view_hides's rules. The packages' guard
+ * of it; and fs_view_hides's rules, the same from a region (<fsview.h>)
+ * pushed and popped a name at a time. The packages' guard
  * (FS_VIEW_GUARD_PKG, every program's writable /data) the same for the
  * top-level pkg, by every name FAT takes for it, and a view without it
  * (bin/pkg's) that changes it; fs_view_in_pkg's rules. */
@@ -304,6 +305,35 @@ bool t_view_hides_names(void)
     /* The other flags hide nothing. */
     CHECK(!fs_view_hides(FS_VIEW_READ_ONLY | FS_VIEW_GUARD_ETC, "etc/allow", false));
     CHECK(!fs_view_hides(0, "etc/ssh/x", false));
+    /* A region pushed and popped a name at a time, as extfs's walk keeps
+     * it, answers at each step as its text does (the file
+     * etc/authorized_keys again after a name under it, etc itself after
+     * etc/ssh, the root). */
+    static const char *const steps[] = { "Etc", "authorized_keys", "x", "..", "..", "ssh",
+                                         "k", "..", "..", "..", "pkg", "bin", "..", "..",
+                                         "y", "etc", "allow" };
+    char text[64] = "";
+    struct fs_region r = fs_region_of("", 0);
+    for (unsigned i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+        size_t n = strlen(text);
+        if (!strcmp(steps[i], "..")) {
+            while (n && text[n - 1] != '/')
+                n--;
+            text[n ? n - 1 : 0] = '\0';
+            r = fs_region_parent(r);
+        } else {
+            snprintf(text + n, sizeof(text) - n, "%s%s", n ? "/" : "", steps[i]);
+            r = fs_region_child(r, steps[i], strlen(steps[i]));
+        }
+        struct fs_region t = fs_region_of(text, strlen(text));
+        CHECK(r.depth == t.depth && r.cls == t.cls);
+        CHECK(fs_region_in_etc(r) == fs_view_in_etc(text));
+        CHECK(fs_region_in_pkg(r) == fs_view_in_pkg(text));
+        for (uint32_t f = 0; f <= FS_VIEW_FLAGS; f++)
+            CHECK(fs_region_hides(f, r, true) == fs_view_hides(f, text, true) &&
+                  fs_region_hides(f, r, false) == fs_view_hides(f, text, false));
+    }
+    CHECK(r.depth == 3 && r.cls == FS_REGION_OTHER);   /* y/etc/allow: not the top-level etc */
     return true;
 }
 

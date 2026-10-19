@@ -136,12 +136,23 @@ governors, and the table shows its unfinished runs CANCELLED. A PC reboot mid-ba
 as LOST (the driver's lock is gone and it never wrote done), the ones not
 started NOT-RUN; `tools/pc-batch.sh start --detach --resume <id>` runs
 them again on the PC's copy as it is. Logs are under
-`build/batch/<id>/pc/runs/`. One detached batch at a time per checkout
-(`start --detach` refuses a second while the first runs there): don't run
-other PC tests from the checkout until it's over, they would change the
-copy it tests. Batches from different checkouts don't collide (each has
-its own directory and copy). Without a keeper on the PC the hand-off fails
+`build/batch/<id>/pc/runs/`. Without a keeper on the PC the hand-off fails
 and every run is NOT-RUN ("no keeper runs on the PC").
+
+**One batch at a time per checkout.** A checkout has one copy on the PC and
+every run of a batch uses it, so a second batch started meanwhile would copy
+the checkout's newer code over it under the first batch's remaining runs
+(a whole pre-push pass was voided that way). `pc-batch.sh start` therefore
+refuses, with exit 2 and the running batch's id, while a batch started from
+the same checkout is still running: a driver alive on the Mac, or (a
+detached batch, whose driver here is gone after the hand-off) a driver alive
+on the PC (one short ssh to look, made when the new batch is detached or an
+earlier detached one isn't collected yet). Wait for it (`wait <id>`) or
+`cancel <id>`; `start --force` starts the new batch anyway, and the old
+one's remaining runs then test the new code. Batches from different
+checkouts don't collide (each has its own directory and copy). The guard
+knows only batches: a single `remote-test.sh` run from the checkout while a
+batch runs also changes the copy, so don't make one.
 
 One run: `JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh
 tools/qemu-test.sh build/t/init init init`. Several calls of your own from
@@ -322,7 +333,11 @@ blocks allocated), or FAT's on a FAT stick. CBF6's cases in `files2.c`:
 in it), and 255-byte names nested through directory descriptors (the start
 of base's `DeleteDeep`) as far as a path of 4,095 bytes goes, the next level
 `ENAMETOOLONG` and a 256-byte name `ENAMETOOLONG`, all removed again from
-the bottom.
+the bottom. DL0's `path_bases`: a relative path ends where its absolute form
+does, from `/` (a mount named without a slash), a mount's root, a directory
+by the current directory and by a descriptor (with `.`, `..` and doubled
+slashes), a directory reached through a link (ext only) and a `/proc`
+directory ([DIRHANDLE-PLAN](DIRHANDLE-PLAN.md#dl0-notes)).
 
 Examples:
 
@@ -408,6 +423,22 @@ share a budget of CPUs on the machine (below) and wait until theirs fit:
 more runs at once made timing tests fail. Without `JAMOS_REMOTE`, or
 when the machine doesn't answer (5 s a try, 3 tries), the command runs
 here (with `JAMOS_REMOTE_ONLY=1`: not run, exit 3).
+
+**The copy and stale objects.** The copy does not bring the Mac's file
+times (`rsync -rlpgoD --checksum`, no `-t`): a file it writes has the time
+it arrived on the PC. A copy can land while a build of the version before
+it runs there (a second run or batch from the checkout, an edit made while
+the first built); that build writes its object after the new file arrived,
+and with the Mac's times the object looked newer than the source and make
+kept it, so tests ran a stale binary. Now each build, under the checkout's
+build lock, first touches every file that arrived since the previous build
+began (`build/.build-start` on the PC), so the objects the older build wrote
+are older than the files and only those objects are made again (a tree with
+no marker yet is touched whole: one full build, once). A copy with nothing
+changed touches nothing and the build is skipped as before.
+`tools/remote-sync-test.sh` shows it. `pc-batch.sh` copies and builds with
+`remote-test.sh --prepare` (a detached batch: the copy, and the first run's
+build check on the PC), so it has the same rule.
 
 **Dropped connections** (`tools/ssh-retry.sh`, `remote-test.sh`, `pc-batch.sh`).
 The PC's sshd turns new connections away at random while 10 or more are
@@ -1568,8 +1599,9 @@ matters `QEMU_XHCI`) pass through.
 | `tools/sntp-test.sh <outdir>` | bin/sntp end to end, three boots with QEMU's e1000e, the RTC at 2026-01-15 and the peer's SNTP server (`--ntp`: 2031-02-27 from its start): `sntp` (`sntp.txt`: the gateway asked, each answer after a forged one (`--ntp-forge`: the origin a bit off, a year later) that is said to be ignored, the five-year step confirmed by a second reply, `date -u` 2031, `date -r` "set from the network", `date -z` keeps it, sntp restarted moves it under a second, devmgr restarted and init keeps the network's time); checked afterwards: the kernel's set near the peer's time, never the forged year; `sntp-name` (`ntp.server = router.jam`, through `/svc/dns`); `sntp-off` (`ntp = off`: no sntp, not one SNTP request, the RTC's date). About 3 minutes |
 | `tools/ping-test.sh <outdir>` | the shell's `net` and `ping` (`net.txt`) with QEMU's e1000e and the network peer: `ping 1.1.1.1` answered through the gateway, Ctrl+C, `net stats` ([netstack](#netstack)); then the same commands as programs on the same stick (`sysbox-net.txt`) |
 | `tools/remote-slots-test.sh` | the CPU budget on the test machine ([above](#another-machine-for-the-tests)) against a fake lock directory, no PC, about 55 s: the costs of each kind of command (with the `--shrink` spec of the scripts that have parts); 6 commands of 3 CPUs on a budget of 8 never more than 2 at once; a command bigger than the budget alone; a holder killed (`kill -9`) with and without its command leaks nothing, and a dead governor's command (and a process it left in a session of its own) is killed by the next caller, the CPUs freed at once; a command that leaves such a process has it killed when it ends; a cancelled governor (SIGTERM) takes its tree down, a command that ignores SIGTERM after `JAMOS_REMOTE_KILL_GRACE`, one that ends on it keeps its own status; an old waiter is not passed by a younger small one, unless it would still fit after that one started (a stuck waiter holds no one up); the 2026-10-15 deadlock (a 16-CPU long claim, a 12-CPU waiter told at once that it can't fit, 4-CPU runs that start, the 12-CPU run after the long claim ends, and an 8-CPU run that does fit keeps its place); `--shrink` takes 2 of 3 parts beside the long claim and none off a run that fits; `JAMOS_REMOTE_SLOTS`, the budget file, `--status` (pid, age, command, a dead governor's `GONE`), the exit status; a waiting run whose stderr is closed gives up (141); a `--detach` claim returns at once, holds its CPUs while its command runs (the others wait), logs its output, ends with the command and, made inside another claim, outlives it; prints PASS |
-| `tools/pc-batch-test.sh` | `tools/pc-batch.sh` ([Running tests on the PC](#running-tests-on-the-pc)) with a stand-in for remote-test, no PC, about 25 s: start returns at once, a short wait says "not yet" (124), the table (PASS, FAIL with its failure line and log, rerun-PASS, the queue time), `VAR=value` words with and without `env`, one copy then every run without one, bad runlists refused, a PC that doesn't answer tried twice, a run that finds it gone run once more (a test's own exit 3 not), the runs started `PC_BATCH_STAGGER` apart and no more than `PC_BATCH_JOBS` out at once, a `KTESTS=0` run's own build, cancel; then `start --detach` against a fake PC (a home dir with the real keeper, `tools/pc-batch-driver.sh` and `remote-slots.py`; ssh, `wsl`, `setsid` and `flock` stand-ins), about 20 s more: the Mac's driver gone after the hand-off and no ssh until the wait, the table (FAIL, rerun-PASS, `JAMOS_TIER` reaching the run), outputs copied back without disk images, a run id for each try, two checkouts' batches at once, collecting twice and `status` without asking the PC again, a second detached batch of one checkout refused, `wait` with the PC down (exit 3), cancel (a process in a session of its own too, the claim freed, CANCELLED), a reboot (LOST, then `--resume`), no keeper (NOT-RUN); prints PASS |
+| `tools/pc-batch-test.sh` | `tools/pc-batch.sh` ([Running tests on the PC](#running-tests-on-the-pc)) with a stand-in for remote-test, no PC, about 25 s: start returns at once, a short wait says "not yet" (124), the table (PASS, FAIL with its failure line and log, rerun-PASS, the queue time), `VAR=value` words with and without `env`, one copy then every run without one, bad runlists refused, a PC that doesn't answer tried twice, a run that finds it gone run once more (a test's own exit 3 not), the runs started `PC_BATCH_STAGGER` apart and no more than `PC_BATCH_JOBS` out at once, a `KTESTS=0` run's own build, cancel, a second batch of one checkout refused while the first runs (exit 2, `--force` starts it, a new one once both are over); then `start --detach` against a fake PC (a home dir with the real keeper, `tools/pc-batch-driver.sh` and `remote-slots.py`; ssh, `wsl`, `setsid` and `flock` stand-ins), about 20 s more: the Mac's driver gone after the hand-off and no ssh until the wait, the table (FAIL, rerun-PASS, `JAMOS_TIER` reaching the run), outputs copied back without disk images, a run id for each try, two checkouts' batches at once, collecting twice and `status` without asking the PC again, a second batch of one checkout, detached or plain, refused while the first runs on the PC (its driver here gone), `wait` with the PC down (exit 3), cancel (a process in a session of its own too, the claim freed, CANCELLED), a reboot (LOST, then `--resume`), no keeper (NOT-RUN); prints PASS |
 | `tools/remote-test-test.sh` | `tools/remote-test.sh`'s ssh handling ([Another machine for the tests](#another-machine-for-the-tests), "Dropped connections") with a stand-in for ssh, no PC, about 5 s: a session lost after the login while the command waits for the budget is started again (same run id, up to `JAMOS_REMOTE_REQUEUE` times, then exit 255), one lost after the command started is not, the command's own exit status (5) comes back once, a login cut twice is tried again by `ssh-retry.sh`, keepalives on the session, a cancel (SIGTERM) ends the session's ssh at once and asks the PC in one more ssh to end the run by its pid file (exit 143), `init-test.sh`'s `--shrink` spec and `INIT_TEST_JOBS` reach the PC's script, no temp files left; prints PASS |
+| `tools/remote-sync-test.sh` | `tools/remote-test.sh`'s copy and build against stale objects ([Another machine for the tests](#another-machine-for-the-tests), "The copy and stale objects"), on the PC, about 45 s: a tiny checkout (a Makefile whose one object takes 20 s, `tools/remote-slots.py`) goes to `~/work/jamos-synctest` through the real `remote-test.sh`; v1 of its source is built, v2 is copied while that build sleeps (its object lands after v2 did), and the next build must make the object again (it says v2, the PC's build log reads v1 then v2), then a copy of the unchanged tree says "built already". `JAMOS_SYNC_TEST_RT=<remote-test.sh>` runs it with another copy of the script (the script before this fix leaves the object at v1: FAIL "stale object"); `REMOTE_SYNC_SLOW` (20) and `REMOTE_SYNC_EDIT_AFTER` (8) for a slow connection; prints PASS |
 | `tools/ssh-retry-test.sh` | `tools/ssh-retry.sh` ([Another machine for the tests](#another-machine-for-the-tests), "Dropped connections") with a stand-in for ssh, no PC, about 6 s: a login cut by the server (kex_exchange_identification, reset, closed) is tried again up to 6 times with the piped-in script intact, nothing there ("refused", "timed out") 3 times, and never again: "Permission denied", a reset after the login ("connection lost after login"), a remote command that exits 255 or 7; the waits double with up to half as much again; `SSH_RETRY_TRIES=1` turns it off; the login slots (8 helpers, 2 slots: never more than 2 logging in; a dead holder's or a 5-minute-old slot is taken over; `SSH_RETRY_LOGINS=0` makes no lock directory); no temp files left; prints PASS |
 | `tools/rxsoak-test.sh <outdir>` | the receive path over a long run (`rxsoak.txt`, about 4 minutes): the peer floods ~10 000 frames (a trunk port's mix, on VLAN 21 and off it) while it pings every 0.2 s; the late pings must be answered and the guest's own `ping 10.2.21.1` too ([netstack](#netstack)) |
 | `tools/dns-test.sh <outdir>` | bin/dhcp and bin/dns end to end with QEMU's e1000e and the peer's DHCP and DNS servers, two boots ([DHCP and DNS](#dhcp-and-dns-end-to-end)) |
@@ -1911,7 +1943,8 @@ fat and the boot image answer the calls M13.6 added to `fs` and `file`
 | `fat_attr_views` | a read-only view (changes refused, no write bits in getattr), a guarded view (every new call that changes `etc` refused, by any spelling, a root at `etc` refused unless read-only) and a key-hiding view (every new call that names `etc/ssh`) |
 | `fs_attr_ns` | libos's wrappers through the namespace: on a fat mount and on `/boot` (modes of the boot image, `ERR_NOT_SUPPORTED`, `file_open_mode`, `file_getattr`/`file_setattr`, `fs_statfs_kind`, readdir's type) |
 | `fs_no_locks` | record locks ([CR-PLAN](CR-PLAN.md#rl-notes), RL) on the servers that keep none: `file.lock`, `getlock` and `lockowner` answer `ERR_NOT_SUPPORTED` from fat and the boot image (libc then grants a lock and keeps none, as before); in `user/tests/utest/extfs_locks.c` |
-| `fs_no_dirs` | the directory channels' methods ([DIRHANDLE-PLAN](DIRHANDLE-PLAN.md#2-the-protocol)) on the servers that have none: `fs.opendir` (no handle given), `rename_at` and `link_at` answer `ERR_NOT_SUPPORTED` from fat, a read-only fat view that hides the keys, the boot image and bin/ramfs, and none says `FS_FEAT_DIRS` |
+| `fs_no_dirs` | the directory channels' methods ([DIRHANDLE-PLAN](DIRHANDLE-PLAN.md#2-the-protocol)) on the servers that have none: `fs.opendir` (no handle given), `rename_at` and `link_at` answer `ERR_NOT_SUPPORTED` from fat, a fat view that guards `etc` and hides the keys, the boot image and bin/ramfs, and none says `FS_FEAT_DIRS` |
+| `fs_view_dirs` | the shared view code (`user/lib/fsview.c`) judges the three ([DE0 notes](DIRHANDLE-PLAN.md#de0-notes)) before fat says `ERR_NOT_SUPPORTED`: on a read-only view `opendir` passes (a read), `rename_at` and `link_at` are `ERR_ACCESS_DENIED`; on a view guarding `etc` and `pkg` and on one hiding `etc`, their `from` is judged as rename's and link's, by any spelling, and their `to` only when it starts with `/` (a relative one starts at `to_dir`, which only the service places); `opendir` of `etc` or `etc/ssh` refused where `etc` is hidden; an `fs` method the view code doesn't know (the 99th) `ERR_ACCESS_DENIED` on every view, `ERR_NOT_SUPPORTED` from the whole volume's channel |
 
 ## File watching (INOTIFY-PLAN)
 

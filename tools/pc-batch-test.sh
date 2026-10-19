@@ -19,12 +19,16 @@
 #     PC_BATCH_JOBS are out at once;
 #   - a KTESTS=0 run builds that image too (a second --prepare, no copy);
 #   - cancel stops the runs;
+#   - a second batch of one checkout while the first runs is refused (exit 2,
+#     it names the running batch, no new batch is left) and started with
+#     --force; once both are over a new one starts;
 #   - start --detach, against a fake PC (a home directory with the real
 #     keeper, driver and remote-slots.py): the Mac's driver is gone once the
 #     batch is handed over and nothing asks the PC until the wait; the table,
 #     the outputs back (no disk images), a run id for each try, two
 #     checkouts at once, a second wait and status that don't ask the PC
-#     again; a second detached batch of one checkout refused; a wait with
+#     again; a second batch of one checkout, detached or plain, refused while
+#     the first runs on the PC (its driver here is gone); a wait with
 #     the PC down (exit 3); cancel (every process, one in a session of its
 #     own too, and the claim); a reboot (LOST, then --resume); no keeper.
 # Usage: tools/pc-batch-test.sh; exit 0 on PASS.
@@ -243,6 +247,31 @@ out=$($B wait "$id")
 rc=$?
 [ $rc != 0 ] && [ $rc != 124 ] && echo "$out" | grep -q "driver is gone" || fail "wait after cancel: exit $rc: $out"
 
+# ---- a second batch of one checkout is refused while the first runs ----
+# (one copy of the checkout on the PC: the second's copy would change the code under the first's runs)
+printf 'hold sh -c "sleep 5"\n' > "$tmp/list9"
+out=$($B start "$tmp/list9")
+id=$(echo "$out" | sed -n 's/^batch \([^:]*\):.*/\1/p')
+[ -n "$id" ] || fail "the hold batch's start said: $out"
+n=$(ls "$PC_BATCH_DIR" | wc -l)
+out=$($B start "$tmp/list2" 2>&1)
+rc=$?
+[ $rc = 2 ] && echo "$out" | grep -q "batch $id of this checkout still runs" && echo "$out" | grep -q -- "--force" ||
+    fail "a second batch while one runs: exit $rc: $out"
+[ "$(ls "$PC_BATCH_DIR" | wc -l)" = "$n" ] || fail "a refused second batch left a batch"
+out=$($B start --force "$tmp/list2" 2>&1)
+rc=$?
+id2=$(echo "$out" | sed -n 's/^batch \([^:]*\): .*runs started.*/\1/p')
+[ $rc = 0 ] && [ -n "$id2" ] && echo "$out" | grep -q "^pc-batch: --force: batch $id of this checkout still runs" ||
+    fail "--force with a batch running: exit $rc: $out"
+$B wait "$id2" > /dev/null || fail "the forced batch: $($B report "$id2")"
+$B wait "$id" > /dev/null || fail "the hold batch: $($B report "$id")"
+out=$($B start "$tmp/list2" 2>&1)   # both are over: no hindrance
+rc=$?
+id3=$(echo "$out" | sed -n 's/^batch \([^:]*\): .*runs started.*/\1/p')
+[ $rc = 0 ] && [ -n "$id3" ] || fail "a batch after the others ended: exit $rc: $out"
+$B wait "$id3" > /dev/null || fail "the batch after the others: $($B report "$id3")"
+
 # ---- detached: a fake PC (a home with the keeper, ssh and wsl stand-ins) ----
 # The real keeper, driver and remote-slots.py run "on the PC"; setsid and
 # flock are stand-ins where the host has none (the Mac).
@@ -386,7 +415,10 @@ printf '%s\n' "long sh -c 'sleep 60 & echo \$! > $tmp/kid1; setsid sleep 60 & ec
 id=$(bidof "$(D co start --detach list2)")
 upto 30 test -s "$tmp/kid2" || fail "cancel: the run never started"
 out=$(D co start --detach list2 2>&1)
-[ $? = 2 ] && echo "$out" | grep -q "still runs on the PC" || fail "a second detached batch of one checkout: $out"
+[ $? = 2 ] && echo "$out" | grep -q "batch $id of this checkout still runs" || fail "a second detached batch of one checkout: $out"
+# Its driver here is gone (it is on the PC alone): a plain batch asks the PC too.
+out=$(D co start list2 2>&1)
+[ $? = 2 ] && echo "$out" | grep -q "batch $id of this checkout still runs" || fail "a plain batch while a detached one runs on the PC: $out"
 out=$(FAKE_PC_DOWN=1 PC_BATCH_WAIT=1 D co wait "$id")
 [ $? = 3 ] && echo "$out" | grep -q "the PC didn't answer" || fail "wait with the PC down: $out"
 out=$(D co cancel "$id")
