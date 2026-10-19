@@ -745,9 +745,16 @@ Built (2026-10-19), 3.2's first half, with no change of behaviour:
   ordinal are left to the dispatch as before. utest `fs_view_dirs`;
   `fs_no_dirs`'s fat view is now a writable guarded one (a read-only
   view refuses `rename_at` and `link_at` before fat answers).
-- Tests: see the report's batch (utest `extfs` and `extfs-svc`, the
-  `ext-*` area scripts, `tools/layout-test.sh` drive, the init run, the
-  shell scripts basic, cmds, commands and files, PC `make check`).
+- Tests (batch 19193056 on the PC): `make check`, the init run (utest
+  `view_hides_names`, `fs_no_dirs`, `fs_view_dirs`, the views and links
+  cases unchanged), ktest at 4 CPUs, `tools/extfs-svc-test.sh` (37
+  passed, every disk clean), the eight `tools/extfs-test.sh` cases,
+  `tools/layout-test.sh` drive, the shell scripts basic, cmds, commands,
+  files, files-fat and posix-files (its first try met the boot race
+  where `/data` isn't mounted yet; passed again), kdump save: all PASS.
+  `tools/ssh-test.sh` (the SSH server's views) failed there only in its
+  typed-ahead case, both tries, on a loaded PC, and passed alone on this
+  branch and on its base.
 
 ## 8. Tests
 
