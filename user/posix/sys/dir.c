@@ -195,6 +195,18 @@ static long top_entry(const struct dir *x, int64_t pos, struct entry *e)
     return 1;
 }
 
+/* Is the directory at abs (a description's path) inside a mount (else "/"
+ * or /svc)? A function of its own so that its path is gone before the
+ * listing resolves the directory again: one path on the stack, not two. */
+static long on_mount(const char *abs, bool *mount)
+{
+    struct path p;
+    long r = path_set(abs, &p);
+    *mount = !r && p.where == PATH_MOUNT;
+    path_done(&p);
+    return r;
+}
+
 static long entry_at(struct fd_desc *d, int64_t pos, struct entry *e)
 {
     const struct dir *x = d->priv;
@@ -205,12 +217,11 @@ static long entry_at(struct fd_desc *d, int64_t pos, struct entry *e)
         e->next = pos + 1;
         return 1;
     }
-    struct path p;
-    long r = path_set(x->path, &p);
-    if (!r)
-        r = p.where == PATH_MOUNT ? mount_entry(d, pos, e) : top_entry(x, pos, e);
-    path_done(&p);
-    return r;
+    bool mount;
+    long r = on_mount(x->path, &mount);
+    if (r)
+        return r;
+    return mount ? mount_entry(d, pos, e) : top_entry(x, pos, e);
 }
 
 long dir_put(void *buf, size_t room, const char *name, uint64_t ino, uint8_t type,
