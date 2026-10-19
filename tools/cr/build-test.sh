@@ -171,6 +171,18 @@ echo "$out" | grep -q "ninja would run 7 steps.*claiming 6 CPUs and 12 GB" && ec
 [ ! -f "$tmp/detach.args" ] || fail "start --dry claimed: $(cat "$tmp/detach.args")"
 grep -q -e "--plan" "$tmp/ports.calls" || fail "start --dry did not count"
 [ "$(ls "$cr/runs" | wc -l)" = "$runs0" ] || fail "start --dry left a run behind"
+# status: a run whose claim is still waiting in the budget says so (and the latest waiting line);
+# one whose claim started does not
+run=$(ls -1d "$cr"/runs/[0-9]* | tail -1)
+rm -f "$run/started" "$run/summary.txt"
+echo "run X: ninja would run 7 steps: claiming 6 CPUs and 12 GB" > "$run/claim"
+echo "remote-test: waiting: 24 of 26 CPUs in use by 4 run(s), 12.0 of 20 GB memory (this run needs 6 CPUs, 12.0 GB)" > "$run/start.log"
+out=$(env PATH="$tmp/bin:$PATH" CR_DIR="$cr" "$fb" status 2>&1)
+echo "$out" | grep -q "is waiting for its claim in the budget" && echo "$out" | grep -q "cr-build: waiting: 24 of 26 CPUs in use by 4 run(s)" &&
+    echo "$out" | grep -q "cr-build: run X: ninja would run 7 steps" || fail "status of a waiting claim: $out"
+echo "started 4242" >> "$run/start.log"
+out=$(env PATH="$tmp/bin:$PATH" CR_DIR="$cr" "$fb" status 2>&1)
+echo "$out" | grep -q "waiting for its claim" && fail "status of a started claim says it waits: $out"
 # the build's own first line is the claim (and status shows it while the run waits)
 run=$(ls -1d "$cr"/runs/[0-9]* | tail -1)
 echo "run X: ninja would run 7 steps: claiming 6 CPUs and 12 GB" > "$run/claim"

@@ -165,6 +165,10 @@ status() {
         echo "cr-build: running: run $(basename "$run"), $(( (now - $(cat "$run/started")) / 60 )) min so far"
     elif running; then
         echo "cr-build: run $(basename "$run") is waiting for its CPUs and memory, or another build runs"
+    elif [ -f "$run/claim" ] && [ ! -f "$run/started" ] && ! grep -q '^started ' "$run/start.log" 2> /dev/null; then
+        # start handed the claim to the keeper, which waits for its turn in the budget
+        echo "cr-build: run $(basename "$run") is waiting for its claim in the budget (start.log: $run/start.log)"
+        grep -a 'waiting:' "$run/start.log" 2> /dev/null | tail -1 | sed 's/^remote-test: //; s/^/cr-build: /'
     else
         echo "cr-build: not running; the last run: $(basename "$run")"
     fi
