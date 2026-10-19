@@ -99,14 +99,16 @@
 #           linked in as ANGLE's Vulkan (ports/chromium's patch 0915), its
 #           Reactor compiling the shaders in the GPU process, which keeps
 #           the JIT power when it runs SwiftShader (patch 0914): it loads
-#           tools/cr/webgl.html by name twice, with
+#           tools/cr/webgl.html by name three times, with
 #           --enable-unsafe-swiftshader (the browser starts the GPU process
-#           with --use-angle=swiftshader-webgl) and without (no WebGL); the
-#           page draws a band with a shader and reads three pixels back;
+#           with --use-angle=swiftshader-webgl), without (--disable-gpu
+#           alone: no WebGL) and with no GPU flags at all (no WebGL either);
+#           the page draws a band with a shader and reads three pixels back;
 #           tools/cr/webgl-check.py checks the page's lines (a WebGL context,
-#           SwiftShader's renderer, the pixels; none the second time), `ps`
-#           (one child more marked [jit] the first time: the GPU process) and
-#           the screenshots (the band where the canvas is); about 2 minutes
+#           SwiftShader's renderer, the pixels; none the other times), `ps`
+#           (one child more marked [jit] the first time: the GPU process;
+#           as many the third time as the second) and the screenshots (the
+#           band where the canvas is); about 3 minutes
 #   bench   content_shell as jit, running parts of JetStream 2.2 and
 #           Speedometer 3.1 (tools/cr/toolchain.sh fetches them, pinned;
 #           tools/cr/bench-server.py serves them with a reporter that says

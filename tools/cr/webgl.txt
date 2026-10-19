@@ -1,11 +1,12 @@
 # cr-test.sh's webgl script (docs/CR-PLAN.md, CR-e): content_shell with every
 # process type its own (--no-zygote --no-sandbox, as the jit case) loads
-# tools/cr/webgl.html by name twice: first with SwiftShader's WebGL
+# tools/cr/webgl.html by name three times: first with SwiftShader's WebGL
 # (--disable-gpu --enable-unsafe-swiftshader: the browser starts the GPU
 # process with --use-angle=swiftshader-webgl, which keeps the JIT power for
 # SwiftShader's Reactor: patches 0914 and 0915), then without (no WebGL,
 # and the GPU process gives the power up as every other one but the
-# renderers). The page says what it drew as console lines ("crgl: ..."),
+# renderers), then with no GPU flags at all (the same as without). The
+# page says what it drew as console lines ("crgl: ..."),
 # which the browser logs on its stderr. `ps` after each:
 # tools/cr/webgl-check.py looks for one process more marked [jit] the first
 # time (the GPU process) than the second. Super+Q closes the window each
@@ -46,6 +47,32 @@ send run $H --no-sandbox --no-zygote --disable-gpu --enable-logging=stderr $U &
 wait 300 crgl: done
 sleep 2
 shot webgl-off
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send ps
+wait {prompt}
+pointer 1000 600
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+monitor sendkey meta_l-q
+sleep 20
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send jobs
+wait 30 re:\[\d+\] +\d+ +done \(exit 0\) +content_shell
+wait {prompt}
+# no GPU flags at all (CR-d's default): no SwiftShader, so no WebGL and
+# the GPU process gives the power up, whatever the browser falls back to
+# when the hardware's GL can't start (docs/CR-REVIEW-JIT.md, CJR2)
+send run $H --no-sandbox --no-zygote --enable-logging=stderr $U &
+wait 300 crgl: done
+sleep 2
+shot webgl-default
 pointer 300 400
 monitor mouse_button 1
 monitor mouse_button 0

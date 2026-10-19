@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """The webgl case's run of cr-test.sh (docs/CR-PLAN.md, CR-e): its serial
-log, read for what tools/cr/webgl.html said in each of its two loads
+log, read for what tools/cr/webgl.html said in each of its three loads
 (tools/cr/webgl.txt), and its screenshots:
 
     webgl-check.py <dir>
 
-<dir> has webgl.log, webgl-on.png and webgl-off.png. The page's lines
-("crgl: ...", console lines the browser logs):
+<dir> has webgl.log, webgl-on.png, webgl-off.png and webgl-default.png.
+The page's lines ("crgl: ...", console lines the browser logs):
 
     on      (--enable-unsafe-swiftshader) a WebGL context, its renderer
             SwiftShader's, the three pixels read back as drawn, the draws
             timed, done
-    off     no WebGL context, done
+    off     (--disable-gpu alone) no WebGL context, done
+    default (no GPU flags at all) no WebGL context, done
     marks   `ps` after each load (the processes as a tree: the browser and
             at least four children): the browser never marked [jit], never
             every child, and one child more marked with SwiftShader than
             without it (the GPU process, which keeps the JIT power only when
-            it runs SwiftShader; the others marked are the renderers)
+            it runs SwiftShader; the others marked are the renderers), as
+            many with no GPU flags as without (docs/CR-REVIEW-JIT.md, CJR2)
     shots   the band drawn on the page in the first (its red half, its
             green half and the cleared ground above it, at the canvas's
-            place on the desktop), and the page's ground there in the second
+            place on the desktop), and the page's ground there in the others
 
 Prints a line for each check, SwiftShader's renderer and the draws' time,
 and PASS or FAIL; exit 0 if all passed."""
@@ -114,9 +116,10 @@ def main(argv):
         ok &= bool(cond)
 
     loads = runs(log)
-    check("two loads", len(loads) == 2, "%d" % len(loads))
+    check("three loads", len(loads) == 3, "%d" % len(loads))
     on = loads[0] if loads else []
     off = loads[1] if len(loads) > 1 else []
+    default = loads[2] if len(loads) > 2 else []
     ctx = field(on, "context")
     check("on: a WebGL context", ctx and ctx[0] == "webgl", " ".join(ctx or []))
     renderer = " ".join(field(on, "renderer") or [])
@@ -127,13 +130,14 @@ def main(argv):
     check("on: draws timed", frames and len(frames) == 2, " ".join(frames or []))
     if frames and len(frames) == 2:
         print("webgl: on: %s draws of the band (320x120) and a finish: %s ms" % tuple(frames))
-    ctx = field(off, "context")
-    check("off: no WebGL", ctx and ctx[0] == "none", " ".join(ctx or []))
+    for name, run in (("off", off), ("default", default)):
+        ctx = field(run, "context")
+        check("%s: no WebGL" % name, ctx and ctx[0] == "none", " ".join(ctx or []))
     tables = ps_tables(log)
-    check("ps after each load", len(tables) == 2, "%d" % len(tables))
-    if len(tables) == 2:
+    check("ps after each load", len(tables) == 3, "%d" % len(tables))
+    if len(tables) == 3:
         marks = []
-        for name, t in (("on", tables[0]), ("off", tables[1])):
+        for name, t in (("on", tables[0]), ("off", tables[1]), ("default", tables[2])):
             top = min((d for d, _ in t), default=0)
             browser = [m for d, m in t if d == top]
             kids = [m for d, m in t if d > top]
@@ -141,9 +145,10 @@ def main(argv):
             check("%s: [jit] marks" % name, browser == [False] and len(kids) >= 4 and
                   not all(kids), "%d processes, marked: %s" %
                   (len(t), " ".join("jit" if m else "-" for m in kids)))
-        check("the GPU process marked with SwiftShader only", marks[0] == marks[1] + 1,
-              "%d children marked with it, %d without" % tuple(marks))
-    for name, drawn in (("webgl-on", True), ("webgl-off", False)):
+        check("the GPU process marked with SwiftShader only",
+              marks[0] == marks[1] + 1 and marks[2] == marks[1],
+              "%d children marked with it, %d without, %d with no GPU flags" % tuple(marks))
+    for name, drawn in (("webgl-on", True), ("webgl-off", False), ("webgl-default", False)):
         good, seen = shot(os.path.join(d, name + ".png"), drawn)
         check("%s %s" % (name, "drawn" if drawn else "not drawn"), good, seen)
     print("webgl: %s" % ("PASS" if ok else "FAIL"))
