@@ -45,6 +45,7 @@ void pager_cache_init(struct pager_cache *c, struct job *job, uint64_t max_pages
     c->job = job;
     c->max_pages = max_pages;
     c->resident = 0;
+    c->tables = 0;
     c->ndirty = 0;
     c->nwriting = 0;
     list_init(&c->pages);
@@ -113,7 +114,7 @@ static void reserve(struct pager_cache *c)
 {
     struct victim vic;
     uint64_t f = cache_lock(c);
-    bool full = c->resident >= c->max_pages && !list_empty(&c->pages);
+    bool full = c->resident + c->tables >= c->max_pages && !list_empty(&c->pages);
     if (full)
         pop_locked(c, &vic);
     else
@@ -128,6 +129,31 @@ static void unreserve(struct pager_cache *c)
     uint64_t f = cache_lock(c);
     c->resident--;
     cache_unlock(c, f);
+}
+
+/* Evict the oldest clean pages until the budget has room for the table
+ * pages that publishing page idx of v would make now (none if v is NULL),
+ * or none is left. Looked at again after each eviction: one that empties
+ * a leaf frees it (and its mid table if that empties too), which may be
+ * the leaf idx needs. */
+static void room(struct pager_cache *c, struct vmo *v, uint64_t idx)
+{
+    for (;;) {
+        uint64_t tables = 0;
+        if (v)
+            (void)vmo_pager_absent(v, idx, &tables);
+        struct victim vic;
+        uint64_t f = cache_lock(c);
+        bool over = c->resident + c->tables + tables > c->max_pages && !list_empty(&c->pages);
+        if (over) {
+            pop_locked(c, &vic);
+            c->resident--;
+        }
+        cache_unlock(c, f);
+        if (!over)
+            return;
+        evict(&vic);
+    }
 }
 
 bool pager_cache_evict_oldest(struct pager_cache *c)
@@ -148,7 +174,8 @@ bool pager_cache_evict_oldest(struct pager_cache *c)
 status_t pager_cache_publish(struct pager_cache *c, struct vmo *v, uint64_t idx, struct page *p,
                              bool checked)
 {
-    if (vmo_page_phys(v, idx << PAGE_SHIFT)) {
+    uint64_t tables;
+    if (!vmo_pager_absent(v, idx, &tables)) {
         page_unref(p);   /* present already: a second answer evicts nothing */
         return OK;
     }
@@ -168,12 +195,18 @@ status_t pager_cache_publish(struct pager_cache *c, struct vmo *v, uint64_t idx,
     rec->state = 0;
     rec->dirtied = 0;
     reserve(c);
+    room(c, v, idx);   /* (the page's own slot is counted now) */
     status_t st;
     while ((st = vmo_pager_publish(v, idx, p, checked, rec)) == ERR_NO_MEMORY &&
            presses++ < c->max_pages && pager_cache_evict_oldest(c))
         ;
-    if (st == OK)
-        return OK;   /* p and rec are the table's now */
+    if (st == OK) {
+        /* p and rec are the table's now. Tables made since room was made
+         * (a racing supply's, or ours: a pressed eviction emptied the leaf
+         * p went in) may have filled the budget: back within it. */
+        room(c, NULL, 0);
+        return OK;
+    }
     unreserve(c);
     rec_free(c, rec);
     page_unref(p);
@@ -204,6 +237,16 @@ void pager_cache_remove_vlocked(struct pager_cache *c, struct page *p)
     p->private = 0;
     cache_unlock(c, f);
     rec_free(c, rec);
+}
+
+void pager_cache_table_vlocked(struct pager_cache *c, bool made)
+{
+    uint64_t f = cache_lock(c);
+    if (made)
+        c->tables++;
+    else
+        c->tables--;
+    cache_unlock(c, f);
 }
 
 unsigned pager_cache_state_vlocked(const struct page *p)
@@ -323,6 +366,14 @@ uint64_t pager_cache_resident(struct pager_cache *c)
 {
     uint64_t f = cache_lock(c);
     uint64_t n = c->resident;
+    cache_unlock(c, f);
+    return n;
+}
+
+uint64_t pager_cache_tables(struct pager_cache *c)
+{
+    uint64_t f = cache_lock(c);
+    uint64_t n = c->tables;
     cache_unlock(c, f);
     return n;
 }

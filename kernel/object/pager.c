@@ -393,6 +393,11 @@ void pager_page_gone_vlocked(struct pager_vmo *pv, struct page *p)
     pager_cache_remove_vlocked(&pv->pg->cache, p);
 }
 
+void pager_table_vlocked(struct pager_vmo *pv, bool made)
+{
+    pager_cache_table_vlocked(&pv->pg->cache, made);
+}
+
 unsigned pager_page_state_vlocked(struct pager_vmo *pv, const struct page *p)
 {
     (void)pv;
@@ -817,6 +822,7 @@ static void pager_destroy(struct kobject *obj)
     /* Every link and request holds a reference: none can be left. */
     ASSERT(list_empty(&pg->queue) && list_empty(&pg->delivered));
     ASSERT(pager_cache_resident(&pg->cache) == 0);   /* a page's VMO's link holds the pager */
+    ASSERT(pager_cache_tables(&pg->cache) == 0);     /* and a table's */
     job_uncharge(pg->job, JOB_LIMIT_HANDLES, 1);
     job_unref(pg->job);
     kfree(pg);
@@ -1125,6 +1131,11 @@ status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const str
 uint64_t pager_resident(struct pager *pg)
 {
     return pager_cache_resident(&pg->cache);
+}
+
+uint64_t pager_tables(struct pager *pg)
+{
+    return pager_cache_tables(&pg->cache);
 }
 
 uint64_t pager_dirty_pages(struct pager *pg)

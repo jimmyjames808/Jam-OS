@@ -272,8 +272,10 @@ uint64_t pager_dirty_limit(const struct pager *pg);
  * publish a page copied before a seal. Interrupts on, no spinlock held. */
 status_t pager_publish_page(struct pager *pg, struct vmo *v, uint64_t idx, struct page *p,
                             bool checked);
-/* Pages its VMOs hold right now, counted against its budget (tests). */
+/* Pages its VMOs hold right now, counted against its budget, and their
+ * table pages, which the budget holds too (tests). */
 uint64_t pager_resident(struct pager *pg);
+uint64_t pager_tables(struct pager *pg);
 
 /* ---- requests: what a reader of an absent page does ------------------------- */
 
@@ -422,11 +424,16 @@ status_t vmo_page_request(struct vmo *v, uint64_t idx, struct pager_req **out);
  * taken otherwise: ERR_ALREADY_EXISTS if the page is present,
  * ERR_OUT_OF_RANGE past the size, ERR_PEER_CLOSED if detached, ERR_IO if
  * v is verified and p doesn't match, ERR_NO_MEMORY if the job refused it
- * (or a table for it). */
+ * (or a table for it: the tables made for it go again). */
 status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, bool checked,
                            struct pager_rec *rec);
+/* Is page idx of a pager VMO absent (or past its size)? Then *tables is
+ * how many table pages publishing it would make now (0 to 2: a leaf, and
+ * a mid table if the leaf's is missing too). */
+bool vmo_pager_absent(struct vmo *v, uint64_t idx, uint64_t *tables);
 /* Evict page idx of a pager VMO if it is still p (the cache popped it):
- * out of the table, zapped from every mapping, freed after the
+ * out of the table (with its leaf table, and that leaf's mid table, if
+ * they hold nothing more), zapped from every mapping, freed after the
  * shootdown. Interrupts on, no spinlock held. */
 void vmo_pager_evict(struct vmo *v, uint64_t idx, const struct page *p);
 /* PAGER_OP_INVALIDATE's work on a pager VMO: its present pages in
@@ -465,6 +472,10 @@ void pager_published_vlocked(struct pager_vmo *pv, uint64_t idx, struct page *p,
 /* Page p of pv's VMO leaves its table (taken out, or the VMO destroyed:
  * then no lock is needed): it leaves the pager's cache. */
 void pager_page_gone_vlocked(struct pager_vmo *pv, struct page *p);
+/* A table page of pv's VMO was made (`made`: by vmo_pager_publish, for the
+ * page it publishes) or freed (its last page went, or the VMO shrank or
+ * died: then no lock is needed): the pager's budget holds it. */
+void pager_table_vlocked(struct pager_vmo *pv, bool made);
 /* Page p (present) of pv's VMO, a writable one: its state (PAGER_PAGE_*,
  * 0: clean), and its age (uptime ns: pager_cache.h's "Age"; meaningless
  * while clean). */

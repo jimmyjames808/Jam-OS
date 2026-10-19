@@ -10,7 +10,8 @@
  * table covering 512 GiB (only the top table's first 256 entries are used,
  * and upper table 0's first 64, below 64 GiB, never are). Every table page
  * comes straight from the buddy allocator on the first commit that needs
- * it; shrink and destroy free them (decommit leaves them). A walk over a
+ * it; shrink and destroy free them (decommit leaves them, but for a pager
+ * VMO's: below). A walk over a
  * range (decommit, shrink, a child's creation) skips a missing table at
  * any level, and scans past the run of missing entries after it in the
  * same lock hold, so a whole untouched TiB costs a few looks, not one lock
@@ -87,7 +88,7 @@
  * charged BEFORE any table is made for it, so a refused commit builds
  * nothing; if a table it needs is refused, the page's charge is undone.
  * Tables stay (charged) until shrink or destroy frees them (decommit
- * leaves them). Contiguous VMOs are charged whole when the job is
+ * leaves them; a pager VMO's go with their last page). Contiguous VMOs are charged whole when the job is
  * set. Kernel VMOs have no job. Physical VMOs own no memory: only their
  * struct (one handle unit) is ever charged.
  *
@@ -159,6 +160,16 @@
  * decommit), PAGER_OP_SET_SIZE (a shrink) and a detach (a decommit of
  * everything), each through the decommit and shrink code below, which
  * tells the cache (pager_page_gone_vlocked) for every page it takes.
+ * Its tables are in its pager's budget as its pages are (each made and
+ * freed tells the cache: pager_table_vlocked), so they must not outlive
+ * the pages: a table is made only by vmo_pager_publish (the cache made
+ * room for it first: vmo_pager_absent says how many it needs), and whatever
+ * takes a page out (take_batch_locked: an eviction, an invalidation, a
+ * detach) frees the leaf once it holds no page, then the mid table once it
+ * holds no leaf (prune_locked); a shrink frees what it leaves empty across
+ * the new end the same way. So a reader scattering touches across a sparse
+ * 64 GiB VMO (a leaf and a page every 2 MiB) holds no more than the budget
+ * of pages and tables together.
  * Every other call that would commit, write, decommit, resize, seal, pin
  * or kernel-map one is refused at its entry, and so is a writable user
  * mapping unless the VMO is writable (below). A reader of an absent page
@@ -660,6 +671,8 @@ static void *table_alloc_locked(struct vmo *v)
         return NULL;
     }
     v->tables++;
+    if (v->pv)
+        pager_table_vlocked(v->pv, true);   /* in its pager's budget too */
     return page_to_virt(p);
 }
 
@@ -670,6 +683,17 @@ static void table_free_locked(struct vmo *v, void *t)
     pmm_free_pages(virt_to_page(t), 0);
     v->tables--;
     job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
+    if (v->pv)
+        pager_table_vlocked(v->pv, false);
+}
+
+/* Does table t (a leaf or a mid table) hold nothing? */
+static bool table_empty(const uint64_t *t)
+{
+    for (unsigned i = 0; i < TBL_ENTRIES; i++)
+        if (t[i])
+            return false;
+    return true;
 }
 
 /* With the lock held: where page idx's mid table pointer lives. Below
@@ -767,6 +791,25 @@ static uint64_t **leaf_ref_locked(struct vmo *v, uint64_t idx)
 {
     uint64_t ***mid = mid_ref_locked(v, idx, false);
     return mid && *mid ? &(*mid)[(idx / LEAF_PAGES) % TBL_ENTRIES] : NULL;
+}
+
+/* With the lock held, v a pager VMO: free page idx's leaf table if it
+ * holds no page, then its mid table if it holds no leaf (the file
+ * header's "Pager VMOs": their tables live only as long as their pages). */
+static void prune_locked(struct vmo *v, uint64_t idx)
+{
+    uint64_t ***mid = mid_ref_locked(v, idx, false);
+    if (!mid || !*mid)
+        return;
+    uint64_t **leaf = &(*mid)[(idx / LEAF_PAGES) % TBL_ENTRIES];
+    if (*leaf && table_empty(*leaf)) {
+        table_free_locked(v, *leaf);
+        *leaf = NULL;
+    }
+    if (!*leaf && table_empty((const uint64_t *)*mid)) {
+        table_free_locked(v, *mid);
+        *mid = NULL;
+    }
 }
 
 /* With the lock held: is page idx charged to the job on its own while
@@ -1611,6 +1654,8 @@ static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, str
     /* Entries exist only for committed pages (a fault installs under this
      * lock what the table holds), so nothing taken means nothing to zap. */
     batch_note(t0, any ? zap_umaps_locked(v, idx, stop, g) : 0);
+    if (any && v->pv)
+        prune_locked(v, idx);   /* a pager VMO's leaf goes with its last page */
     return stop;
 }
 
@@ -2923,8 +2968,10 @@ status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, bool che
     uint64_t *s = st == OK ? slot_locked(v, idx, false) : NULL;
     if (st == OK && s && *s)
         st = ERR_ALREADY_EXISTS;   /* a second answer */
-    if (st == OK && !(s = charge_slot_locked(v, idx, s)))
+    if (st == OK && !(s = charge_slot_locked(v, idx, s))) {
         st = ERR_NO_MEMORY;
+        prune_locked(v, idx);   /* a mid table made before its leaf was refused */
+    }
     if (st == OK) {
         *s = page_to_phys(p);   /* the table takes the caller's reference */
         v->committed++;
@@ -2932,6 +2979,16 @@ status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, bool che
     }
     vunlock(v, f);
     return st;
+}
+
+bool vmo_pager_absent(struct vmo *v, uint64_t idx, uint64_t *tables)
+{
+    uint64_t f = vlock(v);
+    bool absent = idx >= v->size >> PAGE_SHIFT || !phys_locked(v, idx);
+    uint64_t **mid = idx < ROOT_PAGES ? v->root[idx / MID_PAGES] : NULL;
+    *tables = !mid ? 2 : !mid[(idx / LEAF_PAGES) % TBL_ENTRIES] ? 1 : 0;
+    vunlock(v, f);
+    return absent;
 }
 
 void vmo_pager_evict(struct vmo *v, uint64_t idx, const struct page *p)
@@ -2974,8 +3031,12 @@ status_t vmo_pager_set_size(struct vmo *v, uint64_t size, struct list_node *dead
             pager_cut_vlocked(v->pv, first, dead);
     }
     vunlock(v, f);
-    if (st == OK && first < end)
+    if (st == OK && first < end) {
         shrink_pages(v, first, end);   /* nothing reappears past the end: resize is held */
+        f = vlock(v);
+        prune_locked(v, first);   /* the tables across the new end, if they hold no page */
+        vunlock(v, f);
+    }
     mutex_unlock(&v->resize);
     writer_exit(v);
     hold_end(v);   /* (the dirty pages past the end went with the rest) */

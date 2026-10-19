@@ -33,22 +33,35 @@
  * and this one.
  *
  * Counting. `resident` is the pages on the lists plus the slots reserved
- * for pages being published (pager_cache_reserve), and passes max_pages
- * when more supplies publish at once than the budget has clean pages to
- * evict (all of it reserved or dirty), or when a page an evictor popped is
- * dirtied before the evictor reaches it (the evictor then leaves it, and
- * the store counts it again). A page leaves the count when it leaves the
- * lists: taken out of its table, or popped by an evictor whose reservation
- * it becomes. That evictor takes it out of its table before it publishes
- * the page it made room for, so the pages in the tables stay within the
- * budget too; the one exception is a page of a VMO being destroyed, which
- * no evictor can reach (it goes with its VMO a moment later). `ndirty`
+ * for pages being published (reserve), and `tables` the table pages of
+ * the cache's VMOs (a leaf a 2 MiB, a mid table a GiB, vmo.c's), which the
+ * budget holds too: the budget is full when the two together reach
+ * max_pages. A pager VMO's table is made only when a page is published
+ * under it and freed when its last page leaves (vmo.c's prune_locked), so
+ * a leaf always holds a page and a mid table a leaf, and a page that needs
+ * new tables has room made for them before it is published (two at most:
+ * a pager VMO fits the inline root). A budget under 3 holds no page at
+ * all. The sum passes max_pages when more supplies publish at once than
+ * the budget has clean pages to evict (all of it reserved, dirty or tables
+ * of dirty pages), for a moment when a racing supply (or an eviction for
+ * memory pressure, which emptied the leaf the page goes in) made tables
+ * after room was made (the publisher then evicts again), or when a page an
+ * evictor popped is dirtied before the evictor reaches it (the evictor
+ * then leaves it, and the store counts it again, until a supply makes room
+ * again). A page leaves the count when it
+ * leaves the lists: taken out of its table, or popped by an evictor whose
+ * reservation it becomes. That evictor takes it out of its table before it
+ * publishes the page it made room for, so the pages in the tables stay
+ * within the budget too; the one exception is a page of a VMO being
+ * destroyed, which no evictor can reach (it goes with its VMO a moment
+ * later). `ndirty`
  * counts the pages on `dirty` and `writing`, `nwriting` those on
  * `writing`. A store makes a clean page dirty only while `ndirty` is under
  * the pager's dirty limit (a quarter of the budget), checked and counted
  * in one hold of this lock, so stores to two VMOs can't pass it together:
- * three quarters of the budget always stay for clean pages, and a supply
- * always finds one to evict (a popped page aside).
+ * three quarters of the budget always stay for clean pages and tables (a
+ * quarter at least once the dirty pages' own tables are counted: two at
+ * most each), and a supply finds one to evict (a popped page aside).
  *
  * Age (`dirtied`, the order of `dirty`): when a clean page's first store
  * made it dirty; for a page stored to while it was being written back,
@@ -67,7 +80,8 @@
  * a clean one; its state (pager_cache_state_vlocked) is 0.
  *
  * Lock: "pager cache" (`lock`), taken under "vmo" (publishing and taking a
- * page out) and alone (reserving, evicting), never the other way round: an
+ * page out, making and freeing a table) and alone (reserving, evicting,
+ * the tables of a VMO being destroyed), never the other way round: an
  * evictor drops it before it takes the VMO lock, holding a VMO reference
  * across. It is independent of the pager's object lock (never nested with
  * it). */
@@ -89,6 +103,7 @@ struct pager_cache {
     struct job      *job;         /* pays for the records (the pager's; no reference of its own) */
     uint64_t         max_pages;   /* the budget, > 0; fixed */
     uint64_t         resident;    /* pages on the lists + reserved slots */
+    uint64_t         tables;      /* its VMOs' table pages (in the budget too) */
     uint64_t         ndirty;      /* pages on `dirty` and `writing` */
     uint64_t         nwriting;    /* pages on `writing` */
     struct list_node pages;       /* struct page (via node): clean pages, oldest supplied first */
@@ -103,9 +118,10 @@ void pager_cache_init(struct pager_cache *c, struct job *job, uint64_t max_pages
 /* Publish p (a fresh page holding its bytes, the caller's reference,
  * consumed whatever happens; `checked` as for vmo_pager_publish) as page
  * idx of pager VMO v, inside c's budget: a reserved slot, the oldest
- * clean page evicted for it if the budget is full, and more of the oldest
- * evicted while the job or memory can't pay for p. OK if published or
- * present already (a second answer: p dropped, nothing evicted);
+ * clean page evicted for it if the budget is full, more of the oldest
+ * for the tables it needs, and more while the job or memory can't pay for
+ * p. OK if published or present already (a second answer: p dropped,
+ * nothing evicted);
  * ERR_PEER_CLOSED if v is detached; ERR_OUT_OF_RANGE past its size; ERR_IO
  * if v is verified and p doesn't match; ERR_NO_MEMORY if it can't be paid
  * for with no clean page left. Interrupts on, no spinlock held. */
@@ -126,6 +142,10 @@ void pager_cache_add_vlocked(struct pager_cache *c, struct page *p, struct pager
  * table. It leaves its list and the count (unless an evictor popped it
  * already) and its record is freed. */
 void pager_cache_remove_vlocked(struct pager_cache *c, struct page *p);
+
+/* The VMO lock held (or the VMO has no reference left): a table page of
+ * one of c's VMOs was made (`made`) or freed. */
+void pager_cache_table_vlocked(struct pager_cache *c, bool made);
 
 /* The VMO lock held, p in its table: its state (PAGER_PAGE_*, 0: clean),
  * whether it is kept ("Kept" above), and its age (uptime ns: "Age"
@@ -162,8 +182,10 @@ void pager_cache_unbegin_vlocked(struct pager_cache *c, struct page *p);
 bool pager_cache_first(struct pager_cache *c, bool writing, struct vmo **v, uint64_t *idx,
                        uint64_t *dirtied);
 
-/* Pages counted against the budget right now, those dirty or writing, and
- * those writing (tests and statistics). */
+/* Pages counted against the budget right now (the tables aside), those
+ * dirty or writing, those writing, and the tables (tests and
+ * statistics). */
 uint64_t pager_cache_resident(struct pager_cache *c);
+uint64_t pager_cache_tables(struct pager_cache *c);
 uint64_t pager_cache_ndirty(struct pager_cache *c);
 uint64_t pager_cache_nwriting(struct pager_cache *c);

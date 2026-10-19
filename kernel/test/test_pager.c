@@ -406,7 +406,7 @@ KTEST(pager_detach)
     KT_EQ(pager_op(pg, 8, PAGER_OP_DETACH, 0, 0, 0), OK);
     KT_EQ(rd_end(&a, 0), ERR_IO);
     KT_EQ(vmo_committed(v), 0);
-    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 2);   /* tables stay until the VMO goes */
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);   /* the tables went with the pages */
     uint64_t w;
     KT_EQ(vmo_read(v, 0, &w, 8), ERR_IO);
     KT_EQ(supply(pg, 8, 0, 1), ERR_NOT_FOUND);
@@ -1510,44 +1510,49 @@ static void enter_aspace(struct aspace *as, struct aspace *was)
 }
 
 /* The budget: a supply bigger than it keeps its newest pages, and the
- * oldest page goes first; a second answer evicts nothing. The job pays
- * the pages, their tables and 16 bytes a resident page, exactly: a VMO's
- * death and a detach give it all back. */
+ * oldest page goes first; a second answer evicts nothing. The budget
+ * holds the VMOs' tables too (a leaf and a mid table each here: 8 is six
+ * pages of one VMO). The job pays the pages, their tables and 24 bytes a
+ * resident page, exactly: a VMO's death and a detach give it all back. */
 KTEST(pager_cache_budget)
 {
     struct job *j = kt_fresh_job();
-    struct pager *pg = pg_budget(j, 4, ANSWER);
+    struct pager *pg = pg_budget(j, 8, ANSWER);
     struct vmo *v, *v2;
     KT_EQ(pager_create_vmo(pg, 40, 32 * PG, &v), OK);
     KT_EQ(supply(pg, 40, 0, 16), OK);
-    KT_EQ(pager_resident(pg), 4);
-    KT_EQ(vmo_committed(v), 4 * PG);
+    KT_EQ(pager_resident(pg), 6);
+    KT_EQ(pager_tables(pg), 2);
+    KT_EQ(vmo_committed(v), 6 * PG);
     for (uint64_t i = 0; i < 16; i++)
-        KT_EQ(vmo_page_phys(v, i * PG) != 0, i >= 12);
-    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 4 + 2);   /* the pages, a mid and a leaf table */
-    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 4 * PAGER_RECORD_BYTES);
+        KT_EQ(vmo_page_phys(v, i * PG) != 0, i >= 10);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 6 + 2);   /* the pages, a mid and a leaf table */
+    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 6 * PAGER_RECORD_BYTES);
 
     uint64_t pa = vmo_page_phys(v, 12 * PG);
     KT_EQ(supply(pg, 40, 12, 4), OK);   /* present: the first copy stays, nothing goes */
     KT_EQ(vmo_page_phys(v, 12 * PG), pa);
-    KT_EQ(vmo_committed(v), 4 * PG);
-    KT_EQ(supply(pg, 40, 20, 1), OK);   /* the oldest, 12, makes room */
-    KT_EQ(vmo_page_phys(v, 12 * PG), 0);
-    KT_ASSERT(vmo_page_phys(v, 13 * PG) && vmo_page_phys(v, 20 * PG));
-    KT_EQ(pager_resident(pg), 4);
+    KT_EQ(vmo_committed(v), 6 * PG);
+    KT_EQ(supply(pg, 40, 20, 1), OK);   /* the oldest, 10, makes room */
+    KT_EQ(vmo_page_phys(v, 10 * PG), 0);
+    KT_ASSERT(vmo_page_phys(v, 11 * PG) && vmo_page_phys(v, 20 * PG));
+    KT_EQ(pager_resident(pg), 6);
     uint64_t w;
     KT_EQ(vmo_read(v, 13 * PG + 8, &w, 8), OK);
     KT_EQ(w, word(40, 13));
     none_queued(pg);
 
-    /* The budget is the pager's, across its VMOs; a VMO's death frees its
-     * share. */
+    /* The budget is the pager's, across its VMOs: the second VMO's two
+     * pages and its two tables take the room of four of the first's; a
+     * VMO's death frees its share. */
     KT_EQ(pager_create_vmo(pg, 41, 2 * PG, &v2), OK);
     KT_EQ(supply(pg, 41, 0, 2), OK);
     KT_EQ(pager_resident(pg), 4);
+    KT_EQ(pager_tables(pg), 4);
     KT_EQ(vmo_committed(v), 2 * PG);
     put(v2);
     KT_EQ(pager_resident(pg), 2);
+    KT_EQ(pager_tables(pg), 2);
     struct pager_request q;
     next(pg, 0, &q);
     KT_EQ(q.kind, PAGER_REQ_GONE);
@@ -1557,7 +1562,8 @@ KTEST(pager_cache_budget)
 
     KT_EQ(pager_op(pg, 40, PAGER_OP_DETACH, 0, 0, 0), OK);
     KT_EQ(pager_resident(pg), 0);
-    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 2);   /* the tables stay until the VMO goes */
+    KT_EQ(pager_tables(pg), 0);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);   /* the tables went with the last page */
     KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 0);
     put(v);
     pg_close(pg);
@@ -1598,8 +1604,9 @@ static void mapper_main(void *arg)
 }
 
 /* A mapper reading four times the budget sees every byte right, and the
- * pager's job never holds more than the budget (and two tables): the
- * evicted pages are zapped from the mapping and asked for again. */
+ * pager's job never holds more than the budget (its pages and the VMO's
+ * two tables): the evicted pages are zapped from the mapping and asked
+ * for again. */
 KTEST(pager_cache_mapper_4x)
 {
     enum { BUDGET = 16, PAGES = 4 * BUDGET };
@@ -1616,8 +1623,8 @@ KTEST(pager_cache_mapper_4x)
     m.t = thread_create("pager-mapper", mapper_main, &m, PRIO_DEFAULT);
     thread_join(m.t);
     KT_EQ(m.st, OK);
-    KT_EQ(m.max_resident, BUDGET);
-    KT_ASSERT(m.max_job <= BUDGET + 2);
+    KT_EQ(m.max_resident, BUDGET - 2);
+    KT_ASSERT(m.max_job <= BUDGET);
     KT_ASSERT(gp_served(&g) > PAGES / PAGER_REQ_PAGES);   /* evicted pages came again */
     KT_ASSERT(vmo_committed(v) <= BUDGET * PG);
     uas_free(&us);
@@ -1639,9 +1646,10 @@ static void served_exactly(struct gpager *g, uint64_t n)
     KT_EQ(gp_served(g), n);
 }
 
-/* Eviction on every supply: a budget of one page and a pager that answers
- * every request with both of the VMO's pages, so the page a reader asked
- * for is evicted by the page after it before the request is answered.
+/* Eviction on every supply: a budget of one page (and its two tables)
+ * and a pager that answers every request with both of the VMO's pages, so
+ * the page a reader asked for is evicted by the page after it before the
+ * request is answered.
  * The reader asks eight times and gives up: vmo_read ERR_NO_MEMORY, a
  * ring-3 load killed for "out of memory"; never a hang or a ninth
  * request. */
@@ -1649,7 +1657,7 @@ KTEST(pager_cache_evict_every_supply)
 {
     struct job *j = kt_fresh_job();
     struct gpager g;
-    gp_start(&g, pg_budget(j, 1, ANSWER), 2);
+    gp_start(&g, pg_budget(j, 1 + 2, ANSWER), 2);
     struct vmo *v;
     KT_EQ(pager_create_vmo(g.pg, 43, 2 * PG, &v), OK);
     uint64_t w;
@@ -1995,10 +2003,68 @@ KTEST(pager_cache_sweep)
         thread_join(rt[i]);
         KT_EQ(s[i].st, OK);
     }
-    KT_ASSERT(max_resident <= BUDGET);
-    KT_ASSERT(max_job <= BUDGET + 2 * 2);   /* and each VMO's mid and leaf table */
+    /* (Any page has its VMO's mid and leaf table; the other VMO's go when
+     * its readers' pages all were evicted, at the start for one.) */
+    KT_ASSERT(max_resident <= BUDGET - 2);
+    KT_ASSERT(max_job <= BUDGET);
     put(v[0]);
     put(v[1]);
+    KT_EQ(gp_stop(&g), OK);
+    pg_close(g.pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+/* The tables (M12.5-REVIEW finding 1). A reader touching one byte every
+ * 2 MiB of a sparse 4 GiB pager VMO makes a leaf table at every touch and
+ * a mid table every GiB, and so does a pager supplying one page every
+ * 2 MiB unasked: the budget holds them with the pages, and a leaf goes
+ * with its last page, so the pager's job never pays more than the budget
+ * (before: 2,048 leaves and 4 mid tables, kept after their pages were
+ * evicted, until the VMO died). An invalidation and a detach free them
+ * too, the VMO still alive. */
+KTEST(pager_cache_tables_in_budget)
+{
+    enum { BUDGET = 64 };
+    const uint64_t pages = 4ull << (30 - PAGE_SHIFT), leaf = 512;
+    struct job *j = kt_fresh_job();
+    struct gpager g;
+    gp_start(&g, pg_budget(j, BUDGET, ANSWER), 0);
+    struct vmo *v;
+    KT_EQ(pager_create_vmo(g.pg, 49, pages * PG, &v), OK);
+    uint64_t most = 0, w = 0;
+    status_t st = OK;
+    for (uint64_t i = 0; i < pages && st == OK; i += leaf) {
+        st = vmo_read(v, i * PG + 8, &w, 8);
+        if (st == OK && w != word(49, i))
+            st = ERR_BAD_STATE;
+        uint64_t used = job_used(j, JOB_LIMIT_PAGES);
+        most = used > most ? used : most;
+    }
+    KT_EQ(st, OK);
+    kprintf("pager_cache_tables_in_budget: a read every 2 MiB: the job's pages at most %lu\n",
+            most);
+    KT_ASSERT(most <= BUDGET);
+
+    most = 0;
+    for (uint64_t i = leaf / 2; i < pages && st == OK; i += leaf) {
+        st = supply(g.pg, 49, i, 1);
+        uint64_t used = job_used(j, JOB_LIMIT_PAGES);
+        most = used > most ? used : most;
+    }
+    KT_EQ(st, OK);
+    kprintf("pager_cache_tables_in_budget: a supply every 2 MiB: the job's pages at most %lu\n",
+            most);
+    KT_ASSERT(most <= BUDGET);
+
+    KT_EQ(pager_op(g.pg, 49, PAGER_OP_INVALIDATE, 0, pages * PG, 0), OK);
+    KT_EQ(vmo_committed(v), 0);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
+    KT_EQ(vmo_read(v, 8, &w, 8), OK);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), PAGER_REQ_PAGES + 2);
+    KT_EQ(pager_op(g.pg, 49, PAGER_OP_DETACH, 0, 0, 0), OK);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
+    put(v);
     KT_EQ(gp_stop(&g), OK);
     pg_close(g.pg);
     kt_job_is_empty(j);
