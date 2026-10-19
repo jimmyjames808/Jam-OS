@@ -66,6 +66,20 @@
 enum src { SRC_NONE, SRC_JAM, SRC_DATA, SRC_RAM, SRC_COUNT };
 enum line { LINE_TMP, LINE_PKG, LINE_COUNT };   /* the log lines the loop says */
 
+/* The memory /tmp's job's limits: a drive's extfs's (volumes' spare.c,
+ * ext_limits). Its handles also bound the links and VMO structs of the
+ * files it maps, which the kernel charges to the service that makes them
+ * (M12.5-REVIEW finding 2), not to init, which holds the pager. */
+static const struct {
+    uint32_t kind;
+    uint64_t value;
+} ram_limits[] = {
+    { JOB_LIMIT_PAGES, 16384 },
+    { JOB_LIMIT_HANDLES, 2048 },
+    { JOB_LIMIT_THREADS, 16 },
+    { JOB_LIMIT_MSG_BYTES, 4u << 20 },
+};
+
 static const char *const src_mount[SRC_COUNT] = { [SRC_JAM] = JAM_MOUNT,
                                                   [SRC_DATA] = DATA_MOUNT };
 
@@ -274,6 +288,8 @@ static status_t ram_start(handle_t *client, uint64_t *size, char *pnote, size_t 
         st = jam_channel_set_flags(theirs, CHANNEL_NO_HANDLES);
     if (st == OK)
         st = jam_job_create(startup_handle(SR_JOB), 0, &tm.ram_job);
+    for (unsigned i = 0; st == OK && i < sizeof(ram_limits) / sizeof(ram_limits[0]); i++)
+        st = jam_job_set_limit(tm.ram_job, ram_limits[i].kind, ram_limits[i].value);
     if (st != OK) {
         if (vmo)
             jam_handle_close(vmo);
@@ -281,6 +297,8 @@ static status_t ram_start(handle_t *client, uint64_t *size, char *pnote, size_t 
             jam_handle_close(mine);
         if (theirs)
             jam_handle_close(theirs);
+        if (tm.ram_job)
+            jam_handle_close(tm.ram_job);   /* (a limit refused) */
         tm.ram_job = HANDLE_INVALID;
         return st;
     }
