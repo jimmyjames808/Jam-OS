@@ -5,7 +5,7 @@ content_shell (track CB4, the `shell-wl` case).
 
     base-stick.py [--data-mib N] [--programs a,b] [--program-dir DIR]
                   [--out-files a,b] [--source-files a,b] [--add DIR]
-                  <image> <stick> <stage> <source> <out>
+                  [--add-data DIR] <image> <stick> <stage> <source> <out>
 
 <image> is the boot image (build/jamos.img). <stick> is written: a copy of
 it with its data partition grown to N MiB (default 6144; the image's 64 MiB
@@ -49,7 +49,9 @@ programs (from <stage>/lib/chromium, or from --program-dir, e.g. <out>
 itself, where a relink leaves them), each approved by its
 ports/chromium/wants list; --out-files and --source-files, what goes under
 /data/cr/out/jamos and /data/cr ("" for none); --add DIR, a tree put under
-/data/cr as it is (fonts, a fonts.conf).
+/data/cr as it is (fonts, a fonts.conf); --add-data DIR, a tree put under
+/data as it is (the `fonts` case: pkg/share/fonts/..., the packages'
+staged files where init's /pkg view shows them).
 
 Runs on the build host (Python 3.12 there; mtools). Prints one line."""
 import argparse
@@ -175,6 +177,7 @@ def main(argv):
     ap.add_argument("--out-files", default=",".join(FROM_OUT))
     ap.add_argument("--source-files", default=",".join(FROM_SOURCE))
     ap.add_argument("--add")
+    ap.add_argument("--add-data")
     ap.add_argument("image")
     ap.add_argument("stick")
     ap.add_argument("stage")
@@ -236,10 +239,15 @@ def main(argv):
             shutil.move(cr, os.path.join(root, "cr"))
             shutil.move(etc, os.path.join(root, "etc"))
             cr = os.path.join(root, "cr")
+            if args.add_data:
+                shutil.copytree(args.add_data, root, dirs_exist_ok=True)
             mtool(JAMEXT, "-q", "--part", "2", "import", args.stick, root)
         else:
             # one recursive copy each; mtools makes the directories
-            mtool("mcopy", "-s", "-m", "-i", part, cr, etc, "::/")
+            tops = [cr, etc]
+            if args.add_data:
+                tops += [os.path.join(args.add_data, n) for n in sorted(os.listdir(args.add_data))]
+            mtool("mcopy", "-s", "-m", "-i", part, *tops, "::/")
         # the programs read back, and compared with what the lines say
         for a in allow:
             digest, path, _ = a.split("\t")

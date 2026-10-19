@@ -1,0 +1,212 @@
+Description: SwiftShader linked into the program as ANGLE's Vulkan on Jam OS, its JIT in MAP_JIT memory
+ WebGL in software (docs/CR-PLAN.md, CR-e): ANGLE's Vulkan back end on
+ SwiftShader, as Linux runs it with --use-angle=swiftshader (or
+ swiftshader-webgl, the browser's software WebGL). On Linux ANGLE calls
+ Khronos's Vulkan loader, which opens SwiftShader's ICD,
+ libvk_swiftshader.so, by its JSON file; Jam OS links programs static and
+ has no dlopen, so SwiftShader itself is the program's Vulkan: args.gn
+ sets angle_shared_libvulkan and angle_use_custom_libvulkan false (ANGLE
+ calls vk* directly, as on macOS, with no mock ICD) and
+ angle_vulkan_loader_dir to the group below.
+ - build/toolchain/jamos/vulkan: the "libvulkan" group ANGLE links, which
+   is SwiftShader's Vulkan source set (its vk* functions are Vulkan's
+   entry points), and the three calls of VK_KHR_display the loader
+   exports and SwiftShader built for Chromium has not (ANGLE's display
+   for a screen without a window system links them), answered as the
+   loader answers for a driver without the extension: no displays. New
+   files: no layer answers a build's target or a link's symbol.
+ - build_overrides/angle.gni: ANGLE's translator links SwiftShader's
+   SPIRV-Tools (only its validator, which a release build never calls),
+   not Chromium's: SwiftShader brings its own copy, and a static program
+   can hold one (two copies' same symbols would mix the two versions, by
+   the archives' order). Chromium's own override file: no layer answers.
+ - ANGLE's angle_vulkan_icd and ui/gl: no data_deps on the shared
+   libvk_swiftshader.so and its ICD file on Jam OS (its link driver refuses
+   -shared, and nothing would load them); ANGLE's define of the ICD file's
+   name stays, harmless (an environment variable for a loader that isn't
+   there). The build's own lines, not a layer's.
+ - SwiftShader's Vulkan target: Wayland's headers (Chromium's own
+   libwayland's, as its WSI target has them) for its Wayland surface
+   code; a Linux build finds them in the sysroot's /usr/include, Jam OS's
+   sysroot has none. The build's lines.
+ - SwiftShader's Reactor (ExecutableMemory.cpp): its code buffers are
+   mapped with MAP_JIT, as on macOS, where Linux maps a memfd so that
+   profilers see a name. Jam OS makes only JIT memory executable (private
+   anonymous memory mapped with MAP_JIT by a process holding the JIT
+   power, section 12), never a file's or a memfd's pages; a layer can't
+   tell Reactor's code buffer from any other mapping of a memfd, and
+   making every memfd mapping executable would undo the rule. Decommits
+   and frees are munmap, as before. Which process may JIT is patch 0914's.
+Forwarded: not-needed (Jam OS's: static programs and its W^X rule)
+---
+--- /dev/null
++++ b/build/toolchain/jamos/vulkan/BUILD.gn
+@@ -0,0 +1,23 @@
++# Jam OS's Vulkan for ANGLE (ports/chromium in Jam OS, its docs/CR-PLAN.md,
++# CR-e): args.gn's angle_vulkan_loader_dir names this directory, so ANGLE's
++# Vulkan back end (with angle_shared_libvulkan and angle_use_custom_libvulkan
++# false) links this "libvulkan" in place of Khronos's loader. Jam OS runs
++# static programs and has no dlopen, so no loader could open an ICD: the one
++# Vulkan driver is SwiftShader's, linked into the program, whose vk*
++# functions are Vulkan's own entry points (it is a whole libvulkan, as
++# libvk_swiftshader.so is when a program opens it by name).
++group("libvulkan") {
++  deps = [
++    ":display",
++    "//third_party/swiftshader/src/Vulkan:_swiftshader_libvulkan",
++  ]
++}
++
++# What the loader exports and SwiftShader has not: VK_KHR_display's calls,
++# which ANGLE's display for a screen without a window system links (and
++# uses only when asked for that display). They answer as the loader does
++# for a driver without the extension: no displays.
++source_set("display") {
++  sources = [ "display.cc" ]
++  deps = [ "//third_party/vulkan-headers/src:vulkan_headers" ]
++}
+--- /dev/null
++++ b/build/toolchain/jamos/vulkan/display.cc
+@@ -0,0 +1,35 @@
++// Jam OS's Vulkan for ANGLE (BUILD.gn here): VK_KHR_display's calls, which
++// SwiftShader built for Chromium leaves out (its display surfaces are
++// Linux's KMS), answered as Khronos's loader answers them for a driver
++// without the extension: no displays, and no display surface.
++
++#include <vulkan/vulkan.h>
++
++extern "C" {
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkGetPhysicalDeviceDisplayPropertiesKHR(VkPhysicalDevice physical_device,
++                                        uint32_t* count,
++                                        VkDisplayPropertiesKHR* properties) {
++  *count = 0;
++  return VK_SUCCESS;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkGetDisplayModePropertiesKHR(VkPhysicalDevice physical_device,
++                              VkDisplayKHR display,
++                              uint32_t* count,
++                              VkDisplayModePropertiesKHR* properties) {
++  *count = 0;
++  return VK_SUCCESS;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkCreateDisplayPlaneSurfaceKHR(VkInstance instance,
++                               const VkDisplaySurfaceCreateInfoKHR* info,
++                               const VkAllocationCallbacks* allocator,
++                               VkSurfaceKHR* surface) {
++  return VK_ERROR_EXTENSION_NOT_PRESENT;
++}
++
++}  // extern "C"
+--- a/build_overrides/angle.gni
++++ b/build_overrides/angle.gni
+@@ -1,6 +1,7 @@
+ # Copyright 2019 The Chromium Authors
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
++import("//build/toolchain/jamos/jamos.gni")
+ import("//ui/gl/features.gni")
+ 
+ # Override for angle_root
+@@ -24,6 +25,13 @@
+ angle_perfetto_cpp_dir = "//third_party/perfetto"
+ angle_spirv_headers_dir = "//third_party/spirv-headers/src"
+ angle_spirv_tools_dir = "//third_party/spirv-tools/src"
++if (is_jamos) {
++  # Jam OS: SwiftShader is linked into the program (ANGLE's Vulkan), with
++  # its own SPIRV-Tools; a static program holds one copy, so ANGLE's
++  # translator takes SwiftShader's (only its validator, which a release
++  # build never calls).
++  angle_spirv_tools_dir = "//third_party/swiftshader/third_party/SPIRV-Tools"
++}
+ angle_vulkan_memory_allocator_dir = "//third_party/vulkan_memory_allocator"
+ angle_wayland_dir = "//third_party/wayland/src"
+ angle_dawn_dir = "//third_party/dawn"
+--- a/third_party/angle/src/common/vulkan/BUILD.gn
++++ b/third_party/angle/src/common/vulkan/BUILD.gn
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/toolchain/jamos/jamos.gni")
+ import("//build_overrides/swiftshader.gni")
+ import("../../../gni/angle.gni")
+ 
+@@ -84,10 +85,14 @@
+ 
+       defines += [ "ANGLE_VK_SWIFTSHADER_ICD_JSON=\"${_sws_icd}\"" ]
+ 
+-      data_deps += [
+-        "$swiftshader_dir/src/Vulkan:icd_file",
+-        "$swiftshader_dir/src/Vulkan:swiftshader_libvulkan",
+-      ]
++      # Jam OS: SwiftShader is linked into the program as its Vulkan
++      # (angle_vulkan_loader_dir), with no shared library or ICD file.
++      if (!is_jamos) {
++        data_deps += [
++          "$swiftshader_dir/src/Vulkan:icd_file",
++          "$swiftshader_dir/src/Vulkan:swiftshader_libvulkan",
++        ]
++      }
+     }
+ 
+     public_deps = [
+--- a/third_party/swiftshader/src/Reactor/ExecutableMemory.cpp
++++ b/third_party/swiftshader/src/Reactor/ExecutableMemory.cpp
+@@ -279,6 +279,16 @@
+ #if defined(_WIN32)
+ 	return VirtualAlloc(nullptr, length, MEM_COMMIT | MEM_RESERVE,
+ 	                    permissionsToProtectMode(permissions));
++#elif defined(__jamos__)
++	// Jam OS: only JIT memory (MAP_JIT, which needs the process's JIT
++	// power) can be made executable, never a memfd's pages (macOS's way).
++	int flags = MAP_PRIVATE | MAP_ANONYMOUS | (need_exec ? MAP_JIT : 0);
++	mapping = mmap(nullptr, length, permissionsToMmapProt(permissions), flags, -1, 0);
++
++	if(mapping == MAP_FAILED)
++	{
++		mapping = nullptr;
++	}
+ #elif defined(__linux__) && defined(REACTOR_ANONYMOUS_MMAP_NAME)
+ 	int flags = MAP_PRIVATE;
+ 
+--- a/third_party/swiftshader/src/Vulkan/BUILD.gn
++++ b/third_party/swiftshader/src/Vulkan/BUILD.gn
+@@ -13,6 +13,7 @@
+ # limitations under the License.
+ 
+ import("//build/config/ozone.gni")
++import("//build/toolchain/jamos/jamos.gni")
+ import("//build_overrides/build.gni")
+ import("//build_overrides/wayland.gni")
+ import("../swiftshader.gni")
+@@ -190,6 +191,12 @@
+     "../WSI",
+   ]
+ 
++  # Jam OS: Wayland's headers for the WSI's (Chromium's own libwayland's),
++  # which a Linux sysroot has in /usr/include.
++  if (is_jamos && ozone_platform_wayland && wayland_gn_dir != "") {
++    deps = [ "$wayland_gn_dir:wayland_client" ]
++  }
++
+   include_dirs = [
+     "..",
+     "../../include",
+--- a/ui/gl/BUILD.gn
++++ b/ui/gl/BUILD.gn
+@@ -227,7 +227,8 @@
+     data_deps += [ ":generate_angle_stubs" ]
+   }
+ 
+-  if (enable_swiftshader) {
++  # (Jam OS: SwiftShader is linked into the program, through ANGLE's Vulkan.)
++  if (enable_swiftshader && !is_jamos) {
+     data_deps += [
+       "//third_party/swiftshader/src/Vulkan:icd_file",
+       "//third_party/swiftshader/src/Vulkan:swiftshader_libvulkan",

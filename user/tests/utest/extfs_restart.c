@@ -15,7 +15,11 @@
  * the same files with the same free space as the undisturbed run's (the
  * journal replays, so the blocks differ; the files may not). Then: an
  * fs.open's and an fs.view's reply that died with the process are made
- * again; a request in progress at two crashes is answered ERR_IO; mapped
+ * again; a request in progress at two crashes is answered ERR_IO;
+ * directory channels carried on (a tree 26 levels of 255-byte names deep
+ * made through them, a held directory removed, one renamed over, one
+ * moved, extfs ended at steps of it: every channel on the same directory
+ * after, the removed two kept and dropped at their close); mapped
  * files carried on (with a pager: maps, page requests and a write under a
  * mapping ended at their steps, an unlinked mapped file kept across a
  * kill); and a warm spare promoted in a dead instance's place carries on
@@ -522,6 +526,177 @@ bool t_extfs_restart_twice(void)
     CHECK_ST(t_stat(&sv.r, "/k", NULL, &is_dir, NULL), OK);
     CHECK(is_dir);
     return sup_stop() && ramdisk_destroy(&test_disk);
+}
+
+/* ---- directory channels ------------------------------------------------------------ */
+
+#define TREE 26u   /* levels of 255-byte names under /t (DeleteDeep's) */
+
+/* The channels the tree script keeps open: /t and each level below it,
+ * a directory removed while held, one renamed over, one moved (into level
+ * 1), and their ids (opendir's answers). */
+static struct {
+    handle_t ch[TREE + 1], gone, over, moved;
+    uint64_t id[TREE + 1], gone_id, over_id;
+} dt;
+static char dname[256];
+static uint64_t tree_free;   /* the undisturbed run's free bytes after it */
+
+static status_t dopen(handle_t ch, const char *path, handle_t *out, uint64_t *id)
+{
+    uint64_t v = 0;
+    *out = HANDLE_INVALID;
+    return fs_opendir_until(ch, dl(), path, (uint32_t)strlen(path), 0, out, id, &v);
+}
+
+/* fs.getattr of path on ch: its id (and link count, may be NULL). */
+static status_t did(handle_t ch, const char *path, uint64_t *id, uint32_t *nlink)
+{
+    uint32_t mode, uid, gid, nl;
+    uint64_t size, blocks;
+    int64_t at, mt, ct;
+    return fs_getattr_until(ch, dl(), path, (uint32_t)strlen(path), 0, &mode,
+                            nlink ? nlink : &nl, &uid, &gid, &size, &blocks, id, &at, &mt, &ct);
+}
+
+/* Every channel still on its directory: each level's id, the bottom's
+ * file, ".." from the bottom; the removed two with no links, ".." /t and
+ * nothing else; the moved one's ".." level 1. */
+static bool tree_verify(void)
+{
+    uint64_t id = 0;
+    uint32_t nlink = 1;
+    for (unsigned i = 0; i <= TREE; i++) {
+        CHECK_ST(did(dt.ch[i], "", &id, NULL), OK);
+        CHECK_EQ(id, dt.id[i]);
+    }
+    if (!file_is(&(struct fatrun){ .fs = dt.ch[TREE] }, "f", "deep"))
+        return false;
+    CHECK_ST(did(dt.ch[TREE], "../../..", &id, NULL), OK);
+    CHECK_EQ(id, dt.id[TREE - 3]);
+    const handle_t gone[2] = { dt.gone, dt.over };
+    const uint64_t ids[2] = { dt.gone_id, dt.over_id };
+    for (unsigned k = 0; k < 2; k++) {
+        CHECK_ST(did(gone[k], "", &id, &nlink), OK);
+        CHECK(id == ids[k] && nlink == 0);
+        CHECK_ST(did(gone[k], "..", &id, NULL), OK);
+        CHECK_EQ(id, dt.id[0]);
+        CHECK_ST(did(gone[k], "x", &id, NULL), ERR_NOT_FOUND);
+        CHECK_ST(fs_mkdir_until(gone[k], dl(), "x", 1, 0755), ERR_NOT_FOUND);
+    }
+    CHECK_ST(did(dt.moved, "..", &id, NULL), OK);
+    CHECK_EQ(id, dt.id[1]);
+    return true;
+}
+
+/* Through directory channels: the tree made and opened level by level (no
+ * path longer than a name), a file at the bottom; a held directory
+ * removed, one renamed over, one moved by rename_at. */
+static bool tree_script(const struct fatrun *r)
+{
+    memset(dname, 'd', 255);
+    dname[255] = '\0';
+    CHECK_ST(t_mkdir(r, "/t"), OK);
+    CHECK_ST(dopen(r->fs, "/t", &dt.ch[0], &dt.id[0]), OK);
+    for (unsigned i = 0; i < TREE; i++) {
+        CHECK_ST(fs_mkdir_until(dt.ch[i], dl(), dname, 255, 0755), OK);
+        CHECK_ST(dopen(dt.ch[i], dname, &dt.ch[i + 1], &dt.id[i + 1]), OK);
+    }
+    if (!put_file(&(struct fatrun){ .fs = dt.ch[TREE] }, "f", "deep"))
+        return false;
+    handle_t t = dt.ch[0];
+    CHECK_ST(fs_mkdir_until(t, dl(), "g", 1, 0755), OK);
+    CHECK_ST(dopen(t, "g", &dt.gone, &dt.gone_id), OK);
+    CHECK_ST(fs_unlink_until(t, dl(), "g", 1, FS_UNLINK_DIR), OK);
+    CHECK_ST(fs_mkdir_until(t, dl(), "o", 1, 0755), OK);
+    CHECK_ST(fs_mkdir_until(t, dl(), "n", 1, 0755), OK);
+    CHECK_ST(dopen(t, "o", &dt.over, &dt.over_id), OK);
+    CHECK_ST(fs_rename_until(t, dl(), "n", 1, "o", 1, FS_RENAME_REPLACE), OK);
+    CHECK_ST(fs_mkdir_until(t, dl(), "m", 1, 0755), OK);
+    CHECK_ST(dopen(t, "m", &dt.moved, &(uint64_t){ 0 }), OK);
+    CHECK_ST(fs_rename_at_until(t, dl(), "m", 1, dt.id[1], "m", 1, 0), OK);
+    CHECK_ST(t_sync(r), OK);
+    return tree_verify();
+}
+
+/* A new instance finds what the tree script left (walked again through
+ * channels: the bottom's file) and the undisturbed run's free space: the
+ * removed two dropped at their channels' close. */
+static bool tree_after(struct ramdisk *rd, const char *save)
+{
+    struct fatrun r;
+    handle_t ch[TREE + 1];
+    uint64_t total = 0, fr = 0, id = 0;
+    CHECK(extfs_start(&r, rd, false, NULL, 0));
+    CHECK_ST(t_stat(&r, "/t/g", NULL, NULL, NULL), ERR_NOT_FOUND);
+    CHECK_ST(t_stat(&r, "/t/n", NULL, NULL, NULL), ERR_NOT_FOUND);
+    CHECK_ST(t_stat(&r, "/t/o", NULL, NULL, NULL), OK);
+    CHECK_ST(dopen(r.fs, "/t", &ch[0], &id), OK);
+    for (unsigned i = 0; i < TREE; i++)
+        CHECK_ST(dopen(ch[i], dname, &ch[i + 1], &id), OK);
+    CHECK_ST(did(ch[1], "m", &id, NULL), OK);
+    bool ok = file_is(&(struct fatrun){ .fs = ch[TREE] }, "f", "deep");
+    for (unsigned i = 0; i <= TREE; i++)
+        jam_handle_close(ch[i]);
+    CHECK_ST(t_free(&r, &total, &fr), OK);
+    if (!tree_free)
+        tree_free = fr;
+    else if (fr != tree_free)
+        FAIL("%lu bytes free, the undisturbed run left %lu", (unsigned long)fr,
+             (unsigned long)tree_free);
+    CHECK(fat_stop(&r));
+    return ok && (!save || extfs_save(rd, save));
+}
+
+static void tree_close(void)
+{
+    for (unsigned i = 0; i <= TREE; i++)
+        jam_handle_close(dt.ch[i]);
+    jam_handle_close(dt.gone);
+    jam_handle_close(dt.over);
+    jam_handle_close(dt.moved);
+}
+
+static bool tree_storm(const char *const *dies, unsigned n, const char *save)
+{
+    memcpy(test_disk.mem, blank_disk.mem, (size_t)DISK_SECTORS * RAMDISK_SECTOR);
+    memset(&dt, 0, sizeof(dt));
+    if (!sup_start(&test_disk, dies, n, NULL))
+        return false;
+    bool ok = tree_script(&sv.r);
+    unsigned ended = sv.tests;
+    tree_close();
+    if (!sup_stop() || !ok)
+        return false;
+    if (ended != n)
+        FAIL("%u of %u test powers ended extfs (%s ...): pick steps it reaches", ended, n,
+             dies[0]);
+    return tree_after(&test_disk, save);
+}
+
+/* The tree script undisturbed, then with extfs ended at steps of it: the
+ * channels, deep ones too, carry on to the same directories; a held
+ * directory removed with extfs ended at its removal ("removed": its ".."
+ * recorded, not committed) is kept. */
+bool t_extfs_restart_tree(void)
+{
+    static const char *const steps1[] = {
+        "die=answered:3", "die=commit:20", "die=removed:1", "die=journal:2", "die=removed:1",
+        "die=write:3",
+    };
+    static const char *const steps2[] = {
+        "die=journal:1", "die=answered:30", "die=commit:12", "die=removed:1", "die=answered:1",
+        "die=removed:1", "die=commit:1",
+    };
+    struct fatrun r;
+    const char *fixed = "fixed-time";
+    if (!ramdisk_create(&blank_disk, DISK_SECTORS) || !ramdisk_create(&test_disk, DISK_SECTORS))
+        return false;
+    tree_free = 0;
+    bool ok = extfs_start(&r, &blank_disk, false, &fixed, 1) && fat_stop(&r) &&
+              tree_storm(NULL, 0, NULL) && tree_storm(steps1, 6, NULL) &&
+              tree_storm(steps2, 7, "restart-tree");
+    return ramdisk_destroy(&test_disk) && ramdisk_destroy(&blank_disk) && ok;
 }
 
 /* ---- mapped files ------------------------------------------------------------------- */

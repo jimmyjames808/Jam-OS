@@ -14,7 +14,9 @@
  * A directory channel's path (fs.opendir) starts at its directory unless
  * it starts with '/' (docs/DIRHANDLE-PLAN.md 3.1): a ".." there is the
  * directory's own ".." entry, which ext keeps right across renames, up to
- * the view's root and ERR_LINK_OUT above it as from the root itself.
+ * the view's root and ERR_LINK_OUT above it as from the root itself. One
+ * removed while its channel holds it has no place and no name: "" and "."
+ * are it, ".." the parent it was removed from, nothing else (walk_gone).
  *
  * Where a path lies is kept as it is walked: its region (<fsview.h>: the
  * depth below the volume's root and its first two names' class; the
@@ -225,6 +227,77 @@ static status_t start_of(const struct xf_ctx *c, bool from_dir, struct fs_region
     return st;
 }
 
+static status_t link_out(struct xf_walk *w, uint8_t kind, uint32_t used, const char *head,
+                         uint32_t hlen, const char *r, uint32_t rlen);
+
+/* Removed, and held: directory ino of generation gen with no name left,
+ * which a directory channel keeps on the orphan list (dirs.c); into *in. */
+static bool gone_dir(uint32_t ino, uint32_t gen, struct ext_inode *in)
+{
+    return ext_iget(&vol.fs, ino, EXT_IGET_UNLINKED, in) == OK && in->d.generation == gen &&
+           is_dir(in) && !in->d.links_count;
+}
+
+/* A path from removed directory *in (docs/DIRHANDLE-PLAN.md 3.3): "" and
+ * "." name it (the answer with W_GONE: w->gone), ".." the parent it had
+ * (dirs.c remembers it: ERR_NOT_FOUND if that inode is free or used
+ * again), removed too (and held) or not; every other name ERR_NOT_FOUND.
+ * At a parent
+ * that wasn't removed: *in is it, w->region where it lies (in the view's
+ * reach, not where it hides, else ERR_NOT_FOUND) and *skip the bytes of
+ * path walked; the rest is walked from it. */
+static status_t walk_gone(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t flags,
+                          struct ext_inode *in, uint32_t *skip, struct xf_walk *w)
+{
+    uint32_t at = 0;
+    for (;;) {
+        while (at < len && path[at] == '/')
+            at++;
+        uint32_t clen = 0;
+        while (at + clen < len && path[at + clen] != '/')
+            clen++;
+        if (!clen) {
+            if (!(flags & W_GONE))
+                return ERR_NOT_FOUND;   /* readdir, a change, resolve: it has no name */
+            w->gone = w->found = true;
+            w->in = *in;
+            w->region = (struct fs_region){ .depth = 0, .cls = FS_REGION_OTHER };   /* none */
+            return OK;
+        }
+        const char *comp = path + at;
+        at += clen;
+        if (clen == 1 && comp[0] == '.')
+            continue;
+        if (clen != 2 || comp[0] != '.' || comp[1] != '.')
+            return ERR_NOT_FOUND;
+        if (in->ino == c->root_ino && (c->view < 0 || in->d.generation == c->root_igen))
+            return link_out(w, FS_RESOLVE_ABOVE, at, NULL, 0, path + at, len - at);
+        uint32_t up = 0, up_gen = 0;
+        struct ext_inode p;
+        if (!dirs_up(in->ino, in->d.generation, &up, &up_gen))
+            return ERR_NOT_FOUND;
+        status_t st = ext_iget(&vol.fs, up, EXT_IGET_UNLINKED, &p);
+        if (st == ERR_OUT_OF_RANGE || (st == OK && (p.d.generation != up_gen || !is_dir(&p))))
+            st = ERR_NOT_FOUND;
+        if (st != OK)
+            return st;
+        *in = p;
+        if (!p.d.links_count && !dirs_has(p.ino))
+            return ERR_NOT_FOUND;   /* freed (ext_iget reads a free inode as it was left) */
+        if (!p.d.links_count)
+            continue;               /* removed too, and held */
+        struct xf_place pl = { 0 };
+        st = walk_place(&pl, p.ino, p.d.generation, c->root_ino, c->view >= 0 ? c->root_igen : 0);
+        if (st == OK && fs_region_hides(c->flags, pl.region, false))
+            st = ERR_NOT_FOUND;
+        if (st != OK)
+            return st;
+        w->region = pl.region;
+        *skip = at;
+        return OK;
+    }
+}
+
 /* A wholly hidden directory (the hiding flags' "stat" rule: etc itself is
  * hidden only when all of it is). */
 static bool hidden_dir(const struct xf_ctx *c, const struct xf_walk *w)
@@ -271,6 +344,7 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
 {
     struct ext_fs *fs = &vol.fs;
     w->found = true;
+    w->gone = false;
     w->has_name = w->must_dir = false;
     w->kind = 0;
     w->used = 0;
@@ -282,10 +356,16 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
     if (len > FS_PATH_LEN)
         return ERR_NAME_TOO_LONG;
     bool from_dir = c->dir_ino && !(len && path[0] == '/');
-    uint32_t start = from_dir ? c->dir_ino : c->root_ino;
+    uint32_t start = from_dir ? c->dir_ino : c->root_ino, skip = 0;
     struct ext_inode cur;
     status_t st = OK;
-    if (c->dir_ino) {
+    if (c->dir_ino && gone_dir(c->dir_ino, c->dir_igen, &cur)) {
+        /* Removed, held by this channel: itself, or its ".." to walk on. */
+        st = from_dir ? walk_gone(c, path, len, flags, &cur, &skip, w) : ERR_NOT_FOUND;
+        if (st != OK || w->gone)
+            return st;
+        start = cur.ino;
+    } else if (c->dir_ino) {
         /* A directory channel's directory, whatever the path: there (not
          * removed, its inode not used again), and where its view reaches. */
         st = start_of(c, true, &w->region);
@@ -313,9 +393,9 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
 
     /* rest: what is left to walk, at the end of rest_buf; orig: how much of
      * it is still the caller's own path (the rest came from links). */
-    char *r = rest_buf + sizeof(rest_buf) - len;
-    memcpy(r, path, len);
-    uint32_t rlen = len, orig = len, links = 0;
+    char *r = rest_buf + sizeof(rest_buf) - (len - skip);
+    memcpy(r, path + skip, len - skip);
+    uint32_t rlen = len - skip, orig = len - skip, links = 0;
     for (;;) {
         while (rlen && *r == '/') {
             r++;
@@ -495,7 +575,7 @@ status_t walk_inside(const struct xf_ctx *c, const struct xf_walk *w, char *out,
 
 bool walk_hidden(const struct xf_ctx *c, const struct xf_walk *w, bool stat)
 {
-    return fs_region_hides(c->flags, w->region, stat);
+    return !w->gone && fs_region_hides(c->flags, w->region, stat);
 }
 
 bool walk_may_change(const struct xf_ctx *c, const struct xf_walk *w)

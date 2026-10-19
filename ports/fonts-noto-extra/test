@@ -1,0 +1,124 @@
+# fonts-noto-extra's test (tools/ports-test.sh): every file of the package is on
+# /data/pkg with the bytes upstream released. `sha256sum` of each font, each
+# licence text and fonts.conf is waited for, three files to a command; the
+# hashes are those of the pinned releases (the recipe's source lines) and of
+# ports/fonts-noto-extra/override/fonts.conf. The checks that the generic families,
+# each script's characters and each CJK language resolve as the fonts.conf
+# says run on the build host with its own fc-match (tools/fonts-check.sh):
+# Jam OS has no fontconfig. The two 20 MB CJK collections take a while to hash
+# in the guest.
+send F=/data/pkg/share/fonts/noto-extra; L=/data/pkg/share/licences/fonts-noto-extra
+wait {prompt}
+send run $S/sha256sum $F/cjk/NotoSansCJK-Regular.ttc $F/cjk/NotoSansCJK-Bold.ttc $F/arabic/NotoSansArabic-Regular.ttf
+wait 240 b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a  /data/pkg/share/fonts/noto-extra/cjk/NotoSansCJK-Regular.ttc
+wait 240 faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb  /data/pkg/share/fonts/noto-extra/cjk/NotoSansCJK-Bold.ttc
+wait 240 bd86ca02f087d7f3c3788ba458fb6b73744c7639ed276b8d870dba6def6c40d0  /data/pkg/share/fonts/noto-extra/arabic/NotoSansArabic-Regular.ttf
+wait {prompt}
+send run $S/sha256sum $F/arabic/NotoSansArabic-Bold.ttf $F/hebrew/NotoSansHebrew-Regular.ttf $F/hebrew/NotoSansHebrew-Bold.ttf
+wait f4cb79f842a07d1bcf597879574358fb7010f73761396d1d0f2445dfedb4d2ca  /data/pkg/share/fonts/noto-extra/arabic/NotoSansArabic-Bold.ttf
+wait 04272f5600d0ec816d31d0df73b23aa8d3501ea359ebe820da31c11ffcf00853  /data/pkg/share/fonts/noto-extra/hebrew/NotoSansHebrew-Regular.ttf
+wait dfdb3056de1f4542b888c77a1a8a750548a802e271479f56e52152423b64dde8  /data/pkg/share/fonts/noto-extra/hebrew/NotoSansHebrew-Bold.ttf
+wait {prompt}
+send run $S/sha256sum $F/devanagari/NotoSansDevanagari-Regular.ttf $F/devanagari/NotoSansDevanagari-Bold.ttf $F/bengali/NotoSansBengali-Regular.ttf
+wait 9c7d935139ea6a1e6ad9dbac4f6d27ece1e04bca8123c8888d00a0f9df4724cd  /data/pkg/share/fonts/noto-extra/devanagari/NotoSansDevanagari-Regular.ttf
+wait ff2f76a23aad41e0608c2d7dbc4bacd247ff3bec78f0ec2a8fb106b561636e58  /data/pkg/share/fonts/noto-extra/devanagari/NotoSansDevanagari-Bold.ttf
+wait 5dceda02816fece18ea6796f474f5d3170f1d862f21b1e809cdc94b1caa4b6ec  /data/pkg/share/fonts/noto-extra/bengali/NotoSansBengali-Regular.ttf
+wait {prompt}
+send run $S/sha256sum $F/bengali/NotoSansBengali-Bold.ttf $F/tamil/NotoSansTamil-Regular.ttf $F/tamil/NotoSansTamil-Bold.ttf
+wait 2fe8d779e0f19576d1fc11e39f9154b4326a17b693215017dd1f5a8898c3f2c3  /data/pkg/share/fonts/noto-extra/bengali/NotoSansBengali-Bold.ttf
+wait 6634d9cc97a726e670df41281dd32b167a6b9b71f2036e19671ff08fdde0c292  /data/pkg/share/fonts/noto-extra/tamil/NotoSansTamil-Regular.ttf
+wait 04a472e49fa83b387976756554fe179de631a950d79f652ebba14a39a44f5d71  /data/pkg/share/fonts/noto-extra/tamil/NotoSansTamil-Bold.ttf
+wait {prompt}
+send run $S/sha256sum $F/telugu/NotoSansTelugu-Regular.ttf $F/telugu/NotoSansTelugu-Bold.ttf $F/gujarati/NotoSansGujarati-Regular.ttf
+wait dcb86a5da09365a2d73d725e429403dca988e6d50c1b1d564579a25dbc18bd29  /data/pkg/share/fonts/noto-extra/telugu/NotoSansTelugu-Regular.ttf
+wait 44393b05a863057cc2cbfe86623fc20b906b00cf19a2ae9304cdd0f3608889db  /data/pkg/share/fonts/noto-extra/telugu/NotoSansTelugu-Bold.ttf
+wait 18727143b8eadade0a59dca80959ef784bf8d55e07285d1b4096594dbf829f0a  /data/pkg/share/fonts/noto-extra/gujarati/NotoSansGujarati-Regular.ttf
+wait {prompt}
+send run $S/sha256sum $F/gujarati/NotoSansGujarati-Bold.ttf $F/gurmukhi/NotoSansGurmukhi-Regular.ttf $F/gurmukhi/NotoSansGurmukhi-Bold.ttf
+wait 3ce0cf6e1d0bfe2ef5823772eeb2f25da28ec0c2c1d99c0fce529025723e61a1  /data/pkg/share/fonts/noto-extra/gujarati/NotoSansGujarati-Bold.ttf
+wait 2454c944fda799d2861f11c03e492c453e33083dd1e8d99bd6baac8de71ad0f0  /data/pkg/share/fonts/noto-extra/gurmukhi/NotoSansGurmukhi-Regular.ttf
+wait d16804da302ecb2a7defe0502e65136870445fd88f9fddaef60b68d5f1ee7386  /data/pkg/share/fonts/noto-extra/gurmukhi/NotoSansGurmukhi-Bold.ttf
+wait {prompt}
+send run $S/sha256sum $F/kannada/NotoSansKannada-Regular.ttf $F/kannada/NotoSansKannada-Bold.ttf $F/malayalam/NotoSansMalayalam-Regular.ttf
+wait 2870274619c2a4abe5d6b11fcb7c4a372eba765b6b7881d459b0eb0a609a68eb  /data/pkg/share/fonts/noto-extra/kannada/NotoSansKannada-Regular.ttf
+wait e989c72f6fec5a0b3366af5f90e3ce8b2b8a350fc5286c6374f0353937e513f5  /data/pkg/share/fonts/noto-extra/kannada/NotoSansKannada-Bold.ttf
+wait cc39bb1f7d63b582a2aec1abf2469a43b805a3523a27e0a0eee8cd32702541d5  /data/pkg/share/fonts/noto-extra/malayalam/NotoSansMalayalam-Regular.ttf
+wait {prompt}
+send run $S/sha256sum $F/malayalam/NotoSansMalayalam-Bold.ttf $F/thai/NotoSansThai-Regular.ttf $F/thai/NotoSansThai-Bold.ttf
+wait 165d635d82b0eb0a04275b92b9334c1ece679b99f263727c24c7c92ebcab51e9  /data/pkg/share/fonts/noto-extra/malayalam/NotoSansMalayalam-Bold.ttf
+wait d4303fe9c63ebb72759ca8b6d2040c8ae81689f7d08d7b91c656154382b49313  /data/pkg/share/fonts/noto-extra/thai/NotoSansThai-Regular.ttf
+wait 5227602d7f9108252cfb7d75d6f7b2a26bdb2fc2fa89a702f9063758fb2f86c7  /data/pkg/share/fonts/noto-extra/thai/NotoSansThai-Bold.ttf
+wait {prompt}
+send run $S/sha256sum $F/georgian/NotoSansGeorgian-Regular.ttf $F/georgian/NotoSansGeorgian-Bold.ttf $F/armenian/NotoSansArmenian-Regular.ttf
+wait f4b229b126859725b75031dd8c051335d20c85e4eb6d525af28f3e83e471baa4  /data/pkg/share/fonts/noto-extra/georgian/NotoSansGeorgian-Regular.ttf
+wait 517722454bbe6587ada79a0509db8c9b292b6a40b025eebe69c151a6508efc7e  /data/pkg/share/fonts/noto-extra/georgian/NotoSansGeorgian-Bold.ttf
+wait 73bde9f3c63aa5ed39236e8a2837224605210a98b54d65724676c0119fcaa24c  /data/pkg/share/fonts/noto-extra/armenian/NotoSansArmenian-Regular.ttf
+wait {prompt}
+send run $S/sha256sum $F/armenian/NotoSansArmenian-Bold.ttf $F/ethiopic/NotoSansEthiopic-Regular.ttf $F/ethiopic/NotoSansEthiopic-Bold.ttf
+wait 1dd206046cd3f41efddec93359a8d6590e5e2d5fcb036b9025725b560cefe6c6  /data/pkg/share/fonts/noto-extra/armenian/NotoSansArmenian-Bold.ttf
+wait 86b9c07c049e68438388d00a34033fa28cabeef91b26e1bbed67512d360166d4  /data/pkg/share/fonts/noto-extra/ethiopic/NotoSansEthiopic-Regular.ttf
+wait 6b06274ea730962522b1fcbfdcb16cb5a385aa36734f31f5c9d0ca910541e880  /data/pkg/share/fonts/noto-extra/ethiopic/NotoSansEthiopic-Bold.ttf
+wait {prompt}
+send run $S/sha256sum $F/khmer/NotoSansKhmer-Regular.ttf $F/khmer/NotoSansKhmer-Bold.ttf $F/lao/NotoSansLao-Regular.ttf
+wait 60c10dbfae33a44f1897cd939789bd173aedb7c7dc0a9af389a737e33cb7e548  /data/pkg/share/fonts/noto-extra/khmer/NotoSansKhmer-Regular.ttf
+wait 817382a538f299eb809ee9313ef5c52e0049e3487eb4d02678349755ed607ddf  /data/pkg/share/fonts/noto-extra/khmer/NotoSansKhmer-Bold.ttf
+wait d3976b0ac08702c54999ff42eae295d1597fd73b44e0c57d7f4917524e18afbe  /data/pkg/share/fonts/noto-extra/lao/NotoSansLao-Regular.ttf
+wait {prompt}
+send run $S/sha256sum $F/lao/NotoSansLao-Bold.ttf $F/myanmar/NotoSansMyanmar-Regular.ttf $F/myanmar/NotoSansMyanmar-Bold.ttf
+wait 6fea2e9f231a4b9cfdeec90e9afaff8818b3d11f74cdb23559275f71eeff1ffd  /data/pkg/share/fonts/noto-extra/lao/NotoSansLao-Bold.ttf
+wait f4be6ef43871516d8347c5217a2033991b8ecda2dd1200007c2fb431a66d64db  /data/pkg/share/fonts/noto-extra/myanmar/NotoSansMyanmar-Regular.ttf
+wait c40a000f8093de13bdf1379a7c589faa2ea989319f33f244eaaa907033c6889f  /data/pkg/share/fonts/noto-extra/myanmar/NotoSansMyanmar-Bold.ttf
+wait {prompt}
+send run $S/sha256sum $F/sinhala/NotoSansSinhala-Regular.ttf $F/sinhala/NotoSansSinhala-Bold.ttf $F/oriya/NotoSansOriya-Regular.ttf
+wait 46d5b54952a624e6e3981e0968aecc5464f3b1081131dd7a1fcd42fbf7966471  /data/pkg/share/fonts/noto-extra/sinhala/NotoSansSinhala-Regular.ttf
+wait 438ce1325e788ec0501042dd6e798c0ec02231a42dbf42e72d17b338aa46742a  /data/pkg/share/fonts/noto-extra/sinhala/NotoSansSinhala-Bold.ttf
+wait a16645d056017927406546aa78e4ce15e782fd8783467267b75450453d007415  /data/pkg/share/fonts/noto-extra/oriya/NotoSansOriya-Regular.ttf
+wait {prompt}
+send run $S/sha256sum $F/oriya/NotoSansOriya-Bold.ttf $F/symbols/NotoSansSymbols-Regular.ttf $F/symbols/NotoSansSymbols-Bold.ttf
+wait 1c575e8aba40d6baf200e8abac534e9517f431d38cc8131715643037eec149da  /data/pkg/share/fonts/noto-extra/oriya/NotoSansOriya-Bold.ttf
+wait 6eea9cb4cd39269ea9f95ba5c2735f80ae74049dfc9e1a7c932a5cfc8f0c3030  /data/pkg/share/fonts/noto-extra/symbols/NotoSansSymbols-Regular.ttf
+wait e1e81b03028777dcf556dc22c18cb34c8e8cecdca66a494d7a0dae02f7f491df  /data/pkg/share/fonts/noto-extra/symbols/NotoSansSymbols-Bold.ttf
+wait {prompt}
+send run $S/sha256sum $F/symbols2/NotoSansSymbols2-Regular.ttf $F/math/NotoSansMath-Regular.ttf $L/noto-cjk-OFL.txt
+wait c4a0a80f0041ce4be81e2478faad22776d23edb98ae3f0d19bd37044820ecf9d  /data/pkg/share/fonts/noto-extra/symbols2/NotoSansSymbols2-Regular.ttf
+wait b127e84699212b6b2ef50aff58e0ebebeec04ffe6db1b9eb9e209c8c3d97b4aa  /data/pkg/share/fonts/noto-extra/math/NotoSansMath-Regular.ttf
+wait 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2  /data/pkg/share/licences/fonts-noto-extra/noto-cjk-OFL.txt
+wait {prompt}
+send run $S/sha256sum $L/noto-arabic-OFL.txt $L/noto-hebrew-OFL.txt $L/noto-devanagari-OFL.txt
+wait a7a5a25eb188bf1cd96982030d53e23c33485c69b1044a562254226857ee13af  /data/pkg/share/licences/fonts-noto-extra/noto-arabic-OFL.txt
+wait 9b9fe028b5ba74d231659a1bbaf0ed09b11e759d1ca6a070999e16d151616b47  /data/pkg/share/licences/fonts-noto-extra/noto-hebrew-OFL.txt
+wait a216f6f8d85c7228093e0ee5e258d9d377e6671f68acb4db1930b29583d0f331  /data/pkg/share/licences/fonts-noto-extra/noto-devanagari-OFL.txt
+wait {prompt}
+send run $S/sha256sum $L/noto-bengali-OFL.txt $L/noto-tamil-OFL.txt $L/noto-telugu-OFL.txt
+wait 754f0e221aa7d5a915489f3bf1f20fe53ddc35ab2834a4d91656d78f9622de70  /data/pkg/share/licences/fonts-noto-extra/noto-bengali-OFL.txt
+wait f8ff8ce7d0a81bf8d5e121c635ef027250c531f2fd37d5988b8dd6e45f19d7f1  /data/pkg/share/licences/fonts-noto-extra/noto-tamil-OFL.txt
+wait 481c72a8f1b4f645a7e6b10326be41b2da2c15cb470ff48a07fab773eed00102  /data/pkg/share/licences/fonts-noto-extra/noto-telugu-OFL.txt
+wait {prompt}
+send run $S/sha256sum $L/noto-gujarati-OFL.txt $L/noto-gurmukhi-OFL.txt $L/noto-kannada-OFL.txt
+wait c0b88977aa18b5e4fd05d646d560da89fde61b6581fa4507cb00dd90bd1bf7d4  /data/pkg/share/licences/fonts-noto-extra/noto-gujarati-OFL.txt
+wait 3f7451b7e2c8381be0c5712f7b0dd5c2d75fe787ae16a99f18b7fa45627a0fde  /data/pkg/share/licences/fonts-noto-extra/noto-gurmukhi-OFL.txt
+wait e01ae2ea75d7bc6fccb13c48a2f442b32e4bc4be46810fb52a4a1a095320801a  /data/pkg/share/licences/fonts-noto-extra/noto-kannada-OFL.txt
+wait {prompt}
+send run $S/sha256sum $L/noto-malayalam-OFL.txt $L/noto-thai-OFL.txt $L/noto-georgian-OFL.txt
+wait 1df18163a0bf60f02131401ba1609df90051f40c4047684dda1c8a2e9586f7f2  /data/pkg/share/licences/fonts-noto-extra/noto-malayalam-OFL.txt
+wait 2e98fd23a52d253db8612cd5942c8f2ff4111b21d2367050fdca91d8ccc374a0  /data/pkg/share/licences/fonts-noto-extra/noto-thai-OFL.txt
+wait 8c02263c5d73d40544f9ed91e30c4e947407057a3cc430d7b786189aeceff6df  /data/pkg/share/licences/fonts-noto-extra/noto-georgian-OFL.txt
+wait {prompt}
+send run $S/sha256sum $L/noto-armenian-OFL.txt $L/noto-ethiopic-OFL.txt $L/noto-khmer-OFL.txt
+wait 0468358b316f69f405b55cadf8a8314e16e3610b8feaad96772bd5d968112d02  /data/pkg/share/licences/fonts-noto-extra/noto-armenian-OFL.txt
+wait 72606b23f312cb25973958f2892d4d2c2012deabadbf0f763232624a9649fc69  /data/pkg/share/licences/fonts-noto-extra/noto-ethiopic-OFL.txt
+wait be0407f060aea48787ff9e75d8d3aedef70aef113b3ce9aca26fdaacd10b1870  /data/pkg/share/licences/fonts-noto-extra/noto-khmer-OFL.txt
+wait {prompt}
+send run $S/sha256sum $L/noto-lao-OFL.txt $L/noto-myanmar-OFL.txt $L/noto-sinhala-OFL.txt
+wait a42993999944845fb5af693ea678a372a053db1f0981d55e911dcfa9d330f279  /data/pkg/share/licences/fonts-noto-extra/noto-lao-OFL.txt
+wait 246a75859267af7da466823969d2e2b407ed8455ee5f74f4c8d63d8783be9b57  /data/pkg/share/licences/fonts-noto-extra/noto-myanmar-OFL.txt
+wait 2d6f7c43bce61f4b1919379f901bc613484f5285f520b6d29bb7c1f31b17e841  /data/pkg/share/licences/fonts-noto-extra/noto-sinhala-OFL.txt
+wait {prompt}
+send run $S/sha256sum $L/noto-oriya-OFL.txt $L/noto-symbols-OFL.txt $L/noto-math-OFL.txt
+wait c90ff15ade263a49148e35af34e9c177c6d56881e81260b29f10123e9e227eca  /data/pkg/share/licences/fonts-noto-extra/noto-oriya-OFL.txt
+wait b118dd41337806a5d4797052c77caf3bd096aed783e5eb21b4d11154351e1ac0  /data/pkg/share/licences/fonts-noto-extra/noto-symbols-OFL.txt
+wait c9c63b8ed6cf76b2ce0c58b241acfc1195c2c928334c989c7047cbdac58773d9  /data/pkg/share/licences/fonts-noto-extra/noto-math-OFL.txt
+wait {prompt}
+send run $S/sha256sum $F/fonts.conf
+wait 9584e484101fb087c4380f47e8564a8ee3cb740cef7df3dd19ca983ba0329ac8  /data/pkg/share/fonts/noto-extra/fonts.conf
+wait {prompt}

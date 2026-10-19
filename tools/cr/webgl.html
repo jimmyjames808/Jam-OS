@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<!-- cr-test.sh's webgl page (docs/CR-PLAN.md, CR-e): content_shell, every
+     process type its own, loads it by name, once with SwiftShader's WebGL
+     (--enable-unsafe-swiftshader: the GPU process runs ANGLE on SwiftShader,
+     whose Reactor compiles the shaders, under the JIT power) and once
+     without (no WebGL). It draws a band across a 320x240 canvas with a
+     shader that colours the band's left half red and its right half green,
+     on a cleared ground of (51, 102, 204), reads three pixels back and says
+     each result as a console line ("crgl: ..."):
+       context <webgl|none> <webgl2|none>   which contexts the page gets
+       renderer <name>                      WebGL's unmasked renderer
+                                            (ANGLE's name for SwiftShader)
+       pixels <r,g,b,a> <r,g,b,a> <r,g,b,a> readPixels at the band's left,
+                                            its right and above it
+       drawn <ok|wrong>                     those three as they should be
+       frames <n> <ms>                      n draws of the band, then a finish
+       done -->
+<html><head><meta charset="utf-8"><title>Jam OS WebGL</title>
+<style>
+body { margin: 0; background: #1b1b3a; font-family: Inter, sans-serif; color: #fff }
+#c { position: fixed; left: 40px; top: 40px; width: 320px; height: 240px }
+#said { position: fixed; left: 40px; top: 300px; font-size: 16px; color: #f5d76e; white-space: pre }
+</style></head>
+<body>
+<canvas id="c" width="320" height="240"></canvas>
+<div id="said">running</div>
+<script>
+var W = 320, H = 240, FRAMES = 100;
+var lines = [];
+
+function say(what) {
+    console.log("crgl: " + what);
+    lines.push(what);
+    document.getElementById("said").textContent = lines.join("\n");
+}
+
+function shader(gl, type, text) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, text);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+        say("shader " + gl.getShaderInfoLog(s));
+    return s;
+}
+
+function draw(gl) {
+    var prog = gl.createProgram();
+    gl.attachShader(prog, shader(gl, gl.VERTEX_SHADER,
+        "attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }"));
+    gl.attachShader(prog, shader(gl, gl.FRAGMENT_SHADER,
+        "precision mediump float; uniform float split;" +
+        "void main() { gl_FragColor = gl_FragCoord.x < split ?" +
+        " vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0, 1.0, 0.0, 1.0); }"));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+        say("link " + gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+    gl.uniform1f(gl.getUniformLocation(prog, "split"), W / 2);
+    // The band: all the width, the middle half of the height (y 60 to 180).
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -0.5, 1, -0.5, -1, 0.5, 1, 0.5]),
+                  gl.STATIC_DRAW);
+    var p = gl.getAttribLocation(prog, "p");
+    gl.enableVertexAttribArray(p);
+    gl.vertexAttribPointer(p, 2, gl.FLOAT, false, 0, 0);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0.2, 0.4, 0.8, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+// readPixels' rows count from the bottom; x, y here from the top left.
+function pixel(gl, x, y) {
+    var px = new Uint8Array(4);
+    gl.readPixels(x, H - 1 - y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return Array.prototype.join.call(px, ",");
+}
+
+var gl = document.getElementById("c").getContext("webgl",
+    { preserveDrawingBuffer: true, antialias: false });
+var gl2 = document.createElement("canvas").getContext("webgl2");
+say("context " + (gl ? "webgl" : "none") + " " + (gl2 ? "webgl2" : "none"));
+if (gl) {
+    var info = gl.getExtension("WEBGL_debug_renderer_info");
+    say("renderer " + gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+    draw(gl);
+    var got = [pixel(gl, 80, 120), pixel(gl, 240, 120), pixel(gl, 160, 20)];
+    say("pixels " + got.join(" "));
+    say("drawn " + (got.join(" ") == "255,0,0,255 0,255,0,255 51,102,204,255" ? "ok" : "wrong"));
+    var t0 = performance.now();
+    for (var i = 0; i < FRAMES; i++)
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.finish();
+    say("frames " + FRAMES + " " + (performance.now() - t0).toFixed(1));
+}
+say("done");
+</script>
+</body></html>

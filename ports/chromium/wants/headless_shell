@@ -2,3 +2,4 @@ posix
 svc net
 svc dns
 mount /data rw
+mount /pkg r

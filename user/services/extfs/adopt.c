@@ -21,7 +21,8 @@
  *      runs again (step 5);
  *   3. the keeper's handles taken back (keep_restore), each only if the
  *      state knows its slot;
- *   4. the orphans dropped but those the state holds open;
+ *   4. the orphans dropped but those the state holds (files open or
+ *      mapped, directories removed while a directory channel held them);
  *   5. the request finished exactly once: run again, or answered from its
  *      slot (a reply that carried handles and never went out has them
  *      made again: a new channel for the client), unless its reply went
@@ -66,7 +67,7 @@ static bool crashed(void)
 static bool keep_open(void *ctx, uint32_t ino)
 {
     (void)ctx;
-    return files_held(ino);   /* open, or mapped */
+    return files_held(ino);   /* open, mapped, or a directory channel's */
 }
 
 void recover_orphans(void)
@@ -242,8 +243,9 @@ static void say(const struct found *f)
                  (unsigned long)((vol.at[XF_AT_MOUNT] - kill) / NS_PER_US));
     const struct ext_jnl *j = &vol.jnl;
     if (f->fresh) {
-        printf("extfs %s: restart (%s, adoption %lu): starting fresh (%s): open files and watchers closed%s; "
-               "journal: %u transaction(s) replayed%s\n", vol.name, vol.ended ? vol.ended : "?",
+        printf("extfs %s: restart (%s, adoption %lu): starting fresh (%s): open files, "
+               "directory channels and watchers closed%s; journal: %u transaction(s) "
+               "replayed%s\n", vol.name, vol.ended ? vol.ended : "?",
                (unsigned long)state_slots()->h->adopted, f->why,
                f->keep_views ? ", views kept" : ", views closed", (unsigned)j->replayed, since);
         return;

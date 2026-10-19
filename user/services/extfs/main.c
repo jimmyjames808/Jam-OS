@@ -437,6 +437,7 @@ int main(int argc, char **argv)
     if (!vol.disk_gone)
         wback_stop();   /* (done already after an fsctl.stop) */
     files_close_all();
+    dirs_close_all();
     defer_run();
     if (st == OK || vol.disk_gone)
         watch_stop();   /* served to the end: the watchers told now (their bells rung) */

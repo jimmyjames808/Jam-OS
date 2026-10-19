@@ -292,6 +292,20 @@ static void check_devetc_paths(void)
     CHECK(stat("/dev/null/x", &st) == -1 && errno == ENOTDIR);
     CHECK(stat("/dev/zero/x/y", &st) == -1 && errno == ENOTDIR);
     CHECK(stat("/dev/nothing/x", &st) == -1 && errno == ENOENT);
+    /* fontconfig's default file (the FONTS track): libc serves it, and it
+     * only includes the fonts packages' own */
+    char conf[512];
+    fd = open("/etc/fonts/fonts.conf", O_RDONLY);
+    ssize_t cn = fd >= 0 ? read(fd, conf, sizeof(conf) - 1) : -1;
+    CHECK(cn > 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == cn);
+    conf[cn > 0 ? cn : 0] = '\0';
+    CHECK(!strncmp(conf, "<?xml", 5) && strstr(conf, ">/pkg/share/fonts/fonts.conf</include>"));
+    close(fd);
+    CHECK(stat("/etc/fonts", &st) == 0 && S_ISDIR(st.st_mode));
+    CHECK(access("/etc/fonts/fonts.conf", R_OK) == 0);   /* fontconfig checks before it opens */
+    errno = 0;
+    CHECK(open("/etc/fonts/fonts.conf", O_WRONLY) == -1 && errno == EROFS);
+    CHECK(open("/etc/fonts/other.conf", O_RDONLY) == -1 && errno == ENOENT);
     fd = shm_open("/ptshm", O_RDWR | O_CREAT | O_EXCL, 0600);
     CHECK(fd > 2 && ftruncate(fd, 4096) == 0 && write(fd, "shm", 3) == 3);
     int again = shm_open("/ptshm", O_RDONLY, 0);
