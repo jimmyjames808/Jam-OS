@@ -240,4 +240,5 @@ New Low and notes (left):
 | Batch | Runs | Result |
 |---|---|---|
 | 19201225 (the branch, DL0 merged) | PC `make check`; the full init run; ktest at 4 CPUs; `tools/extfs-svc-test.sh`; `posix-inotify.txt`, `posix-procinfo.txt`; the shell scripts basic, cmds, commands, files; `tools/kdump-test.sh save`; `tools/fat-restart-test.sh`, `tools/volumes-restart-test.sh` | 12 of 13 PASS; extfs-svc FAILED twice: the three new runs' saved disks filled its `/data` (`extfs_restart_locks`' save `ERR_NO_SPACE`): those three no longer save theirs |
+| 19202504 (those three unsaved, the notes) | PC `make check`; the full init run; `tools/extfs-svc-test.sh` (42 passed, every disk e2fsck clean) | 3 of 3 PASS |
 | 19202251 (the fixes taken out, the tests kept) | `keep_ring` and `fswatch_caps`, `extfs_watch_limits`, `extfs_restart_giveup`, posixtest `procfs` | each FAILED as the table above says |
