@@ -125,8 +125,11 @@ static status_t resolve(struct conn *c, const char *host, uint32_t *addr)
     size_t len = strnlen(host, DNS_NAME_MAX + 1);
     if (!len || len > DNS_NAME_MAX)
         return ERR_INVALID_ARGS;
+    /* svc_open hands back the program's one opener (<os.h> "grants"), so a
+     * late answer to an earlier resolve may wait there: a txid of its own. */
+    static uint32_t last;
     handle_t ch;
-    uint32_t id = 0, last = 0, txid = idl_txid_next(&last);
+    uint32_t id = 0, txid = idl_txid_next(&last);
     status_t st = svc_open(SVC_DNS, &ch);
     if (st != OK)
         return st == ERR_NOT_FOUND ? ERR_PEER_CLOSED : st;

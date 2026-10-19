@@ -410,7 +410,10 @@ void run_audio(struct mixer *m, unsigned slot, handle_t ch, uint32_t owner, stru
         drain_begin(m, s, slot, q);
         return;
     }
-    if (!s && n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
+    /* On the shared channel alone: an opener makes no more (a program given
+     * /svc/audio by name holds one, <os.h> "grants"); on an opener's it is
+     * another protocol's request, ERR_NOT_SUPPORTED. */
+    if (!s && !owner && n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
         clients_connect_reply(m, ch, slot, false, false);
         return;
     }
@@ -618,8 +621,8 @@ void run_control(struct mixer *m, unsigned slot, handle_t ch, uint32_t key)
             req_status(m, slot, ch, st);
         return;
     }
-    if (n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
-        clients_connect_reply(m, ch, slot, true, false);
+    if (key == KEY_CTL && n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
+        clients_connect_reply(m, ch, slot, true, false);   /* the shared channel's alone */
         return;
     }
     handle_t rhs[IDL_REP_HANDLES];

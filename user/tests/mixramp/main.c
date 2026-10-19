@@ -17,8 +17,9 @@
  * mixer busy with requests meanwhile, so that kills land while one is in
  * progress (its restart finishes it: the log line says how): the ramp
  * stream's volume set to 0 dB (it must answer 0) and its position, and a
- * stream of another opener of /svc/audio opened and closed (a reply that
- * carries handles). Every call any thread makes must succeed: a restarted
+ * third stream opened and closed (a reply that carries handles; on what
+ * svc_open hands back, the program's one opener of /svc/audio, <os.h>
+ * "grants"). Every call any thread makes must succeed: a restarted
  * mixer is not seen by its clients.
  *
  * It prints the ramp's length, the kills, kill-to-first-answer (median,
@@ -51,7 +52,7 @@ static unsigned done_kills, kill_errors;
 static bool started;                           /* the ramp plays (atomic) */
 static bool ramp_done;                         /* the ramp is drained (atomic) */
 static struct mixer_stream ramp_s;             /* the ramp's stream */
-static handle_t churn_svc;                     /* the third thread's opener of /svc/audio */
+static handle_t churn_svc;                     /* the third thread's handle to our opener */
 static unsigned busy_calls, busy_errors, busy_full;   /* the third thread's (read after it ends) */
 static _Alignas(16) uint8_t killer_stack[32 << 10];
 static _Alignas(16) uint8_t busy_stack[32 << 10];
@@ -122,8 +123,8 @@ static void busy(void *arg)
         status_t st = busy_call(i);
         busy_calls++;
         if (st == ERR_NO_RESOURCES) {
-            /* The churn opener's last close not seen yet (its cap is
-             * MIXER_STREAMS_PER_CLIENT): not a restart's doing. */
+            /* The churned stream's last closes not seen yet (our opener's
+             * cap is MIXER_STREAMS_PER_CLIENT): not a restart's doing. */
             busy_full++;
             (void)jam_sleep_until(now() + NS_PER_MS);
         } else if (st != OK) {

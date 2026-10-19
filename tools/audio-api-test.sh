@@ -7,8 +7,8 @@
 # `utest only audio_out`, whose 11 cases use the API as a browser's audio
 # back end would (float samples, a writer on its own clock with
 # audio_try_write and the room and position queries, audio_start and
-# audio_pause, two streams at once, the four-stream cap and a closed
-# stream's place). Then:
+# audio_pause, two streams at once, the program's eight-stream cap on its
+# one opener and a closed stream's place). Then:
 #   - utest passed all 11, none of them skipped (a skip is a case that
 #     found no audio output);
 #   - the WAV, segment by segment (a segment ends at 50 ms of silence):

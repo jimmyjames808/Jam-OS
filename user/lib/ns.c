@@ -669,8 +669,15 @@ static bool grant_takes(const struct grant *g, const struct entry *e, enum kind 
 /* Services that count what a program holds by the channel it calls on: a
  * grant that names one gives the program a channel of its own (our
  * entry's svc.connect, <os.h> "grants"), which hands out no more. The
- * broker's listeners (docs/CR-REVIEW-POSIX.md, Q2). */
-static const char *const own_channel[] = { SVC_DIR SVC_UNIX };
+ * broker's listeners (docs/CR-REVIEW-POSIX.md, Q2); netstack's sockets,
+ * the resolver's names in flight and the mixer's streams, each service's
+ * openers one table (docs/CR-REVIEW-LAYERS.md, Q1). Not /svc/net-low,
+ * which no program from /data may have: serve, given it by init, listens
+ * again on a new opener of it after netstack restarts. */
+static const char *const own_channel[] = {
+    SVC_DIR SVC_UNIX, SVC_DIR SVC_NET,   SVC_DIR SVC_NET_LISTEN,
+    SVC_DIR SVC_DNS,  SVC_DIR SVC_AUDIO, SVC_DIR SVC_AUDIOCTL,
+};
 
 /* Does grant g, which took entry e, give a channel of the program's own? */
 static bool gets_own(const struct grant *g, const struct entry *e)

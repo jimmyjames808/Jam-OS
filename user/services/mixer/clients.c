@@ -6,11 +6,15 @@
  * caller stopped waiting (a stream's handles, a query channel) waits on
  * that caller's channel, which goes with it, never on a channel others
  * read. The streams opened on an opener's channel count to it, at most
- * MIXER_STREAMS_PER_CLIENT (streams.c).
+ * MIXER_STREAMS_PER_CLIENT (streams.c). Only the shared channels connect:
+ * an opener's own makes no more, and a program given /svc/audio or
+ * /svc/audioctl by name holds one of each (<os.h> "grants"), so no
+ * program takes the table (docs/CR-REVIEW-LAYERS.md finding 1).
  *
- * At most MIXER_CLIENTS openers at once: a connect past that is
- * ERR_NO_RESOURCES. An opener's channel is bound PERSISTENT on the port and
- * served a budget at a time, like the shared ones; once its client end is
+ * At most MIXER_CLIENTS openers at once, MIXER_DESK_CLIENTS of them
+ * desk_channel's: a connect past that is ERR_NO_RESOURCES. An opener's
+ * channel is bound PERSISTENT on the port and served a budget at a time,
+ * like the shared ones; once its client end is
  * gone it is closed and its slot (with a new generation) is free again.
  * A slot's numbers (used, ctl, gen) are in the state, its channel and
  * flag the process's own, at the same index. The channel is put to the
@@ -22,6 +26,13 @@
 
 status_t clients_connect(struct mixer *m, bool ctl, bool desk, handle_t *out)
 {
+    /* desk_channel's, made on any audioctl channel: a few in all, so that
+     * one program can't take the openers' table with them. */
+    unsigned desks = 0;
+    for (unsigned i = 0; desk && i < MIXER_CLIENTS; i++)
+        desks += m->nums->c[i].used && m->nums->c[i].desk;
+    if (desks >= MIXER_DESK_CLIENTS)
+        return ERR_NO_RESOURCES;
     for (unsigned i = 0; i < MIXER_CLIENTS; i++) {
         struct client *c = &m->nums->c[i];
         struct client_own *w = &m->own_c[i];

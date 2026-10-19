@@ -20,7 +20,9 @@
 #define DNS_OPENERS      16u      /* channels from /svc/dns's connect at once */
 #define DNS_PROG_OPENERS 12u      /* of them, ordinary ones (/svc/dns): the rest are the
                                    * network's own services' (/svc/dns-sys) */
-#define DNS_PER_OPENER   8u       /* resolves in flight on one opener's channel */
+#define DNS_PER_OPENER   8u       /* resolves in flight on one opener's channel: a program's
+                                   * (one opener of /svc/dns, <os.h> "grants"), 8 of the 12
+                                   * names programs may have in flight together */
 
 /* An answer: n addresses (host order, <netbytes.h>), kept for ttl s. */
 struct dns_answer {
@@ -40,9 +42,11 @@ handle_t dns_svc(void);
  * from now). Asked again once if the resolver restarted meanwhile.
  * Errors: ERR_NOT_FOUND (no such name, or no IPv4 address),
  * ERR_TIMED_OUT, ERR_INVALID_ARGS (not a name), ERR_BAD_STATE (no DNS
- * servers yet), ERR_NO_RESOURCES (too many in flight), ERR_IO (the
- * servers failed), ERR_NOT_SUPPORTED (the answer needs TCP),
- * ERR_PEER_CLOSED (no resolver). *out only on OK. */
+ * servers yet), ERR_NO_RESOURCES (too many in flight until the deadline:
+ * a lookup past the program's DNS_PER_OPENER, or past what programs may
+ * have in flight together, waits for one to end, as a browser's many
+ * getaddrinfo threads do), ERR_IO (the servers failed), ERR_NOT_SUPPORTED
+ * (the answer needs TCP), ERR_PEER_CLOSED (no resolver). *out only on OK. */
 status_t dns_lookup(const char *name, uint64_t deadline, struct dns_answer *out);
 /* The same on a channel of the caller's (svc_open(SVC_DNS, ...)), asked
  * once. */

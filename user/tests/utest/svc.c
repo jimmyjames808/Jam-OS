@@ -275,10 +275,11 @@ static bool have_svc(const char *name)
 /* A service's shared channel is served under the generated unread bound
  * (8 answers or 8 KiB unread: it stops reading the channel), and its
  * client end is every holder's at once. A child (nschild.c's "ns-flood")
- * writes requests with txids of its own on the shared ends of the music
- * player and the mixer (what any program whose list says `svc music` or
- * `svc audio` may do), and exits without reading: the answers wait on
- * ends init keeps for the boot. Each service must still open
+ * writes requests with txids of its own on the shared ends it is given
+ * (the music player's: what any program whose list says `svc music` may
+ * do; a list's `svc audio` gives an opener of the program's own instead,
+ * <os.h> "grants", which the flood leaves alone), and exits without
+ * reading: the answers wait on ends init keeps for the boot. Each service must still open
  * (svc.connect, its blocking call: answered straight to us, never left on
  * the end). Twice, so a service that came back once is tried again.
  * M12.1 part 1b's finding 1: init reads what lands on its shared ends.

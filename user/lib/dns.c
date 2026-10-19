@@ -8,6 +8,8 @@
 #include <idl/dns.h>
 
 #define MARGIN NS_PER_S   /* the call waits this much past the resolver's timeout */
+#define ROOM_FIRST (10 * NS_PER_MS)    /* the first wait for a lookup in flight to end */
+#define ROOM_MAX   (160 * NS_PER_MS)   /* ... doubling up to this */
 
 handle_t dns_svc(void)
 {
@@ -40,7 +42,8 @@ status_t dns_lookup_on(handle_t dns, const char *name, uint64_t deadline,
     return OK;
 }
 
-status_t dns_lookup(const char *name, uint64_t deadline, struct dns_answer *out)
+/* Asked again once if the resolver restarted meanwhile. */
+static status_t lookup_once(const char *name, uint64_t deadline, struct dns_answer *out)
 {
     handle_t dns = dns_svc();
     if (!dns)
@@ -50,4 +53,19 @@ status_t dns_lookup(const char *name, uint64_t deadline, struct dns_answer *out)
         return st;
     dns = dns_svc();   /* the resolver restarted: its new channel */
     return dns ? dns_lookup_on(dns, name, deadline, out) : st;
+}
+
+status_t dns_lookup(const char *name, uint64_t deadline, struct dns_answer *out)
+{
+    /* Too many in flight: the program's (one opener, DNS_PER_OPENER) or
+     * every program's together. Wait for one to end, a little longer each
+     * time, as long as the deadline allows. */
+    uint64_t pause = ROOM_FIRST;
+    for (;;) {
+        status_t st = lookup_once(name, deadline, out);
+        if (st != ERR_NO_RESOURCES || now() + pause >= deadline)
+            return st;
+        (void)jam_sleep_until(now() + pause);
+        pause = pause * 2 < ROOM_MAX ? pause * 2 : ROOM_MAX;
+    }
 }
