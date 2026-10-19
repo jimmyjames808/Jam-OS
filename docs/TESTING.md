@@ -2000,7 +2000,14 @@ inotify: lost_ignored: ...` on a failure); an id back from an add with `existed`
 watches; `ENOENT`, `ENOTDIR`) that never fire, their `IN_IGNORED` at
 once; `EOPNOTSUPP` on a writable mount without watches (fat, Q1); the
 service closing the channel (`IN_UNMOUNT` and `IN_IGNORED` for each wd,
-to a blocked read within about a second; `fs.watch` asked again). Then
+to a blocked read within about a second; `fs.watch` asked again); a
+process at its 1,024 watches (a second descriptor filled with quiet watches
+of distinct paths) still changing the mask of a watch it holds on the fake
+(`IN_MASK_ADD`, a replaced mask, `IN_MASK_CREATE` `EEXIST`: the same wd,
+the service's watch count unchanged, events by the new mask) while a new
+watch there, by the same or another descriptor, is `ENOSPC` and leaves no
+watch at the service ([IR](INOTIFY-REVIEW.md)'s L15; the line `posixtest:
+inotify: ... the limit was not reached` if the paths run out first). Then
 the real `/data` and `/tmp`: `no watches from its service yet` on a line
 until extfs keeps watches (IE1), then a directory's events in Chromium's
 mask (a create, a write's close, a rename's two halves with one cookie,

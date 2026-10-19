@@ -41,8 +41,11 @@
  *
  * **Limits** (kinds.h, and the three files of /proc/sys/fs/inotify say the
  * same): a process holds INOTIFY_MAX_WATCHES watches, all its descriptors
- * (ENOSPC past that, as a service's refusal is: each volume's service
- * holds a process to the same number there), and INOTIFY_MAX_INSTANCES
+ * (ENOSPC past that for a NEW watch, as a service's refusal is: each
+ * volume's service holds a process to the same number there; a call for
+ * a watch it already holds still changes its mask, as Linux's does: at the
+ * limit the service is asked and a new watch it made is ended again),
+ * and INOTIFY_MAX_INSTANCES
  * descriptors (EMFILE at inotify_init). Linux's are a user's, not a
  * process's.
  *
@@ -658,12 +661,20 @@ static long chan_locked(struct ino *n, const struct path *p, handle_t fs, uint64
 
 /* fswatch.add's answer id (existed) on channel c as a wd. An id we hold
  * that comes back with existed 0 is a new watch: the old one ended and its
- * IN_IGNORED was lost to an overflow (fswatch.idl), so it is made here. */
-static long add_done_locked(struct ino *n, unsigned c, uint32_t id, uint8_t existed)
+ * IN_IGNORED was lost to an overflow (fswatch.idl), so it is made here.
+ * `full`: the process was at its limit when the add was asked (no room was
+ * made): a watch we don't hold is a new one, which the limit refuses, so it
+ * is ended again at the service and the call is ENOSPC. (Its IN_IGNORED
+ * is for an id we don't know: convert_locked drops it.) */
+static long add_done_locked(struct ino *n, unsigned c, uint32_t id, uint8_t existed, bool full)
 {
     struct ino_watch *w = by_id(n, c, id);
     if (w && existed && !w->removed)
         return w->wd;
+    if (!w && full) {
+        (void)fswatch_remove_within(n->chans[c].ch, FILE_TIMEOUT, id);
+        return -ENOSPC;
+    }
     if (w) {
         put_locked(n, w->wd, IN_IGNORED, 0, NULL, 0);
         forget_locked(n, w);
@@ -701,7 +712,11 @@ static long mount_add(struct fd_desc *d, struct path *p, uint32_t mask, bool *no
             r = -EOPNOTSUPP;
             break;
         }
-        if ((r = watch_room_locked(n, others)))
+        /* At the limit the service is asked all the same: a path it already
+         * watches for this channel only changes its mask, as Linux's does at
+         * max_user_watches (INOTIFY-REVIEW L15); a new watch is refused. */
+        bool full = n->nw + others >= INOTIFY_MAX_WATCHES;
+        if (!full && (r = watch_room_locked(n, others)))
             break;
         uint32_t id = 0;
         uint8_t existed = 0;
@@ -714,7 +729,7 @@ static long mount_add(struct fd_desc *d, struct path *p, uint32_t mask, bool *no
         }
         if (st == OK && !id)
             st = ERR_IO;   /* a broken service */
-        r = st == OK ? add_done_locked(n, (unsigned)c, id, existed) : path_err_read(p, st);
+        r = st == OK ? add_done_locked(n, (unsigned)c, id, existed, full) : path_err_read(p, st);
         break;
     }
     held_locked(n);

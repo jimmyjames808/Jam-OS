@@ -229,7 +229,10 @@ New Low and notes (left):
   process at 1,024 watches can't change an existing watch's mask
   (`ENOSPC`; Linux lets it). Since libc's count is the process's (IR2),
   this applies across descriptors; Chromium keeps below
-  `max_user_watches`.
+  `max_user_watches`. **Fixed (SQ):** at the limit libc asks the service
+  all the same: a watch it already holds changes its mask; a new watch the
+  service made is ended again and the call is `ENOSPC` (posixtest inotify,
+  `at_limit`).
 - **N5.** A second give after the bell, and handles on a request, are
   refused `ERR_INVALID_ARGS` with the channel kept (the text above said
   the channel ended; corrected).

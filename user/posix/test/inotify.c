@@ -10,9 +10,11 @@
  * its own serving it. Then the real namespace: quiet watches on "/",
  * libc's trees and /boot; /data and /tmp, whose services serve fs.watch
  * from IE1 (until then EOPNOTSUPP, said and skipped; a writable fat /data
- * must say it); a forked and a spawned child without the descriptor. */
+ * must say it); a forked and a spawned child without the descriptor.
+ * The process's watch limit with a watch on the fake (L15). */
 #include <stdio.h>
 #include <stdlib.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <fswatch.h>
@@ -933,6 +935,92 @@ static void children(void)
     close(fd);
 }
 
+/* ---- at max_user_watches (INOTIFY-REVIEW L15) ---------------------------------------- */
+
+#define FILL_PATHS 1200
+
+/* A process at its limit (all its descriptors together) can still change
+ * the mask of a watch it holds, as Linux's can; only a NEW watch is ENOSPC,
+ * and the refusal leaves no watch behind at the service. fq is filled to the
+ * limit with quiet watches of distinct paths (libc's trees, the boot
+ * image's programs, a /proc/self/fd/N for each descriptor the table has
+ * room for); fd holds a watch on the fake. */
+static void at_limit(void)
+{
+    static char path[FILL_PATHS][48];
+    static int kept[FILL_PATHS];
+    static const char *const fixed[] = { "/", "/etc", "/dev", "/boot", "/boot/bin", "/proc",
+                                         "/proc/self", "/proc/self/fd", "/proc/self/task",
+                                         "/proc/sys", "/proc/sys/kernel", "/proc/sys/fs",
+                                         "/proc/sys/fs/inotify" };
+    unsigned np = 0, nk = 0, filled = 0;
+    int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    int fq = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    int null = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    CHECK(fd >= 0 && fq >= 0 && null >= 0);
+    if (fd < 0 || fq < 0 || null < 0)
+        return;
+    int wd = inotify_add_watch(fd, "/ifake/d", IN_CREATE);
+    CHECK(wd > 0);
+    for (unsigned i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++)
+        snprintf(path[np++], sizeof(path[0]), "%s", fixed[i]);
+    DIR *d = opendir("/boot/bin");
+    for (struct dirent *e; d && np < FILL_PATHS && (e = readdir(d));)
+        if (e->d_name[0] != '.')
+            snprintf(path[np++], sizeof(path[0]), "/boot/bin/%.30s", e->d_name);
+    if (d)
+        closedir(d);
+    for (int n; np < FILL_PATHS && (n = fcntl(null, F_DUPFD_CLOEXEC, 3)) >= 0;) {
+        kept[nk++] = n;
+        snprintf(path[np++], sizeof(path[0]), "/proc/self/fd/%d", n);
+    }
+    int first = -1, err = 0;
+    for (unsigned i = 0; i < np; i++) {
+        int w = inotify_add_watch(fq, path[i], IN_ATTRIB | IN_DONT_FOLLOW);
+        if (w < 0) {
+            err = errno;
+            break;
+        }
+        if (first < 0)
+            first = w;
+        filled++;
+    }
+    if (err != ENOSPC)
+        printf("posixtest: inotify: %u watches made from %u paths, errno %d: the limit was not reached\n",
+               filled, np, err);
+    CHECK(err == ENOSPC && first > 0);
+    unsigned svc = tab.watches;
+    /* A new watch is refused, and the service keeps none of it. */
+    CHECK(inotify_add_watch(fd, "/ifake/e", IN_CREATE) == -1 && errno == ENOSPC);
+    CHECK(tab.watches == svc);
+    CHECK(drain(fd) == 0);   /* nothing for the watch that was ended again */
+    CHECK(inotify_add_watch(fq, "/ifake/d", IN_CREATE) == -1 && errno == ENOSPC);   /* new for fq */
+    CHECK(tab.watches == svc);
+    /* A watch the descriptor holds: its mask changes, its wd stays. */
+    CHECK(inotify_add_watch(fd, "/ifake/d", IN_DELETE) == wd);
+    CHECK(inotify_add_watch(fd, "/ifake/d", IN_CREATE | IN_MASK_CREATE) == -1 && errno == EEXIST);
+    CHECK(tab.watches == svc);
+    change(K_D, "n1", NULL, IN_CREATE);
+    change(K_D, "n2", NULL, IN_DELETE);
+    CHECK(drain(fd) == 1 && is(&evs[0], wd, IN_DELETE, "n2"));   /* CREATE is no longer asked for */
+    CHECK(inotify_add_watch(fd, "/ifake/d", IN_CREATE | IN_MASK_ADD) == wd);
+    change(K_D, "n3", NULL, IN_CREATE);
+    change(K_D, "n4", NULL, IN_DELETE);
+    CHECK(drain(fd) == 2 && is(&evs[0], wd, IN_CREATE, "n3") && is(&evs[1], wd, IN_DELETE, "n4"));
+    /* A quiet watch's too (the first path: "/"). */
+    CHECK(inotify_add_watch(fq, path[0], IN_DELETE_SELF | IN_DONT_FOLLOW) == first);
+    /* A removed watch makes room for a new one. */
+    CHECK(inotify_rm_watch(fq, first) == 0);
+    CHECK(drain(fq) >= 0);
+    CHECK(inotify_add_watch(fd, "/ifake/e", IN_CREATE) > 0);
+    CHECK(tab.watches == svc + 1);
+    for (unsigned i = 0; i < nk; i++)
+        close(kept[i]);
+    close(null);
+    close(fq);
+    close(fd);
+}
+
 int pt_child_inotify(int argc, char **argv)
 {
     int fd = argc > 2 ? atoi(argv[2]) : -1;
@@ -963,6 +1051,7 @@ void pt_inotify(char **argv)
     close(fd);
     close(ep);
     channel_closed();
+    at_limit();
     unmount_fake(&fk);
     unmount_fake(&fkro);
     unmount_fake(&fkfat);
