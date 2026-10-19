@@ -1227,7 +1227,7 @@ static inline status_t idltest_reply_sums(struct idl_txn idl_txn, status_t idl_s
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (IDLTEST_REP_MAX bytes) and the handles it carries
  * into rhs (IDLTEST_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
 static inline uint32_t idltest_dispatch_on(handle_t ch, const struct idltest_ops *ops, void *ctx,
@@ -1237,8 +1237,8 @@ static inline uint32_t idltest_dispatch_on(handle_t ch, const struct idltest_ops
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    if (n < sizeof(uint32_t))
-        return 0;
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)
+        return 0;   /* no txid, or txid 0 (an event's form: this protocol has none) */
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
     if (n < sizeof(struct idl_req_hdr))
@@ -1544,7 +1544,7 @@ static inline status_t idltest_take_slot(handle_t ch, const struct idl_slot *slo
  * in slot->r and the handles that reply carries put into rhs
  * (IDLTEST_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t idltest_run_slot(handle_t ch, const struct idl_slot *slot,
@@ -2018,7 +2018,7 @@ static inline status_t idltest_two_reply_big_later(struct idl_txn idl_txn, statu
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (IDLTEST_TWO_REP_MAX bytes) and the handles it carries
  * into rhs (IDLTEST_TWO_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
 static inline uint32_t idltest_two_dispatch_on(handle_t ch, const struct idltest_two_ops *ops, void *ctx,
@@ -2028,8 +2028,8 @@ static inline uint32_t idltest_two_dispatch_on(handle_t ch, const struct idltest
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    if (n < sizeof(uint32_t))
-        return 0;
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)
+        return 0;   /* no txid, or txid 0 (an event's form: this protocol has none) */
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
     if (n < sizeof(struct idl_req_hdr))
@@ -2133,7 +2133,7 @@ static inline status_t idltest_two_take_slot(handle_t ch, const struct idl_slot 
  * in slot->r and the handles that reply carries put into rhs
  * (IDLTEST_TWO_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t idltest_two_run_slot(handle_t ch, const struct idl_slot *slot,
@@ -4008,7 +4008,7 @@ static inline status_t idltest_h_reply_chans(struct idl_txn idl_txn, status_t id
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (IDLTEST_H_REP_MAX bytes) and the handles it carries
  * into rhs (IDLTEST_H_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it.
  * The idl_nh handles at idl_hs (the call's arguments) are taken in every
@@ -4021,7 +4021,8 @@ static inline uint32_t idltest_h_dispatch_h(handle_t ch, const struct idltest_h_
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    if (n < sizeof(uint32_t)) {
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid) {
+        /* no txid, or txid 0 (an event's form: this protocol has none): never answered */
         idl_close_all(idl_hs, idl_nh);
         return 0;
     }

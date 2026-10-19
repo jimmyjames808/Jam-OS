@@ -146,7 +146,7 @@ bool t_netctl_set_and_clear(void)
     CHECK(!i.address && !i.mask && !i.gateway && !i.dns1 && !i.dns2);
     CHECK_ST(clear(&p), OK);   /* twice is fine */
     /* A request of the wrong size is refused, not taken. */
-    uint32_t junk[2] = { 0, NETCTL_SET_IPV4 };
+    uint32_t junk[2] = { 5, NETCTL_SET_IPV4 };   /* txid 5: with txid 0 it would be dropped */
     CHECK_ST(jam_channel_write(p.cli, junk, sizeof(junk), NULL, 0), OK);
     _Alignas(8) uint8_t rep[NETCTL_REP_MAX];
     struct idl_msg m;

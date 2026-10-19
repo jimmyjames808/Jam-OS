@@ -394,7 +394,7 @@ static inline status_t pkgctl_reply_revoke(struct idl_txn idl_txn, status_t idl_
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (PKGCTL_REP_MAX bytes) and the handles it carries
  * into rhs (PKGCTL_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it.
  * The idl_nh handles at idl_hs (the call's arguments) are taken in every
@@ -407,7 +407,8 @@ static inline uint32_t pkgctl_dispatch_h(handle_t ch, const struct pkgctl_ops *o
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    if (n < sizeof(uint32_t)) {
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid) {
+        /* no txid, or txid 0 (an event's form: this protocol has none): never answered */
         idl_close_all(idl_hs, idl_nh);
         return 0;
     }

@@ -369,11 +369,6 @@ static bool t_stall_recovered(void)
     return true;
 }
 
-/* More requests queued on DR_SERVE than usb-bus takes in one pass (64):
- * the channel stays readable, so no new port edge comes; usb-bus must come
- * back for the rest by itself, or DR_SERVE is dead for good (this call,
- * and devmgr's stop, never answered). txid 0: the replies go to devmgr's
- * end, which drops them. */
 static bool t_set_interface(void)
 {
     const struct dev *d = NULL;
@@ -422,13 +417,21 @@ static bool t_set_interface(void)
     return true;
 }
 
+/* More requests queued on DR_SERVE than usb-bus takes in one pass (64):
+ * the channel stays readable, so no new port edge comes; usb-bus must come
+ * back for the rest by itself, or DR_SERVE is dead for good (this call,
+ * and devmgr's stop, never answered). Each request has a txid of its own
+ * (a call with txid 0 is an event's form: the server drops it unanswered)
+ * and its reply is taken off the channel here, unread by anyone else. */
 static bool t_serve_backlog(void)
 {
     struct usbbus_status_req q = { .txid = 0, .ordinal = USBBUS_STATUS };
     unsigned sent = 0;
-    for (int i = 0; i < 300; i++)
+    for (int i = 0; i < 300; i++) {
+        q.txid = i + 1;   /* a call with txid 0 is an event's form: dropped, never answered */
         if (jam_channel_write(bus, &q, sizeof(q), NULL, 0) == OK)
             sent++;
+    }
     struct bus_status b;
     status_t st = get_status(&b);
     if (st != OK)

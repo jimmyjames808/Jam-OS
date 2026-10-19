@@ -106,7 +106,10 @@ In a protocol with events, a server never answers a message with txid 0
 is dropped, its handles closed; so is a call sent with txid 0), and it
 answers an event sent with a txid ERR_INVALID_ARGS (its sender may be
 waiting). <PROTO>_REQ_MAX and <PROTO>_REP_MAX count the events to the
-server and to the client.
+server and to the client. A protocol without events has no message with
+txid 0 either: a call sent with txid 0 is dropped the same way, its
+handles closed, never served into the void (a reply with txid 0 would be
+taken for an event, and no caller waits for it).
 
 Message buffers: a generated function keeps them on its stack up to
 IDL_STACK_MAX (4 KiB) together; a method whose request and reply pass it
@@ -296,8 +299,8 @@ The ordinal on the wire is (id << 16) | ordinal, so a request sent to a
 server of another protocol fails with ERR_NOT_SUPPORTED instead of being
 taken for a different method. A request of the wrong size, one with the
 wrong number of handles, or one too big for any method gets
-ERR_INVALID_ARGS (its handles closed); one shorter than 4 bytes (no txid)
-is dropped without a reply.
+ERR_INVALID_ARGS (its handles closed); one shorter than 4 bytes (no txid),
+or with txid 0, is dropped without a reply (its handles closed).
 
 Run from the repository root (the Makefile does)."""
 import glob
@@ -2799,7 +2802,7 @@ def gen_protocol(p):
         f"/* Decode the request of n bytes at req, which came on ch, call its handler,",
         f" * encode the reply into rep ({U}_REP_MAX bytes) and the handles it carries",
         f" * into rhs ({U}_REP_HANDLES slots; *rhn of them). Returns the reply's",
-        " * length: 0 means no reply (the request has no txid, or a `later`",
+        " * length: 0 means no reply (the request has no txid or txid 0, or a `later`",
         " * handler answers it itself). No I/O; the caller sends the reply with the",
         " * handles, or closes them if it never sends it. */",
     ]
@@ -2872,7 +2875,8 @@ def gen_protocol(p):
                 out.append("        idl_close_all(idl_hs, idl_nh);")
             out.append("        return sizeof(*idl_h);   /* an event with a txid */")
     elif hin:   # calls take handles, no events: a short message's are closed
-        out += ["    if (n < sizeof(uint32_t)) {",
+        out += ["    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid) {",
+                "        /* no txid, or txid 0 (an event's form: this protocol has none): never answered */",
                 "        idl_close_all(idl_hs, idl_nh);",
                 "        return 0;",
                 "    }",
@@ -2884,8 +2888,8 @@ def gen_protocol(p):
                 "    }",
                 "    switch (((const struct idl_req_hdr *)req)->ordinal) {"]
     else:
-        out += ["    if (n < sizeof(uint32_t))",
-                "        return 0;",
+        out += ["    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)",
+                "        return 0;   /* no txid, or txid 0 (an event's form: this protocol has none) */",
                 "    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;",
                 "    idl_h->status = ERR_INVALID_ARGS;",
                 "    if (n < sizeof(struct idl_req_hdr))",
@@ -2981,7 +2985,7 @@ def gen_protocol(p):
             " * in slot->r and the handles that reply carries put into rhs",
             f" * ({U}_REP_HANDLES slots; *rhn of them). A request that carried handles is",
             " * answered ERR_INVALID_ARGS without its handler seeing it. Returns the",
-            " * reply's length: 0 means no reply (no txid, or a `later` handler",
+            " * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler",
             " * answers it itself). No I/O; the caller sends the reply with the handles,",
             " * or closes them if it never sends it. */",
             f"static inline uint32_t {P}_run_slot(handle_t ch, const struct idl_slot *slot,",
@@ -3769,9 +3773,38 @@ def selftest():
         if got is None or want not in got:
             print(f"genidl selftest: {what}: wanted {want!r}, got {got or 'a pass'!r}")
             bad += 1
+    # Every generated server drops a call with txid 0 (an event's form, never
+    # answered), whether the protocol has events or not, handle arguments or
+    # not: its dispatch tests the txid before it runs any handler (INOTIFY-REVIEW
+    # L14: a protocol without events used to serve it into the void).
+    guard = "!((const struct idl_req_hdr *)req)->txid"
+
+    def has_guard(name):
+        def fn():
+            run("gen")
+            text = open(os.path.join(OUT_DIR, name + ".h")).read()
+            for fn_name in (f"{name}_dispatch_h", f"{name}_dispatch_on"):
+                start = text.find(f"static inline uint32_t {fn_name}(")
+                if start >= 0:
+                    end = text.find("\n}\n", start)
+                    if guard in text[start:end]:
+                        return
+                    sys.exit(f"{fn_name} doesn't test the txid")
+            sys.exit("no dispatch function")
+        return fn
+    for what, body in (
+            ("a call with txid 0, no events", "1 a (u32 x) -> (u32 y)\n"),
+            ("a call with txid 0, handle arguments", "1 a (handle h) -> ()\n"),
+            ("a call with txid 0, events to the server", "1 a (u32 x) -> ()\n2 b (u32 x) event\n"),
+            ("a call with txid 0, events to the client", "1 a (u32 x) -> ()\n2 b -> (u32 x) event\n")):
+        got = in_tree(t_ok(body), None, has_guard("t"))
+        if got is not None:
+            print(f"genidl selftest: {what}: {got}")
+            bad += 1
+    total = len(SELFTESTS) + 3 + 4
     if bad:
-        sys.exit(f"genidl selftest: {bad} of {len(SELFTESTS) + 3} failed")
-    print(f"genidl selftest: {len(SELFTESTS) + 3} passed")
+        sys.exit(f"genidl selftest: {bad} of {total} failed")
+    print(f"genidl selftest: {total} passed")
 
 
 if __name__ == "__main__":

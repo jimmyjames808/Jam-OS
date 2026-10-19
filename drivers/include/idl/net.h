@@ -1417,7 +1417,7 @@ static inline status_t net_reply_tcp_listener(struct idl_txn idl_txn, status_t i
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (NET_REP_MAX bytes) and the handles it carries
  * into rhs (NET_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
 static inline uint32_t net_dispatch_on(handle_t ch, const struct net_ops *ops, void *ctx,
@@ -1427,8 +1427,8 @@ static inline uint32_t net_dispatch_on(handle_t ch, const struct net_ops *ops, v
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    if (n < sizeof(uint32_t))
-        return 0;
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)
+        return 0;   /* no txid, or txid 0 (an event's form: this protocol has none) */
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
     if (n < sizeof(struct idl_req_hdr))
@@ -1739,7 +1739,7 @@ static inline status_t net_take_slot(handle_t ch, const struct idl_slot *slot,
  * in slot->r and the handles that reply carries put into rhs
  * (NET_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t net_run_slot(handle_t ch, const struct idl_slot *slot,
@@ -2319,7 +2319,7 @@ static inline status_t net_socket_reply_loopback_only(struct idl_txn idl_txn, st
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (NET_SOCKET_REP_MAX bytes) and the handles it carries
  * into rhs (NET_SOCKET_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
 static inline uint32_t net_socket_dispatch_on(handle_t ch, const struct net_socket_ops *ops, void *ctx,
@@ -2330,8 +2330,8 @@ static inline uint32_t net_socket_dispatch_on(handle_t ch, const struct net_sock
     *rhn = 0;
     (void)rhs;
     (void)ch;
-    if (n < sizeof(uint32_t))
-        return 0;
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)
+        return 0;   /* no txid, or txid 0 (an event's form: this protocol has none) */
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
     if (n < sizeof(struct idl_req_hdr))
@@ -2472,7 +2472,7 @@ static inline status_t net_socket_take_slot(handle_t ch, const struct idl_slot *
  * in slot->r and the handles that reply carries put into rhs
  * (NET_SOCKET_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t net_socket_run_slot(handle_t ch, const struct idl_slot *slot,
@@ -2831,7 +2831,7 @@ static inline status_t net_stream_reply_set_options(struct idl_txn idl_txn, stat
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (NET_STREAM_REP_MAX bytes) and the handles it carries
  * into rhs (NET_STREAM_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
 static inline uint32_t net_stream_dispatch_on(handle_t ch, const struct net_stream_ops *ops, void *ctx,
@@ -2842,8 +2842,8 @@ static inline uint32_t net_stream_dispatch_on(handle_t ch, const struct net_stre
     *rhn = 0;
     (void)rhs;
     (void)ch;
-    if (n < sizeof(uint32_t))
-        return 0;
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)
+        return 0;   /* no txid, or txid 0 (an event's form: this protocol has none) */
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
     if (n < sizeof(struct idl_req_hdr))
@@ -2931,7 +2931,7 @@ static inline status_t net_stream_take_slot(handle_t ch, const struct idl_slot *
  * in slot->r and the handles that reply carries put into rhs
  * (NET_STREAM_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t net_stream_run_slot(handle_t ch, const struct idl_slot *slot,
@@ -3223,7 +3223,7 @@ static inline status_t net_listener_reply_accept(struct idl_txn idl_txn, status_
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (NET_LISTENER_REP_MAX bytes) and the handles it carries
  * into rhs (NET_LISTENER_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
 static inline uint32_t net_listener_dispatch_on(handle_t ch, const struct net_listener_ops *ops, void *ctx,
@@ -3233,8 +3233,8 @@ static inline uint32_t net_listener_dispatch_on(handle_t ch, const struct net_li
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    if (n < sizeof(uint32_t))
-        return 0;
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)
+        return 0;   /* no txid, or txid 0 (an event's form: this protocol has none) */
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
     if (n < sizeof(struct idl_req_hdr))
@@ -3337,7 +3337,7 @@ static inline status_t net_listener_take_slot(handle_t ch, const struct idl_slot
  * in slot->r and the handles that reply carries put into rhs
  * (NET_LISTENER_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t net_listener_run_slot(handle_t ch, const struct idl_slot *slot,
