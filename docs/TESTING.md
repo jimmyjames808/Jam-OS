@@ -322,7 +322,11 @@ blocks allocated), or FAT's on a FAT stick. CBF6's cases in `files2.c`:
 in it), and 255-byte names nested through directory descriptors (the start
 of base's `DeleteDeep`) as far as a path of 4,095 bytes goes, the next level
 `ENAMETOOLONG` and a 256-byte name `ENAMETOOLONG`, all removed again from
-the bottom.
+the bottom. DL0's `path_bases`: a relative path ends where its absolute form
+does, from `/` (a mount named without a slash), a mount's root, a directory
+by the current directory and by a descriptor (with `.`, `..` and doubled
+slashes), a directory reached through a link (ext only) and a `/proc`
+directory ([DIRHANDLE-PLAN](DIRHANDLE-PLAN.md#dl0-notes)).
 
 Examples:
 
