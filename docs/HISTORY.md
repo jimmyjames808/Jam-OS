@@ -30,6 +30,97 @@ hashes are commits on main.
   2% of a process-to-process call; the cost was on the user side of the
   boundary.
 
+## Writable file mappings (on ext)
+
+*Planned 2026-10-16, built 2026-10-16 to 2026-10-18, reviewed and fixed
+2026-10-18, the review's error question closed 2026-10-20.* A shared
+mapping of a file with write access (`MAP_SHARED` with `PROT_WRITE`) was
+`ENODEV`. Chromium's `base::MemoryMappedFile` with `READ_WRITE` backs its
+persistent histograms and some databases, and the first `base_unittests`
+run met the error. The owner (2026-10-16): build them now, **on ext only**;
+FAT keeps read-only mappings. This reversed, for ext, M12.5's "every page of
+a pager VMO is clean" and M13.6's "no writable shared mappings".
+
+How it works:
+- **The kernel** (`kernel/object/vmo.c`, `pager.c`, `pager_cache.c`,
+  `kernel/mm/aspace.c`). A pager VMO may be made writable (a flag at its
+  creation). Its pages are clean, dirty or writing. A clean page is mapped
+  read-only everywhere, so the first store faults and the kernel marks it
+  dirty. The filesystem asks for dirty pages (`pager_dirty`): the kernel
+  write-protects them in every mapping, shoots the stale entries down, and
+  only then copies them out, so a store after the copy faults and dirties
+  the page again and is never lost. The filesystem writes them and says
+  `PAGER_OP_WRITTEN`, which makes them clean unless a store came
+  meanwhile. Write-back requests are a new request kind, made by the
+  background count, `msync` (`vmo_sync`) and the dirty limit.
+- **Never evicted, never unbounded.** A dirty page is never evicted. A
+  pager may have a quarter of its budget dirty; a writer that meets the
+  limit waits for write-back with a deadline (the pager's answer time),
+  never forever, and a copy that cannot wait returns `ERR_IO`. A dirty page
+  holds its VMO ("the hold"), so stores outlive `munmap`, the program and
+  an extfs restart.
+- **extfs keeps one cache** (`user/services/extfs/pager.c`, `wback.c`):
+  one VMO per file, keyed by the inode and found again while it lives
+  (`PAGER_VMO_FIND`); `file.write` stays write-through (an answered write is
+  on the medium) and writes the bytes into the pages too, `read` peeks at
+  dirty pages, so a mapping, `read` and `write` see one file. Write-back is
+  a journal transaction of its own (up to 32 runs, clipped to the size,
+  holes and unwritten extents filled in ordered mode); by age once a
+  second, for `file.sync`, `fs.sync`, the dirty limit and an orderly stop.
+  A file with a writable mapping cannot be run, and a running file cannot
+  be mapped writable (`ETXTBSY`/`ERR_BUSY`, M12.5's Q7 both ways).
+- **libc** (`user/posix/sys/mem.c`, `file.c`): every `MAP_SHARED` of an
+  `O_RDWR` descriptor asks for a writable VMO, as Linux decides at `mmap`;
+  `msync` calls `vmo_sync` per shared entry, `MS_SYNC` waiting; FAT answers
+  `ENODEV`.
+
+The owner's answers: a write-back that fails (**Linux's way**: the pages
+become clean, the error is kept and the next `msync` or `fsync` reports it
+once; a "reserve at the first store" check can come later), and **how long a
+store may wait for the disk: 10 seconds to start with**, a setting
+(`files.writeback`, 1 to 600 s) read at mount and on a settings change, not
+a constant. Decided as technical: one VMO per file keyed by the inode,
+dirty bits by write-protection, the limit at a quarter of the budget, no
+kernel timer, `vmo_write` refused, `MS_ASYNC` asking for write-back.
+
+The tracks: WK1 (writable pager VMOs, the states, FIND, the hold, `pager_dirty`,
+`pager_write`), WK2 (write-back), WK3 (the dirty limit, the store's wait,
+`vmo_sync`), WE1 and WE2 (extfs's cache and write-back), WL1 (libc), WT1 (the
+end-to-end tests), WR (the review), WR2 and WQ (errors to every mapper). New
+calls: `pager_dirty` (165), `pager_write` (166), `vmo_sync` (50); the ABI
+stamp moved with WK3, WR and WR2.
+
+Tests worth knowing: `pagertest rec` stores CRC'd records through a writable
+mapping, and `tools/pager-test.sh` runs them hard: `wmsync` (extfs killed with
+`msync`ed and dirty records, a monitor quit, `e2fsck` clean), `wcut` (QEMU
+killed at six points of a store-and-`msync` storm: every acknowledged
+record whole after Linux's replay), `wpress` (64 MiB stored three times
+under an 8 MiB dirty limit beside a reader), and `whostile` (eight writers
+in two processes, extfs killed every 200 ms, then a power cut). ktests in
+`test_pager_dirty.c` cover the states, the waits, the hold and an 8-thread
+store storm. Eight writable-mapping `base_unittests` came off the skip list
+(35 of 35 in their suites; on the FAT list instead).
+
+The review (docs/WRITEMAP-REVIEW.md, ahead of CB5's processes sharing
+memory): 0 High, 3 Medium, 6 Low. Fixed with a test each: a page whose
+write-back failed stays "kept", so `read` shows what every mapping shows;
+a shared VMO a fresh extfs instance finds with no slot is found again on
+`write`, `truncate` and the run check, instead of being overwritten by its
+dirty page's older bytes; a map racing another process's last `unmap` takes
+over the dying VMO's key. Its design question on errors was answered yes
+and built (WR2): the error is reported once to **each** mapping and each
+open (Linux's errseq: `vmo_sync` takes a sample, libc samples each shared
+mapping, extfs numbers errors per slot), and WQ closed a window where an
+`fsync` run again after an extfs death said 0.
+
+Still open (design questions the review left to the main session): a store's
+deadline counts from its first wait, so a healthy writer behind a busy pager
+can be killed (recommended: from the pager's last progress); an orderly
+stop writes back for about 3 s at most (recommended: bounded by progress);
+and a freeze that starves behind a waiting writer (FR1's option (b), before
+the sandbox's renderers). None blocks Chromium. FAT stays read-only for
+mappings.
+
 ## File watching (inotify)
 
 *Planned 2026-10-17, built, reviewed and fixed 2026-10-18 to 2026-10-19.*

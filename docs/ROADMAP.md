@@ -107,7 +107,7 @@ On Chromium's path (in roughly this order, much of it in parallel):
     and metrics files), with `msync` the durability promise; ext only,
     FAT stays read-only (the owner, 2026-10-16): dirty tracking and
     write-back in the kernel, extfs writing pages back in its journal;
-    planned in [WRITEMAP-PLAN.md](WRITEMAP-PLAN.md) (about 1k in the
+    built, see [HISTORY.md](HISTORY.md#writable-file-mappings-on-ext) (about 1k in the
     kernel, 0.85k in extfs and libc);
   - file watching (inotify: base's `FilePathWatcher`, 165 tests): built
     2026-10-18 ([HISTORY.md](HISTORY.md#file-watching-inotify): the file services make

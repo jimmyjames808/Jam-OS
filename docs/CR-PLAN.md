@@ -2101,7 +2101,7 @@ hint; Chromium's programs above 4 GiB by a link flag) and D5 (`--build-id`).
 
 #### WT1 (2026-10-18)
 
-Track WT1 (branch `wt1-wmap-tests`, [WRITEMAP-PLAN](WRITEMAP-PLAN.md#wt1-notes)):
+Track WT1 (branch `wt1-wmap-tests`, [HISTORY](HISTORY.md#writable-file-mappings-on-ext)):
 the eight writable-mapping tests, run with `CR_BASE_ONLY="MemoryMappedFileTest
 FilePersistentMemoryAllocatorTest PersistentHistogramAllocatorTest
 PersistentMemoryAllocatorTest" CR_BASE_ALL=1` (35 tests of the four
@@ -3259,7 +3259,7 @@ a renderer per site). Three pieces, all general:
   Writable shared mappings (`base::MemoryMappedFile` `READ_WRITE`: the
   persistent histograms' and metrics files, some databases; CB2's
   finding) come on ext only, with `msync` the durability promise (the
-  owner, 2026-10-16): [WRITEMAP-PLAN.md](WRITEMAP-PLAN.md). FAT keeps
+  owner, 2026-10-16): [HISTORY.md](HISTORY.md#writable-file-mappings-on-ext). FAT keeps
   ENODEV.
   ICU's data and V8's snapshot are compiled in (`icu_use_data_file=false`,
   `v8_use_external_startup_data=false`), so fewer files are mapped.
