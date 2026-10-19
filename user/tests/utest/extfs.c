@@ -197,7 +197,7 @@ bool t_extfs_basic(void)
     CHECK_EQ(magic, 0xef53u);
     CHECK_EQ(name_max, 255u);
     CHECK_EQ(feat, FS_FEAT_LINKS | FS_FEAT_MODES | FS_FEAT_CASE | FS_FEAT_BIG |
-                   FS_FEAT_MULTI_WRITER);
+                   FS_FEAT_MULTI_WRITER | FS_FEAT_DIRS);
     CHECK(!ro && total > 28u << 20 && fr < total && !memcmp(label, "jam", 4));
 
     CHECK_ST(t_mkdir(&r, "/d"), OK);

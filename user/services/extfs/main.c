@@ -272,7 +272,7 @@ static void idle(void)
  * closed file already: files_reap), every packet on the port is taken and
  * kept in order, the closed files among them, judged by their channels'
  * own signals, are handled first, and the loop serves the rest after. */
-#define ORDER_ROOM (XF_MAX_FILES + XF_VIEWS + FSW_CHANNELS + 8)   /* every binding at once */
+#define ORDER_ROOM (XF_MAX_FILES + XF_VIEWS + FSW_CHANNELS + XF_DIRS + 8)   /* every binding */
 static struct port_packet order_q[ORDER_ROOM];
 static struct fsw_order   order = { .q = order_q, .cap = ORDER_ROOM };
 
@@ -328,6 +328,7 @@ static status_t run(handle_t serve, handle_t ctl)
             }
             own_unheld();
             views_unheld();
+            dirs_unheld();
             files_unheld();
             watch_unheld();
         }
@@ -361,6 +362,8 @@ static status_t run(handle_t serve, handle_t ctl)
             watch_event(pkt.key);
         } else if (pkt.key & XF_KEY_LOCK_BIT) {
             locks_event(pkt.key);
+        } else if (pkt.key & XF_KEY_DIR_BIT) {
+            dirs_event(pkt.key);
         } else if (pkt.key == XF_KEY_FS) {
             if (fs_unread_full(serve)) {
                 fs_held = true;

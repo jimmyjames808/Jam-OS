@@ -11,14 +11,26 @@
  * the caller's namespace), so a link on a shared volume can't make one
  * program's open reach another's mounts.
  *
+ * A directory channel's path (fs.opendir) starts at its directory unless
+ * it starts with '/' (docs/DIRHANDLE-PLAN.md 3.1): a ".." there is the
+ * directory's own ".." entry, which ext keeps right across renames, up to
+ * the view's root and ERR_LINK_OUT above it as from the root itself.
+ *
  * Where a path lies is kept as it is walked: its region (<fsview.h>: the
- * depth below the volume's root and its first two names' class; a view's
- * root's first, then each name pushed; ".." pops one), and `phys`, the
- * same place as text, which only fs.resolve's answer reads
- * (docs/DIRHANDLE-PLAN.md 3.2). The view's flags are judged on the
- * region, where the path resolves, not on the string asked for: a link
- * into `etc` is refused as `etc` itself is (the views' shared code,
- * fs_view_dispatch, checks the string first, and stays the first line).
+ * depth below the volume's root and its first two names' class; the
+ * start's first, then each name pushed; ".." pops one), and `rel`, the
+ * names below where it started as text, which only fs.resolve's answer
+ * reads (3.2): nothing is ever text from the volume's root, so no place is
+ * too deep to walk from. Where a view's root or a directory channel's
+ * directory lies is found by climbing its ".." entries to the volume's
+ * root and kept (struct xf_place) until a rename moves a directory (the
+ * epoch): a subview whose root was moved into `etc` is judged there, and a
+ * directory channel whose directory was moved out of its view's reach, or
+ * where the view hides, is cut off (ERR_NOT_FOUND, Q2) while it lies
+ * there. The view's flags are judged on the region, where the path
+ * resolves, not on the string asked for: a link into `etc` is refused as
+ * `etc` itself is (the views' shared code, fs_view_dispatch, checks the
+ * string first, and stays the first line).
  * A directory the view hides wholly (`etc/ssh` from a view that hides the
  * keys; all of `etc` from one that hides it all) can't even be walked
  * through, so a path that goes in and comes out with ".." learns nothing
@@ -34,14 +46,20 @@
  * a guard against mistakes, not authority. */
 #include "extfs.h"
 
-#define DEPTH_MAX (FS_PATH_LEN / 2 + 2)   /* directories a path can be below its view's root */
+#define DEPTH_MAX (FS_PATH_LEN / 2 + 2)   /* directories a path can be below its start */
+#define CLIMB_MAX 65536u                  /* levels a climb goes up at most */
 
 /* The path still to walk, at the end of rest_buf (a link's target is put
- * in front of it), and the directories walked into below the view's root
- * (stack[0] is the root). */
+ * in front of it), and the directories walked into below where it
+ * started (stack[0]: the view's root or a directory channel's directory). */
 static char rest_buf[2 * FS_PATH_LEN + 2];
 static char target[FS_PATH_LEN + 1];
 static uint32_t stack[DEPTH_MAX];
+static char up_buf[FS_PATH_LEN + 1];   /* walk_inside's climb, named from its end */
+
+/* Places found at an older epoch are found again (walk_moved). A
+ * successor starts at 1, so every place is climbed once after a restart. */
+static uint64_t epoch = 1;
 
 bool may(const struct ext_inode *in, unsigned want)
 {
@@ -60,30 +78,151 @@ static bool is_link(const struct ext_inode *in)
 }
 
 /* w goes on to the name (len bytes) in the place it has reached: its
- * region, and "/name" (or "name" at the volume's root) on w->phys. */
-static status_t place_push(struct xf_walk *w, const char *name, uint32_t len)
+ * region, and "/name" (or "name" first) on w->rel while it fits. */
+static void place_push(struct xf_walk *w, const char *name, uint32_t len)
 {
-    uint32_t sep = w->phys_len ? 1 : 0;
-    if (w->phys_len + sep + len > FS_PATH_LEN)
-        return ERR_NAME_TOO_LONG;
-    if (sep)
-        w->phys[w->phys_len++] = '/';
-    memcpy(w->phys + w->phys_len, name, len);
-    w->phys_len += len;
-    w->phys[w->phys_len] = '\0';
+    uint32_t sep = w->rel_len ? 1 : 0;
     w->region = fs_region_child(w->region, name, len);
-    return OK;
+    if (w->rel_long || w->rel_len + sep + len > FS_PATH_LEN) {
+        w->rel_long = true;   /* only fs.resolve's answer needed it */
+        return;
+    }
+    if (sep)
+        w->rel[w->rel_len++] = '/';
+    memcpy(w->rel + w->rel_len, name, len);
+    w->rel_len += len;
+    w->rel[w->rel_len] = '\0';
 }
 
 /* w goes back to the directory its place lies in (".."). */
 static void place_pop(struct xf_walk *w)
 {
-    while (w->phys_len && w->phys[w->phys_len - 1] != '/')
-        w->phys_len--;
-    if (w->phys_len)
-        w->phys_len--;
-    w->phys[w->phys_len] = '\0';
+    while (w->rel_len && w->rel[w->rel_len - 1] != '/')
+        w->rel_len--;
+    if (w->rel_len)
+        w->rel_len--;
+    w->rel[w->rel_len] = '\0';
     w->region = fs_region_parent(w->region);
+}
+
+/* ---- where a directory lies -------------------------------------------------------- */
+
+void walk_moved(void)
+{
+    epoch++;
+}
+
+struct xf_place walk_place_of(const struct xf_walk *w)
+{
+    return (struct xf_place){ .epoch = epoch, .st = OK, .region = w->region };
+}
+
+/* The directory in's ".." entry: its parent (0: none, damaged). "." and
+ * ".." are a directory's first two entries. */
+static uint32_t parent_of(struct ext_inode *in)
+{
+    uint64_t pos = 0;
+    struct ext_dentry e;
+    for (unsigned i = 0; i < 2 && ext_dir_next(&vol.fs, in, &pos, &e) == OK && e.ino; i++)
+        if (e.name_len == 2 && e.name[0] == '.' && e.name[1] == '.')
+            return e.ino;
+    return 0;
+}
+
+/* The name directory child has in directory parent (a scan of its
+ * entries), into name (EXT_NAME_MAX + 1 bytes). ERR_IO if it has none: its
+ * ".." names a parent that doesn't hold it. */
+static status_t name_of(uint32_t parent, uint32_t child, char *name, uint32_t *len)
+{
+    struct ext_inode p;
+    struct ext_dentry e;
+    uint64_t pos = 0;
+    status_t st = ext_iget(&vol.fs, parent, 0, &p);
+    while (st == OK && (st = ext_dir_next(&vol.fs, &p, &pos, &e)) == OK && e.ino) {
+        bool dot = e.name[0] == '.' && (e.name_len == 1 || (e.name_len == 2 && e.name[1] == '.'));
+        if (e.ino != child || dot)
+            continue;
+        memcpy(name, e.name, e.name_len);
+        *len = e.name_len;
+        return OK;
+    }
+    return st == OK || st == ERR_NOT_FOUND ? ERR_IO : st;
+}
+
+status_t walk_place(struct xf_place *p, uint32_t ino, uint32_t gen, uint32_t stop,
+                    uint32_t stop_gen)
+{
+    if (p->epoch == epoch)
+        return p->st;
+    struct ext_fs *fs = &vol.fs;
+    struct ext_inode in;
+    /* below[0]: the last directory met before the root (the root's child
+     * on the way), below[1] the one before it. */
+    uint32_t depth = 0, at = ino, below[2] = { 0, 0 };
+    bool reach = !stop;
+    status_t st;
+    for (;;) {
+        st = ext_iget(fs, at, 0, &in);
+        if (st == OK && ((gen && in.d.generation != gen) || !is_dir(&in)))
+            st = ERR_NOT_FOUND;
+        if (st == ERR_OUT_OF_RANGE)
+            st = ERR_NOT_FOUND;
+        if (st != OK) {
+            if (at != ino && st == ERR_NOT_FOUND)
+                st = ERR_IO;   /* a ".." naming no directory */
+            break;
+        }
+        if (at == stop && (!stop_gen || in.d.generation == stop_gen))
+            reach = true;
+        if (at == EXT_ROOT_INO)
+            break;
+        if (++depth > CLIMB_MAX || !(at = parent_of(&in))) {
+            st = depth > CLIMB_MAX ? ERR_NAME_TOO_LONG : ERR_IO;
+            break;
+        }
+        below[1] = below[0];
+        below[0] = in.ino;
+        gen = 0;
+    }
+    /* Its region: the class of the first two names (the second only in
+     * etc), named by a scan of the root and of etc. */
+    struct fs_region r = { .depth = 0, .cls = FS_REGION_ROOT };
+    char name[EXT_NAME_MAX + 1];
+    uint32_t len = 0;
+    if (st == OK && depth && (st = name_of(EXT_ROOT_INO, below[0], name, &len)) == OK)
+        r = fs_region_child(r, name, len);
+    if (st == OK && depth >= 2 && r.cls == FS_REGION_ETC &&
+        (st = name_of(below[0], below[1], name, &len)) == OK)
+        r = fs_region_child(r, name, len);
+    r.depth = depth;
+    if (st == OK && !reach)
+        st = ERR_NOT_FOUND;
+    *p = (struct xf_place){ .epoch = st == ERR_IO ? 0 : epoch, .st = st, .region = r };
+    return st;
+}
+
+/* Where a walk starts (*out): the view's root, or (from_dir) a directory
+ * channel's directory, cut off while it lies outside the view or where the
+ * view hides (ERR_NOT_FOUND). */
+static status_t start_of(const struct xf_ctx *c, bool from_dir, struct fs_region *out)
+{
+    struct xf_place here = { 0 };
+    if (from_dir) {
+        struct xf_place *p = c->dir_at ? c->dir_at : &here;
+        status_t st = walk_place(p, c->dir_ino, c->dir_igen, c->root_ino,
+                                 c->view >= 0 ? c->root_igen : 0);
+        if (st == OK && fs_region_hides(c->flags, p->region, false))
+            st = ERR_NOT_FOUND;
+        *out = p->region;
+        return st;
+    }
+    *out = (struct fs_region){ .depth = 0, .cls = FS_REGION_ROOT };
+    if (c->root_ino == EXT_ROOT_INO)
+        return OK;
+    struct xf_place *p = c->root_at ? c->root_at : &here;
+    status_t st = walk_place(p, c->root_ino, c->view >= 0 ? c->root_igen : 0, 0, 0);
+    *out = p->region;
+    return st;
 }
 
 /* A wholly hidden directory (the hiding flags' "stat" rule: etc itself is
@@ -137,23 +276,39 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
     w->used = 0;
     w->next_len = 0;
     w->name = (struct ext_name){ .s = w->namebuf, .len = 0 };
-    if (len > FS_PATH_LEN || c->root_len >= sizeof(w->phys))
+    w->rel_len = 0;
+    w->rel[0] = '\0';
+    w->rel_long = false;
+    if (len > FS_PATH_LEN)
         return ERR_NAME_TOO_LONG;
-    memcpy(w->phys, c->root, c->root_len);
-    w->phys_len = c->root_len;
-    w->phys[w->phys_len] = '\0';
-    w->region = fs_region_of(c->root, c->root_len);
-
+    bool from_dir = c->dir_ino && !(len && path[0] == '/');
+    uint32_t start = from_dir ? c->dir_ino : c->root_ino;
     struct ext_inode cur;
-    status_t st = ext_iget(fs, c->root_ino, 0, &cur);
-    if (st == OK && c->view >= 0 && cur.d.generation != c->root_igen)
-        st = ERR_NOT_FOUND;   /* the view's root was removed (and its inode used again) */
-    if (st == OK && !is_dir(&cur))
-        st = ERR_NOT_DIR;
-    if (st != OK)
-        return st;
+    status_t st = OK;
+    if (c->dir_ino) {
+        /* A directory channel's directory, whatever the path: there (not
+         * removed, its inode not used again), and where its view reaches. */
+        st = start_of(c, true, &w->region);
+        if (st == OK)
+            st = ext_iget(fs, c->dir_ino, 0, &cur);
+        if (st == OK && (cur.d.generation != c->dir_igen || !is_dir(&cur)))
+            st = ERR_NOT_FOUND;
+        if (st != OK)
+            return st == ERR_OUT_OF_RANGE ? ERR_NOT_FOUND : st;
+    }
+    if (!from_dir) {
+        st = start_of(c, false, &w->region);
+        if (st == OK)
+            st = ext_iget(fs, c->root_ino, 0, &cur);
+        if (st == OK && c->view >= 0 && cur.d.generation != c->root_igen)
+            st = ERR_NOT_FOUND;   /* the view's root was removed (and its inode used again) */
+        if (st == OK && !is_dir(&cur))
+            st = ERR_NOT_DIR;
+        if (st != OK)
+            return st;
+    }
     unsigned depth = 0;
-    stack[0] = c->root_ino;
+    stack[0] = w->base = start;
     w->in = cur;
 
     /* rest: what is left to walk, at the end of rest_buf; orig: how much of
@@ -192,8 +347,29 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
             continue;
         }
         if (clen == 2 && comp[0] == '.' && comp[1] == '.') {
-            if (!depth)
+            if (!depth && stack[0] == c->root_ino &&
+                (c->view < 0 || cur.d.generation == c->root_igen))
                 return link_out(w, FS_RESOLVE_ABOVE, used, NULL, 0, r, rlen);
+            if (!depth) {
+                /* A directory channel's start (or a directory its ".."
+                 * reached): its own "..". One that reaches the volume's
+                 * root before the view's has left the view. */
+                uint32_t up = stack[0] == EXT_ROOT_INO ? 0 : parent_of(&cur);
+                if (!up)
+                    return ERR_NOT_FOUND;
+                st = ext_iget(fs, up, 0, &cur);
+                if (st == OK && !is_dir(&cur))
+                    st = ERR_IO;
+                if (st != OK)
+                    return st == ERR_NOT_FOUND ? ERR_IO : st;
+                stack[0] = w->base = up;
+                w->region = fs_region_parent(w->region);
+                w->has_name = false;
+                w->found = true;
+                w->in = cur;
+                w->must_dir = trailing;
+                continue;
+            }
             depth--;
             place_pop(w);
             st = ext_iget(fs, stack[depth], 0, &cur);
@@ -221,7 +397,8 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
             if (!last)
                 return name_hidden(c, w, comp, clen) ? ERR_ACCESS_DENIED : ERR_NOT_FOUND;
             w->found = false;
-            return place_push(w, comp, clen);
+            place_push(w, comp, clen);
+            return OK;
         }
         if (st != OK)
             return st;
@@ -263,9 +440,7 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
         if (is_dir(&w->in)) {
             if (depth + 1 >= DEPTH_MAX)
                 return ERR_NAME_TOO_LONG;
-            st = place_push(w, comp, clen);
-            if (st != OK)
-                return st;
+            place_push(w, comp, clen);
             if (hidden_dir(c, w))
                 return ERR_ACCESS_DENIED;
             stack[++depth] = e.ino;
@@ -274,18 +449,48 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
         }
         if (!last || trailing)
             return name_hidden(c, w, comp, clen) ? ERR_ACCESS_DENIED : ERR_NOT_DIR;
-        return place_push(w, comp, clen);
+        place_push(w, comp, clen);
+        return OK;
     }
 }
 
-void walk_inside(const struct xf_ctx *c, const struct xf_walk *w, char *out, uint32_t *out_len)
+status_t walk_inside(const struct xf_ctx *c, const struct xf_walk *w, char *out, uint32_t *out_len)
 {
-    uint32_t skip = c->root_len;
-    if (skip && w->phys_len > skip)
-        skip++;   /* the '/' after the root's place */
-    uint32_t n = w->phys_len > skip ? w->phys_len - skip : 0;
-    memcpy(out, w->phys + w->phys_len - n, n);
-    *out_len = n;
+    if (w->rel_long)
+        return ERR_NAME_TOO_LONG;
+    /* Where the walk's names start, below the view's root: nothing on any
+     * channel but a directory channel's, whose directory (or one its ".."
+     * reached) is named by climbing to the root, each name found in its
+     * parent, into up_buf from its end. */
+    uint32_t at = w->base, top = sizeof(up_buf);
+    while (at != c->root_ino) {
+        struct ext_inode in;
+        char name[EXT_NAME_MAX + 1];
+        uint32_t len = 0, up = 0;
+        status_t st = at == EXT_ROOT_INO ? ERR_NOT_FOUND : ext_iget(&vol.fs, at, 0, &in);
+        if (st == OK && !(up = parent_of(&in)))
+            st = ERR_IO;
+        if (st == OK)
+            st = name_of(up, at, name, &len);
+        if (st == OK && len + (top < sizeof(up_buf) ? 1 : 0) > top)
+            st = ERR_NAME_TOO_LONG;
+        if (st != OK)
+            return st;
+        if (top < sizeof(up_buf))
+            up_buf[--top] = '/';
+        top -= len;
+        memcpy(up_buf + top, name, len);
+        at = up;
+    }
+    uint32_t n = (uint32_t)sizeof(up_buf) - top, sep = n && w->rel_len ? 1 : 0;
+    if (n + sep + w->rel_len > FS_PATH_LEN)
+        return ERR_NAME_TOO_LONG;
+    memcpy(out, up_buf + top, n);
+    if (sep)
+        out[n] = '/';
+    memcpy(out + n + sep, w->rel, w->rel_len);
+    *out_len = n + sep + w->rel_len;
+    return OK;
 }
 
 bool walk_hidden(const struct xf_ctx *c, const struct xf_walk *w, bool stat)
