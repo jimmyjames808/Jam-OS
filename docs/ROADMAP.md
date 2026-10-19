@@ -47,7 +47,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M15 | Self-hosting | not started: after Chromium |
 | CR | Chromium: the main goal (the owner, 2026-10-11) | under way ([CR-PLAN.md](CR-PLAN.md)). Built: CR-a (the clang and Rust toolchain), CR-b (`base_unittests`: 8,901 of 8,956 pass, 37 skip themselves, 18 are listed with their reasons), CR-c (`headless_shell` pictures of local and HTTPS pages; `content_shell` on the desktop; multi-process with Chromium's own launcher, a killed renderer replaced on reload) and CR-e (V8's compilers and WebAssembly in the renderers; WebGL in software, opt-in), with sound through the mixer and full fonts. CR-d, `chrome` as a package (track CB6), is under way. CR-f, Jam OS's sandbox, is not built; its plan is being written. All of it runs in QEMU; on the PC itself only `headless_shell` has drawn real sites (2026-10-18), and `content_shell`'s multi-process, JIT, WebGL, sound and fonts builds have not been tried there yet |
 | G2 | Wayland clients, scoped to Chromium | built and reviewed ([G2-PLAN.md](G2-PLAN.md), [G2-REVIEW.md](G2-REVIEW.md)): the libwayland shim in libc, versions and the owner's decoration rule, subsurfaces, popups with grabs, the base ports, the fonts packages (fonts-jamos, fonts-noto-extra), wlprobe. Still to come: the search box starting a package's program (GD) and the join. foot, SDL2, Doom, swayimg, timerfd, pointer lock and the GTK spike come after Chromium |
-| GPU | The iGPU's render offload, and making the browser run well | after the sandbox: the monitor stays on the RTX, the Intel UHD 770 (off in the firmware today) renders. The plans are being written (GPU-PLAN.md, RUNWELL-PLAN.md). G3 (mode setting) and G4 (3D) are deferred |
+| GPU | The iGPU's render offload, and making the browser run well | after the sandbox: the monitor stays on the RTX, the Intel UHD 770 (off in the firmware today) renders; GPU-PLAN.md is being written. "Run well" has its plan, [RUNWELL-PLAN.md](RUNWELL-PLAN.md) (13 tracks: numbers read against Linux on the same PC, a 50-site soak, profiling tools, the init run and tests out of the boot image), parked with the iGPU; its first wave needs no GPU. G3 (mode setting) and G4 (3D) are deferred |
 | Maybe | Own UEFI loader in place of Limine | not planned |
 
 ## Now
@@ -92,10 +92,16 @@ work):**
    shader is contained. It starts with a planning track: SANDBOX-PLAN.md is
    being written.
 3. **The iGPU and "run well", together.** Rendering offloaded to the Intel
-   iGPU with the monitor staying on the RTX, and the measured work of
-   making the browser fast and steady (against Linux on the same PC, a
-   50-site soak, profiling). GPU-PLAN.md and RUNWELL-PLAN.md are being
-   written. The GPU process's sandbox rules get a pass when the iGPU lands.
+   iGPU with the monitor staying on the RTX (GPU-PLAN.md is being
+   written), and the measured work of making the browser fast and steady:
+   [RUNWELL-PLAN.md](RUNWELL-PLAN.md), parked with the iGPU (the owner,
+   2026-10-18) to start after CB6 and the sandbox. Its targets are ratios
+   to Linux on the same PC, with a 50-site soak and profiling tools. Its
+   first wave needs no GPU and can run before the iGPU work: RW2
+   (posixbench and ssh latency), RW7 (the pager's store deadline), RW9
+   (a sampling profiler) and RW11 (the init run's time and the tests out
+   of the boot image). The GPU process's sandbox rules get a pass when the
+   iGPU lands.
 4. **After Chromium**, unless the owner moves one: M10 and M10.5 (ACPI
    power, tickless idle, sleep), M13.5's mksh, M14 (the stable ABI), M14.5
    (dynamic linking, parked: only if a port needs it), M15 (self-hosting),
@@ -188,7 +194,8 @@ Not on the path, so after Chromium (unless the owner makes one a goal):
 M13.5's mksh, M14 (the ABI freeze), M15 (self-hosting), M10 and M10.5
 (ACPI power, sleep), M12.1's follow-ups, ports nobody needs yet, and new
 Jam OS apps beyond the system's own. Parked by the owner: moving the test
-programs out of the boot image (13 of its about 29 MiB are tests).
+programs out of the boot image (13 of its about 29 MiB are tests: RW11 of
+[RUNWELL-PLAN.md](RUNWELL-PLAN.md)).
 
 M8.6 (cleanup and polish) is done: [what it delivered](HISTORY.md#m86-cleanup-and-polish).
 
@@ -213,7 +220,7 @@ Chromium layers' plans) hold their design until HISTORY.md joins them.
 | # | What | Done when |
 |---|---|---|
 | CR | Chromium, the main goal (the owner, 2026-10-11), reached layer by layer (see [Now](#now)): every layer general, only the layers Chromium needs built before it. Its plan is [CR-PLAN.md](CR-PLAN.md). Left: CR-d (`chrome`, track CB6) and CR-f (Jam OS's sandbox: each renderer a job with only its handles, the JIT power handed to renderers by the browser alone, a kernel flag across `/svc/exec`; its plan SANDBOX-PLAN.md is being written) | `chrome` opens a window on the PC and browses real sites over HTTPS, installed by `pkg`; then a compromised renderer holds handles that reach nothing but its own channel; then rendering on the iGPU |
-| GPU | The iGPU's render offload and "run well" (the owner, 2026-10-20: after the sandbox). The monitor stays on the RTX 4080 SUPER; the Intel UHD 770 (disabled in the firmware today) renders. Since the owner's licence decision of 2026-10-11 (GPL allowed in separate programs) one road is Linux's own GPU drivers run as Jam OS driver programs over a translation layer, as FreeBSD's drm-kmod does; GPU-PLAN.md (being written) chooses the road, and RUNWELL-PLAN.md (being written) sets the targets against Linux on the same PC. G3 (mode setting and vsync through the iGPU) and G4 (3D beyond software) stay deferred | the browser draws on the iGPU on the PC and its frame times are measured against Linux's on the same machine |
+| GPU | The iGPU's render offload and "run well" (the owner, 2026-10-20: after the sandbox). The monitor stays on the RTX 4080 SUPER; the Intel UHD 770 (disabled in the firmware today) renders. Since the owner's licence decision of 2026-10-11 (GPL allowed in separate programs) one road is Linux's own GPU drivers run as Jam OS driver programs over a translation layer, as FreeBSD's drm-kmod does; GPU-PLAN.md (being written) chooses the road. "Run well" is [RUNWELL-PLAN.md](RUNWELL-PLAN.md): its targets against Linux on the same PC, the 50-site soak, the profiler, WR2's two questions as tracks and the init run's time; its wave 1 (RW2, RW7, RW9, RW11) needs no GPU. G3 (mode setting and vsync through the iGPU) and G4 (3D beyond software) stay deferred | the browser draws on the iGPU on the PC and its frame times are measured against Linux's on the same machine |
 | G2 | What is left of Wayland clients for Chromium ([G2-PLAN.md](G2-PLAN.md)): GD, the search box starting a package's program, and the join. After Chromium, by need: foot, SDL2, Chocolate Doom, swayimg and the GTK spike (GTK and Qt are a later porting project of their own) | `chrome` starts from the search box; the plan's PC check passes |
 | M13.5 | The shell. `fork`, `vfork` and `exec` are built. What is left: a permissively licensed interactive shell (mksh) ported unpatched, then the Jam OS commands as programs in `/bin` first, so no command is lost (built for the ones that need no power a program can't hold: `free uptime version lscpu ps dmesg log mem memmap pci iommu bench net ping host usb df hexdump crashlog` are in five boxes in the boot image, [M13-PLAN: Jam commands as programs](M13-PLAN.md#jam-commands-as-programs-notes); the rest wait for a POSIX shell that passes the root resource on, and programs allowed to reach init's and the volumes' control channels). Once it matches the Jam shell it is the default in terminals and over SSH (`ssh pc command` and later scp through `sh -c`); the Jam shell stays in the boot image as the recovery shell. Its `setpgid` and job-control questions (a group join into a sibling's, exec notices) are settled with it | the default shell in a Jam OS terminal and over SSH is the ported shell; `$(...)`, subshells, pipelines of builtins and `configure`-style scripts run; every Jam OS command still works from it |
 | M10 | uACPI: poweroff, power button, ACPI reboot (uACPI stays in the kernel); tickless idle (since M11.5 a sleeper due after its CPU's next tick arms no timer and waits for the tick to re-arm for it, `after_next_tick` in `kernel/sched/wait.c`: a CPU that stops its tick must arm its timer for its sleeper queue's head first). After Chromium | clean shutdown on real hardware |
@@ -318,7 +325,8 @@ ones below are the design questions M8 left open
   parent's watch (the directory handles' review is on it).
 - **The init run is near its time cap** (186 to 292 s of 300 under load on
   the PC): if the run grows, move the tests out of the boot image (13 of
-  its about 29 MiB are tests) rather than raise the cap.
+  its about 29 MiB are tests) rather than raise the cap. That is RW11 of
+  [RUNWELL-PLAN.md](RUNWELL-PLAN.md).
 - The mouse wheel works on the PC (2026-10-01: hid drives a mouse whose
   report descriptor has a wheel in the report protocol; real mice send no
   wheel in the boot protocol). The boot log has each mouse's descriptor
