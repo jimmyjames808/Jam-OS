@@ -1,0 +1,69 @@
+# cr-test.sh's webgl script (docs/CR-PLAN.md, CR-e): content_shell with every
+# process type its own (--no-zygote --no-sandbox, as the jit case) loads
+# tools/cr/webgl.html by name twice: first with SwiftShader's WebGL
+# (--disable-gpu --enable-unsafe-swiftshader: the browser starts the GPU
+# process with --use-angle=swiftshader-webgl, which keeps the JIT power for
+# SwiftShader's Reactor: patches 0914 and 0915), then without (no WebGL,
+# and the GPU process gives the power up as every other one but the
+# renderers). The page says what it drew as console lines ("crgl: ..."),
+# which the browser logs on its stderr. `ps` after each:
+# tools/cr/webgl-check.py looks for one process more marked [jit] the first
+# time (the GPU process) than the second. Super+Q closes the window each
+# time (exit 0).
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send export TMPDIR=/data/cr/tmp HOME=/data/cr/tmp FONTCONFIG_FILE=/data/cr/out/jamos/fonts/fonts.conf
+wait {prompt}
+send H=/data/cr/out/jamos/content_shell; U=http://www.jam:8000/page.html
+wait {prompt}
+# SwiftShader's WebGL
+send run $H --no-sandbox --no-zygote --disable-gpu --enable-unsafe-swiftshader --enable-logging=stderr $U &
+wait 300 crgl: done
+sleep 2
+shot webgl-on
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send ps
+wait {prompt}
+pointer 1000 600
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+monitor sendkey meta_l-q
+sleep 20
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send jobs
+wait 30 re:\[\d+\] +\d+ +done \(exit 0\) +content_shell
+wait {prompt}
+# without: no WebGL, the GPU process holds no power
+send run $H --no-sandbox --no-zygote --disable-gpu --enable-logging=stderr $U &
+wait 300 crgl: done
+sleep 2
+shot webgl-off
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send ps
+wait {prompt}
+pointer 1000 600
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+monitor sendkey meta_l-q
+sleep 20
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send jobs
+wait 30 re:\[\d+\] +\d+ +done \(exit 0\) +content_shell
+wait {prompt}
+send reboot -f
+wait 60 reboot: resetting

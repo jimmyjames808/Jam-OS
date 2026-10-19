@@ -79,11 +79,6 @@ ElfReaderTestWithCurrentImage.ReadElfBuildId
 ImmediateCrashTest.ExpectedOpcodeSequence
 NativeLibraryTest.LoadLibrary
 
-[jit] mprotect/mmap of anonymous memory with PROT_EXEC is refused without the JIT right (W^X by design, docs/CR-PLAN.md section 12); the null buffer then faults (DecommitAndZero and InaccessiblePages pass)
-PartitionAllocPageAllocatorTest.AllocInaccessibleWillJitLater
-PartitionAllocPageAllocatorTest.AllocReadWriteExecute
-PartitionAllocPageAllocatorTest.ReadExecutePages
-
 [posix] RecvPidWithMaxDescriptors sends the socket over itself 16 times; the kernel's cycle rule refuses a channel end into its own channel (ETOOMANYREFS, CU1), where Linux keeps it in flight (CBF2a: RecvPid and RecvPidDisconnectedSocket pass)
 UnixDomainSocketTest.RecvPidWithMaxDescriptors
 

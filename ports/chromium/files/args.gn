@@ -70,13 +70,21 @@ use_nss_server_certs = false
 # (enable_pdf and enable_printing stay on: GN reads the whole tree, and
 # //chrome/test asserts print preview; only what the targets need is built.)
 
-# No GPU yet (G3, G4): no Vulkan, Dawn or SwiftShader's Vulkan, no libpci
-# for ANGLE's GPU list, no VR (OpenXR). ANGLE is linked in (use_static_angle).
-enable_swiftshader = false
+# No GPU yet (G3, G4): no Vulkan of Chromium's own (its compositor's), no
+# Dawn, no libpci for ANGLE's GPU list, no VR (OpenXR). ANGLE is linked in
+# (use_static_angle). WebGL in software (CR-e): ANGLE's Vulkan back end on
+# SwiftShader, which is linked in too as the program's Vulkan (patch 0915):
+# no Vulkan loader (Jam OS has no dlopen to open an ICD with), ANGLE calls
+# SwiftShader's vk* functions directly (as on macOS: no shared libvulkan, no
+# mock ICD), through //build/toolchain/jamos/vulkan's group.
+enable_swiftshader = true
 enable_swiftshader_vulkan = false
 enable_vulkan = false
-angle_enable_vulkan = false
+angle_enable_vulkan = true
+angle_enable_swiftshader = true
 angle_shared_libvulkan = false
+angle_use_custom_libvulkan = false
+angle_vulkan_loader_dir = "//build/toolchain/jamos/vulkan"
 use_dawn = false
 skia_use_dawn = false
 webnn_use_litert = false    # (its GPU path is Dawn's; WebNN keeps TFLite)

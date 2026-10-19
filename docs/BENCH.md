@@ -925,3 +925,62 @@ often reaches TurboFan in the background (V8's status 41). V8's
 tiering, not a Jam OS layer: the JIT memory, the worker threads and the
 installs all work (an open question until the same build is measured on
 Linux).
+
+### JetStream 2.2 and Speedometer 3.1 (parts)
+
+`tools/cr-test.sh bench` (batch 19205938): the same content_shell, 4 CPUs
+and 6 GiB, one content_shell for each run in one boot, each loading the
+benchmark by name from `tools/cr/bench-server.py` on the PC (its RUNS: the
+tests run): JetStream's 14 JavaScript tests both ways, its 5 WebAssembly
+tests with the JIT only (`--jitless` has no WebAssembly), six of
+Speedometer's suites 5 times both ways. JetStream's figures are its scores
+(higher is faster; the run's is the geometric mean of the tests'),
+Speedometer's its score and each suite's mean time a run. The PC was
+otherwise light (another agent's QEMU tests). About 6 minutes in all.
+
+| JetStream 2.2 | With the JIT | `--jitless` | |
+|---|---|---|---|
+| **The 14 JavaScript tests** | **918.9** | **127.4** | **7.2x** |
+| richards | 1520.7 | 68.6 | 22x |
+| delta-blue | 2160.0 | 105.0 | 21x |
+| crypto | 1951.3 | 100.1 | 19x |
+| hash-map | 816.2 | 46.3 | 18x |
+| raytrace | 1290.0 | 100.3 | 13x |
+| navier-stokes | 1265.4 | 115.7 | 11x |
+| earley-boyer | 1408.5 | 174.3 | 8.1x |
+| Box2D | 596.3 | 81.6 | 7.3x |
+| ai-astar | 1028.1 | 159.0 | 6.5x |
+| Babylon | 1179.4 | 210.7 | 5.6x |
+| UniPoker | 298.1 | 103.5 | 2.9x |
+| regexp | 726.6 | 255.7 | 2.8x |
+| splay | 380.2 | 147.3 | 2.6x |
+| json-parse-inspector | 427.3 | 411.9 | 1.04x |
+| **The 5 WebAssembly tests** | **225.4** | none | |
+| quicksort-wasm | 1091.1 | | |
+| HashSet-wasm | 322.7 | | |
+| richards-wasm | 291.1 | | |
+| gcc-loops-wasm | 87.6 | | |
+| tsf-wasm | 64.8 | | |
+
+| Speedometer 3.1 (6 suites, 5 runs) | With the JIT | `--jitless` | |
+|---|---|---|---|
+| **Score** | **18.3** | **12.9** | **1.4x** |
+| TodoMVC-JavaScript-ES5 | 61.7 ms | 61.1 ms | 1.0x |
+| TodoMVC-React | 55.5 ms | 91.4 ms | 1.6x |
+| TodoMVC-Vue | 24.7 ms | 36.4 ms | 1.5x |
+| TodoMVC-jQuery | 175.5 ms | 190.3 ms | 1.1x |
+| Editor-CodeMirror | 56.9 ms | 66.0 ms | 1.2x |
+| Charts-chartjs | 126.9 ms | 155.2 ms | 1.2x |
+
+JetStream's tests are V8's own work, so the compilers show (json-parse,
+mostly the JSON parser in C++, doesn't move); Speedometer's are a page's
+DOM, style, layout and drawing, most of which isn't V8's.
+
+### WebGL in software (SwiftShader), the same QEMU
+
+`tools/cr-test.sh webgl` (batch 19213457): content_shell with
+`--disable-gpu --enable-unsafe-swiftshader` draws a 320x120 band with a
+shader on a 320x240 WebGL canvas, in the GPU process by SwiftShader
+(Subzero's code, [CR-PLAN](CR-PLAN.md#cr-e-notes)); the page timed 100
+more draws of the band and a `finish()` at 2.4 ms, which says little:
+WebGL's calls are queued to the GPU process.
