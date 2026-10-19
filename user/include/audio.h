@@ -148,10 +148,19 @@ int  audio_open(struct audio_out *a, unsigned rate, unsigned channels);
 int  audio_open_as(struct audio_out *a, unsigned rate, unsigned channels, const char *name);
 /* The same, for samples of the format `fmt` (ERR_NOT_SUPPORTED for one
  * that is not in the enum). The two above take AUDIO_S16. The mixer takes
- * at most 4 streams from a program (and 16 in all): audio_close gives the
- * slot back. */
+ * at most 4 streams from an opener (and 16 in all; these open on the one
+ * svc_get keeps, one per process: a forked child has its own):
+ * audio_close gives the slot back. */
 int  audio_open_fmt(struct audio_out *a, unsigned rate, unsigned channels,
                     enum audio_format fmt, const char *name);
+/* The same on an opener of the caller's own, svc (svc_open(SVC_AUDIO)):
+ * its streams count to it, not to the one svc_get keeps, so a program that
+ * needs more than four at once (a browser's audio service: a stream per
+ * page that plays) opens another opener when audio_open_fmt says
+ * ERR_NO_RESOURCES. The caller closes svc after the streams on it are
+ * closed; ERR_PEER_CLOSED: the mixer was given up on, open it again. */
+int  audio_open_on(struct audio_out *a, handle_t svc, unsigned rate, unsigned channels,
+                   enum audio_format fmt, const char *name);
 /* Write nframes interleaved frames, blocking while the stream's ring is
  * full (until the mixer takes a period, 43 ms). Returns nframes, or a
  * negative status (ERR_PEER_CLOSED: the mixer died, so the stream is gone:

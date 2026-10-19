@@ -3317,7 +3317,9 @@ built). Then, general first (CA1):
 - **Chromium's back end** on it, in its tree (an `AudioManager` and an
   output stream, about 500 lines, Fuchsia's pair as the model), a patch
   in the recipe under a GN argument (`use_jamos_audio`). Output only;
-  input (the microphone) later.
+  input (the microphone) later. **Built (2026-10-19)**: patch 0916, in
+  the audio service's own process (see the [CA1 notes](#ca1-notes), "the
+  back end").
 
 ### 12. The JIT, by capability
 
@@ -3807,7 +3809,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **RL. Record locks across processes** (D9; built 2026-10-18: [RL notes](#rl-notes)) | `fcntl`'s, `F_OFD_` and `flock` locks kept by the file service per inode (`file.lock`, `getlock`, `lockowner`), so SQLite and leveldb in Chrome's processes meet each other's; `EDEADLK`; released at close and at a process's death; kept across extfs's restarts | `abi/idl/file.idl` (its own commit), `user/include/rlock.h` and `user/lib/rlock.c` (new), `user/services/extfs/locks.c` (new) and its lines in extfs's `main.c`, `files.c`, `adopt.c`, `request.c`, `state.c`, `keeper.c`, `extfs.h`; libc's `reclock.c` (new) and its lines in `dup.c`, `fd.c`, `file.c`, `files.h`, `kinds.h` | IE2 (extfs's queue) | posixtest `locks`; utest `extfs_locks`, `extfs_restart_locks`, `fs_no_locks`; `tools/extfs-svc-test.sh`; base's `FileLockingTest` (7) after a relink | **Opus** |
 | **CB6. `chrome` (CR-d)** | the `chrome` target, its args, its package (programs, paks, licences, initial preferences: Q4), the profile on `/jam`, the singleton on CU2; `pkg install chromium` | ports/chromium (the target's lines), cr-test.sh's `chrome` case | CB5; GC2, GC3, CU2, CA1 (sound), M13.6 (its tracks in section 16), M13.7's `pkg` and PO13 | cr-test.sh `chrome`; the PC check | Sonnet 5.5 |
 | **PO13. The package area on `/jam`** (built: [M13.7's PO13 notes](M13.7-PLAN.md#po13-notes)) | M13.7's prefix on `/jam` (after M13.6), the guard on it, big packages (a 250 MB program: staged files on `/jam`, init's hashing in steps) | M13.7's files named in its plan's PO5 and PO6 notes (the prefix constant, the guard's line for extfs) | M13.7's PO5 and PO6; M13.6's U4 and U8 | tools/pkg-test.sh (PO8, to come) with a big package on an ext test disk | Sonnet 5.5 |
-| **CA1. Sound** | section 11: libjam's audio output API and Chromium's back end patch | `<audio.h>` (a header of its own), user/lib/audio.c and audio_flow.c, ports/chromium's audio patch | CB4 (a browser to test it with); the API part at once (**done 2026-10-15**, see "CA1 notes") | utest: a stream's frames reach the mixer (`tools/mixer-test.sh`'s way); cr-test.sh `chrome` playing a WebM's sound into the mixer's capture | Sonnet 5.5 |
+| **CA1. Sound** (built 2026-10-19, see "CA1 notes") | section 11: libjam's audio output API and Chromium's back end patch | `<audio.h>` (a header of its own), user/lib/audio.c and audio_flow.c, ports/chromium's audio patch (0916) | CB4 (a browser to test it with); the API part at once (**done 2026-10-15**), the back end after CB5 (**done 2026-10-19**) | utest: a stream's frames reach the mixer (`tools/mixer-test.sh`'s way); cr-test.sh `sound` (content_shell's sound into the mixer's capture); `chrome` playing a WebM's sound (CB6) | Sonnet 5.5 |
 | **CJ1. JIT memory in the kernel** | section 12's kernel part: `RIGHT_ROOT_JIT`, `vmo_make_jit`, W+X only on a JIT VMO's mapping within its handle's rights, the flag in `process_get_info` | `kernel/object/vmo.c` (the kind), `kernel/abi/vmo_sys.c` (the call), `kernel/mm/aspace.c` (`perms_ok` and protect), `abi/syscalls.def`, `kernel/include/jam/abi.h`, new ktests | CK2 merged (`aspace.c`); CK1 merged (`vmo.c`) | ktests: W+X refused on every other VMO; a JIT VMO without the power refused; an execute-only duplicate can't write; a write-only one can't run; a JIT VMO can't be sealed, verified or paged; full ktest 4 and 8; soak 2 | **Opus** |
 | **CJ2. JIT for programs** (built 2026-10-19: its Chromium half with CR-e, [CR-e notes](#cr-e-notes)) | section 12's rest: `right jit` (wants, checkwants, allow's and pkg's words, init's slice), `ps`'s mark, libc's `MAP_JIT` (this half done 2026-10-14, see "CJ2 notes"); **still to do, after CB5**: V8's patch, the power to renderers only (with an unpatched launcher: [FORK-PLAN](FORK-PLAN.md#q4-the-jit-power-for-renderers-only-with-chromiums-own-launcher)'s Q4), `--jitless` for the rest | `user/include/wants.h`, the wants parser in libos, `tools/checkwants.py`, `user/services/shell/sh_allow.c`'s prompt, init's grant, `user/posix/sys/mem.c` (`MAP_JIT`), ports/chromium's V8 lines (and Q4's lines in content's child start, if so answered) | CJ1; CB5 | posixtest: `MAP_JIT` with and without the power; a JIT program writes code and runs it; cr-test.sh `chrome` with a Wasm page (CR-e) | **Opus** |
 | **CR1. Kernel review** | CK1, CK2, CK3, CP1's kernel line, CJ1 if merged: findings first (docs/CR-REVIEW-KERNEL.md, new), then High and Medium fixed with a test each; hostile tests (a TiB of reservations from a job with 16 MiB, 60,000 mappings in a storm of protects from 8 threads while another unmaps); **done 2026-10-15** ([CR-REVIEW-KERNEL.md](CR-REVIEW-KERNEL.md): 0 High, 3 Medium, 3 Low, 4 notes; two Mediums and every Low fixed, one Medium a design question) | the files its fixes need | CK1 to CK3 merged | its own; full ktest 4 and 8; soak 4 | **Opus** |
@@ -4595,7 +4597,8 @@ the model). Where it differs from section 4's design:
 
 ## CA1 notes
 
-Track CA1's API half (2026-10-15); the Chromium back end waits for CB4.
+Track CA1's API half (2026-10-15), then Chromium's back end (2026-10-19,
+"the back end" below).
 The output library of M12 (`<audio.h>`, user/lib/audio.c: a mixer stream
 behind `audio_open`, blocking `audio_write`, `audio_drain`,
 `audio_discard`, volume, stats) already was most of section 11's API, so
@@ -4685,6 +4688,97 @@ nothing is renamed.
     (`ERR_NO_RESOURCES`): Chromium's output mixer shares a physical stream
     among same-parameter streams, and falls back to a fake output if
     `Open` fails.
+
+### The back end (2026-10-19)
+
+Chromium's half (ports/chromium patch 0916, `use_jamos_audio` in
+files/args.gn): `media/audio/jamos`, an `AudioManagerJamOS`, an
+`AudioOutputStreamJamOS` and `JamOutput`, the one file that includes
+libjam's headers (about 600 lines with the GN lines). Sound worked at
+the first run; the calls made on the way:
+
+- **Where the audio service runs: in its own process** (Chromium's way on
+  Linux, `AudioServiceOutOfProcess`). The launcher forks the browser and
+  execs `/proc/self/exe` in place (CB5), so the utility process has the
+  browser's whole namespace, `/svc/audio` included: content_shell's list
+  says `svc audio` and nothing else is needed (the `/svc/exec` approval
+  question of the API notes doesn't arise; Chromium never starts a child
+  through it). The test proves it: the back end's own lines
+  (`--vmodule=audio_output_stream_jamos=1`) come from a process that is
+  not the browser's. So every child (renderers, the GPU process) has
+  `/svc/audio` too, as each has the network: narrowing that is CR-f's
+  sandbox. `--single-process` runs the service in the browser, which
+  works the same.
+- **Threading and pacing: a thread per started stream**, waiting on the
+  stream's room event, not a timer. The mixer takes a period (2048
+  frames, 43 ms) at a time and raises the event when it has, so the thread
+  wakes once a period and asks the source (`OnMoreData`, the delay from
+  one `audio_position` a wake plus a buffer's time for each buffer after
+  it) for buffers until two periods are queued. A started stream that
+  opens the device (none plays) has its lead, four periods, taken at once,
+  so `Start` pre-rolls the lead and a period (10,560 frames at 48 kHz with
+  10 ms buffers) before `audio_start`, or the first 85 ms would be heard
+  as a gap. `OnMoreData`'s wait for the renderer (the audio service's
+  sync reader) never holds the audio thread, which runs every stream's
+  control. `Stop` sets a flag, raises the event's bit itself (the client
+  has the right to signal it; the next arm clears it), joins the thread
+  and then `audio_pause` and `audio_discard`, so one thread uses the output
+  at a time (libjam's rule). The volume scales the samples (as Fuchsia's
+  does): no call into the mixer from the audio thread while the stream's
+  thread uses it. Latency: the context's output latency is 264 to 272 ms
+  (the mixer's 171 ms lead, the two periods queued, Chromium's own
+  buffer); an OscillatorNode is heard 273 ms after `start()`.
+- **"Four streams a program, one opener"**: the count is per opener
+  channel, and libjam's `svc_get` keeps one per process (a forked child
+  starts with an empty cache, `ns_forked`), so it is four per process, not
+  per program file: the browser and its audio service each have their
+  own. But Chromium does not mix in the audio service: each AudioContext
+  and each frame's media elements (the renderer's `AudioRendererMixer`,
+  per sink and parameters) is an output stream there, and the
+  dispatcher keeps a stopped one open a while for reuse, so all of a
+  browser's pages share that process's four. A fifth `Open` would fail:
+  the first stream of its parameters then falls back to a fake output
+  (silent), a later one fails and the page's audio errors. So libjam
+  gained **`audio_open_on`** (a stream on an opener of the caller's own,
+  `svc_open(SVC_AUDIO)`; `audio_open_fmt` is it on `svc_get`'s), and
+  `JamOutput` opens on up to three openers of its own once the first is
+  full: the mixer's 16 streams for the browser (utest `audio_out_slots`
+  opens the fifth so). An additive library change: programs pick it up at
+  their next link.
+- **The headers.** The sysroot had `<jamos/libjam.h>` but not the `<os.h>`
+  it includes; it now has libos's headers that it and `<audio.h>` need in
+  `include/jamos/libos` (user/posix/posix.mk), apart from musl's names. The
+  patch's `jamos_output` target adds `-isystem <sysroot>/include/jamos/libos`;
+  `jam_output.cc` includes them last, inside `extern "C"`, with `restrict`
+  as `__restrict` (`OK` and `ERR_*` are macros, so no Chromium header sees
+  them).
+- **The manager**: one output device, the default, there when a probe
+  stream opens (`ERR_NOT_FOUND`, no sound card, is none; a yes is kept);
+  preferred output 48 kHz stereo, 10 ms buffers (480 to 8,192 frames);
+  a source's own rate (8 to 192 kHz) and one or two channels kept, which
+  libjam converts; input stays fake (`FakeAudioInputStream`) until the
+  microphone. `linux/audio_manager_linux.cc` makes it in ALSA's place
+  (`--disable-audio-output` still gives the fake manager).
+- **What the test saw** (cr-test.sh `sound`, TESTING.md): the Web Audio
+  pattern's frames all exact in the capture (178,003 of 192,000: the
+  suspend dropped 292 ms, what was queued in the ring, the mixer's lead and
+  Chromium's buffer; no frame twice, none out of order, no silence inside
+  it), the oscillator exactly 72,000 frames of 440 Hz at 8192, the
+  `<audio>` file's 1000 Hz in two pieces of exactly 3.000 s in all, no
+  underrun in any stream. In a batch beside six other QEMUs the pattern
+  had three 10 ms buffers of silence, each in place of one of its buffers:
+  the audio service's sync reader waits 95 % of a buffer for the renderer
+  and plays silence for a late one (Chromium's own glitch, counted by its
+  glitch info; the mixer saw no underrun), so the check allows a few
+  (`CR_SOUND_LATE`). An `<audio>` pause doesn't stop the output
+  stream: the renderer's mixer plays silence until it closes its sink a
+  while later; an AudioContext's `suspend()` does (the back end's stop and
+  start lines).
+- Left: the microphone (input), a device list beyond the default,
+  `vol`'s per-stream name (every stream is "chromium"), the mixer keeping
+  its lead on a stop (a resume would then be exact; Chromium throws its
+  queue away anyway). headless_shell's list has no `svc audio` (headless
+  pages are silent).
 
 ## BT notes
 

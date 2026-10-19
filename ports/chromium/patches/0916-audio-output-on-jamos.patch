@@ -1,0 +1,908 @@
+Description: Sound on Jam OS: an AudioManager and output stream on Jam OS's mixer (use_jamos_audio)
+ Chromium on Linux plays through CRAS, PulseAudio or ALSA, none of which
+ Jam OS has (args.gn turns them off), and with none a fake output drops
+ every sample. This is Jam OS's back end (docs/CR-PLAN.md section 11,
+ track CA1), under the GN argument use_jamos_audio (args.gn sets it), in
+ media/audio/jamos with Fuchsia's pair as its model:
+ - AudioManagerJamOS: one output device, the default, there when a stream
+   opens on the mixer (`svc audio` in the program's list and a sound card
+   behind it); preferred output 48 kHz stereo, 10 ms buffers, a source's
+   own rate (8 to 192 kHz) and one or two channels kept (libjam converts);
+   input stays fake (FakeAudioInputStream) until the microphone is built.
+   linux/audio_manager_linux.cc makes it in place of ALSA's.
+ - AudioOutputStreamJamOS: a mixer stream of float samples (libjam's
+   <audio.h>: audio_open_fmt, audio_try_write, audio_position, audio_start,
+   audio_pause, audio_discard), fed by a thread of its own: Start pre-rolls
+   what the mixer takes when it opens the device (its lead, 171 ms) and a
+   period, starts the stream, and the thread then waits on the stream's
+   room event (the mixer takes a 43 ms period at a time), asking the source
+   for buffers until two periods are queued, with the delay audio_position
+   gives; Stop wakes and joins it and throws the queue away (pause, then
+   discard), so a Start after it goes on with the source's next frames,
+   none twice. The volume scales the samples, as Fuchsia's does.
+ - JamOutput (jam_output.cc), the only file that includes libjam's headers
+   (the sysroot's include/jamos/libos: their OK and ERR_* are macros):
+   past the four streams the mixer gives one opener (libjam keeps one a
+   process), streams open on openers of its own (audio_open_on), as the
+   audio service holds every page's stream in one process.
+Forwarded: not-needed (Jam OS's own sound output)
+---
+--- a/media/audio/BUILD.gn
++++ b/media/audio/BUILD.gn
+@@ -23,8 +23,33 @@
+   if (use_alsa) {
+     defines += [ "USE_ALSA" ]
+   }
++  if (use_jamos_audio) {
++    defines += [ "USE_JAMOS_AUDIO" ]
++  }
+ }
+ 
++if (use_jamos_audio) {
++  # libjam's headers, which Jam OS's sysroot keeps apart (include/jamos/libos:
++  # os.h and its kin), for the one file that calls libjam's sound output.
++  # (pkg_config.gni brings sysroot.gni's `sysroot`: args.gn's target_sysroot.)
++  config("jamos_libos") {
++    cflags = [
++      "-isystem",
++      rebase_path("$sysroot/include/jamos/libos", root_build_dir),
++    ]
++  }
++
++  source_set("jamos_output") {
++    visibility = [ ":audio" ]
++    sources = [
++      "jamos/jam_output.cc",
++      "jamos/jam_output.h",
++    ]
++    configs += [ ":jamos_libos" ]
++    deps = [ "//base" ]
++  }
++}
++
+ source_set("audio") {
+   # Do not expand the visibility here without double-checking with OWNERS, this
+   # is a roll-up target which is part of the //media component. Most other DEPs
+@@ -292,6 +317,16 @@
+ 
+   if (is_linux || is_chromeos) {
+     sources += [ "linux/audio_manager_linux.cc" ]
++  }
++
++  if (use_jamos_audio) {
++    sources += [
++      "jamos/audio_manager_jamos.cc",
++      "jamos/audio_manager_jamos.h",
++      "jamos/audio_output_stream_jamos.cc",
++      "jamos/audio_output_stream_jamos.h",
++    ]
++    deps += [ ":jamos_output" ]
+   }
+ 
+   if (use_alsa) {
+--- /dev/null
++++ b/media/audio/jamos/audio_manager_jamos.cc
+@@ -0,0 +1,137 @@
++// Jam OS's AudioManager (audio_manager_jamos.h).
++
++#include "media/audio/jamos/audio_manager_jamos.h"
++
++#include <algorithm>
++
++#include "base/logging.h"
++#include "media/audio/audio_device_description.h"
++#include "media/audio/fake_audio_input_stream.h"
++#include "media/audio/jamos/audio_output_stream_jamos.h"
++#include "media/audio/jamos/jam_output.h"
++#include "media/base/audio_parameters.h"
++#include "media/base/channel_layout.h"
++
++namespace media {
++
++namespace {
++
++// What the mixer plays: 48 kHz stereo, which a stream of that rate gives it
++// as it is (any other, 8 to 192 kHz, libjam resamples). Buffers of 10 ms
++// to 8192 frames (the mixer takes 2048 at a time; the stream keeps two
++// buffers queued at least).
++constexpr int kRate = 48000;
++constexpr int kRateMin = 8000;
++constexpr int kRateMax = 192000;
++constexpr int kMinBuffer = kRate / 100;
++constexpr int kMaxBuffer = 8192;
++
++}  // namespace
++
++AudioManagerJamOS::AudioManagerJamOS(std::unique_ptr<AudioThread> audio_thread,
++                                     AudioLogFactory* audio_log_factory)
++    : AudioManagerBase(std::move(audio_thread), audio_log_factory) {}
++
++AudioManagerJamOS::~AudioManagerJamOS() = default;
++
++bool AudioManagerJamOS::HasAudioOutputDevices() {
++  // A stream opened and closed: the mixer answers ERR_NOT_FOUND with no
++  // sound card behind it (and libjam when `svc audio` isn't on our list).
++  // A yes is kept (the mixer keeps its card through a driver's restart).
++  if (!has_output_) {
++    JamOutput::Result r = JamOutput::Probe();
++    has_output_ =
++        r == JamOutput::Result::kOk || r == JamOutput::Result::kNoStreams;
++  }
++  return has_output_;
++}
++
++bool AudioManagerJamOS::HasAudioInputDevices() {
++  return false;
++}
++
++bool AudioManagerJamOS::GetAudioInputDeviceNames(
++    AudioDeviceNames* device_names) {
++  device_names->clear();
++  return true;
++}
++
++bool AudioManagerJamOS::GetAudioOutputDeviceNames(
++    AudioDeviceNames* device_names) {
++  device_names->clear();
++  if (HasAudioOutputDevices()) {
++    device_names->push_back(AudioDeviceName::CreateDefault());
++  }
++  return true;
++}
++
++AudioParameters AudioManagerJamOS::GetInputStreamParameters(
++    const std::string& device_id) {
++  return AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY,
++                         ChannelLayoutConfig::Stereo(), kRate, kMinBuffer);
++}
++
++const std::string_view AudioManagerJamOS::GetName() {
++  return "JamOS";
++}
++
++AudioOutputStream* AudioManagerJamOS::MakeLinearOutputStream(
++    const AudioParameters& params,
++    const LogCallback& log_callback) {
++  DCHECK_EQ(AudioParameters::AUDIO_PCM_LINEAR, params.format());
++  return new AudioOutputStreamJamOS(this, params);
++}
++
++AudioOutputStream* AudioManagerJamOS::MakeLowLatencyOutputStream(
++    const AudioParameters& params,
++    const std::string& device_id,
++    const LogCallback& log_callback) {
++  DCHECK_EQ(AudioParameters::AUDIO_PCM_LOW_LATENCY, params.format());
++  if (!AudioDeviceDescription::IsDefaultDevice(device_id)) {
++    LOG(ERROR) << "jamos audio: no output device " << device_id
++               << " (only the default)";
++    return nullptr;
++  }
++  return new AudioOutputStreamJamOS(this, params);
++}
++
++AudioInputStream* AudioManagerJamOS::MakeLinearInputStream(
++    const AudioParameters& params,
++    const std::string& device_id,
++    const LogCallback& log_callback) {
++  return FakeAudioInputStream::MakeFakeStream(this, params);
++}
++
++AudioInputStream* AudioManagerJamOS::MakeLowLatencyInputStream(
++    const AudioParameters& params,
++    const std::string& device_id,
++    const LogCallback& log_callback) {
++  return FakeAudioInputStream::MakeFakeStream(this, params);
++}
++
++AudioParameters AudioManagerJamOS::GetPreferredOutputStreamParameters(
++    const std::string& output_device_id,
++    const AudioParameters& input_params) {
++  int rate = kRate;
++  ChannelLayoutConfig layout = ChannelLayoutConfig::Stereo();
++  int frames = kMinBuffer;
++  if (input_params.IsValid()) {
++    // The source's rate and its one or two channels as they are; more
++    // channels are mixed down to two.
++    if (input_params.sample_rate() >= kRateMin &&
++        input_params.sample_rate() <= kRateMax) {
++      rate = input_params.sample_rate();
++    }
++    if (input_params.channels() <= 2) {
++      layout = input_params.channel_layout_config();
++    }
++    frames = std::clamp(input_params.frames_per_buffer(), rate / 100,
++                        kMaxBuffer * rate / kRate);
++  }
++  return AudioParameters(
++      AudioParameters::AUDIO_PCM_LOW_LATENCY, layout, rate, frames,
++      AudioParameters::HardwareCapabilities(rate / 100,
++                                            kMaxBuffer * rate / kRate));
++}
++
++}  // namespace media
+--- /dev/null
++++ b/media/audio/jamos/audio_manager_jamos.h
+@@ -0,0 +1,63 @@
++// Jam OS's AudioManager (ports/chromium in Jam OS, its docs/CR-PLAN.md
++// section 11): one output device, the default, which is Jam OS's mixer
++// (`svc audio` in the program's list); the streams are
++// AudioOutputStreamJamOS. No input yet: the microphone's streams are fake
++// ones, as FakeAudioManager's.
++
++#ifndef MEDIA_AUDIO_JAMOS_AUDIO_MANAGER_JAMOS_H_
++#define MEDIA_AUDIO_JAMOS_AUDIO_MANAGER_JAMOS_H_
++
++#include <memory>
++#include <string>
++#include <string_view>
++
++#include "media/audio/audio_manager_base.h"
++
++namespace media {
++
++class AudioManagerJamOS : public AudioManagerBase {
++ public:
++  AudioManagerJamOS(std::unique_ptr<AudioThread> audio_thread,
++                    AudioLogFactory* audio_log_factory);
++  AudioManagerJamOS(const AudioManagerJamOS&) = delete;
++  AudioManagerJamOS& operator=(const AudioManagerJamOS&) = delete;
++  ~AudioManagerJamOS() override;
++
++  // AudioManager.
++  bool HasAudioOutputDevices() override;
++  bool HasAudioInputDevices() override;
++  bool GetAudioInputDeviceNames(AudioDeviceNames* device_names) override;
++  bool GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override;
++  AudioParameters GetInputStreamParameters(
++      const std::string& device_id) override;
++  const std::string_view GetName() override;
++
++  // AudioManagerBase.
++  AudioOutputStream* MakeLinearOutputStream(
++      const AudioParameters& params,
++      const LogCallback& log_callback) override;
++  AudioOutputStream* MakeLowLatencyOutputStream(
++      const AudioParameters& params,
++      const std::string& device_id,
++      const LogCallback& log_callback) override;
++  AudioInputStream* MakeLinearInputStream(
++      const AudioParameters& params,
++      const std::string& device_id,
++      const LogCallback& log_callback) override;
++  AudioInputStream* MakeLowLatencyInputStream(
++      const AudioParameters& params,
++      const std::string& device_id,
++      const LogCallback& log_callback) override;
++
++ protected:
++  AudioParameters GetPreferredOutputStreamParameters(
++      const std::string& output_device_id,
++      const AudioParameters& input_params) override;
++
++ private:
++  bool has_output_ = false;  // a probe found the mixer with a sound card
++};
++
++}  // namespace media
++
++#endif  // MEDIA_AUDIO_JAMOS_AUDIO_MANAGER_JAMOS_H_
+--- /dev/null
++++ b/media/audio/jamos/audio_output_stream_jamos.cc
+@@ -0,0 +1,193 @@
++// Jam OS's AudioOutputStream (audio_output_stream_jamos.h).
++
++#include "media/audio/jamos/audio_output_stream_jamos.h"
++
++#include <algorithm>
++
++#include "base/check.h"
++#include "base/logging.h"
++#include "media/audio/jamos/audio_manager_jamos.h"
++#include "media/base/audio_bus.h"
++#include "media/base/audio_glitch_info.h"
++#include "media/base/audio_sample_types.h"
++#include "media/base/audio_timestamp_helper.h"
++
++namespace media {
++
++namespace {
++
++// A wait for room is cut into slices this long, so a stream whose mixer
++// stopped answering still sees Stop() (which wakes the wait anyway).
++constexpr base::TimeDelta kWaitSlice = base::Milliseconds(100);
++
++}  // namespace
++
++AudioOutputStreamJamOS::AudioOutputStreamJamOS(AudioManagerJamOS* manager,
++                                               const AudioParameters& params)
++    : manager_(manager),
++      params_(params),
++      bus_(AudioBus::Create(params)),
++      interleaved_(static_cast<size_t>(params.frames_per_buffer()) *
++                   static_cast<size_t>(params.channels())) {}
++
++AudioOutputStreamJamOS::~AudioOutputStreamJamOS() {
++  DCHECK(thread_.is_null());
++}
++
++bool AudioOutputStreamJamOS::Open() {
++  JamOutput::Result r = out_.Open(params_.sample_rate(), params_.channels());
++  if (r != JamOutput::Result::kOk) {
++    LOG(WARNING) << "jamos audio: no stream from the mixer ("
++                 << (r == JamOutput::Result::kNoDevice    ? "no sound device"
++                     : r == JamOutput::Result::kNoStreams ? "all its streams taken"
++                                                          : "an error")
++                 << ")";
++    return false;
++  }
++  const size_t buffer = static_cast<size_t>(params_.frames_per_buffer());
++  const size_t lead = out_.Lead();
++  const size_t period = (lead + 3) / 4;
++  auto whole_buffers = [buffer](size_t frames) {
++    return (frames + buffer - 1) / buffer * buffer;
++  };
++  // What the mixer takes when it opens the device, and a period more; then
++  // two periods (and never less than two buffers).
++  preroll_ = whole_buffers(lead + period);
++  target_ = whole_buffers(std::max(2 * period, 2 * buffer));
++  CHECK_LE(preroll_ + buffer, out_.RoomMax());
++  wake_room_ = out_.RoomMax() - target_ + buffer;
++  VLOG(1) << "jamos audio: a stream of " << params_.sample_rate() << " Hz, "
++          << params_.channels() << " channel(s), buffers of " << buffer
++          << " frames; pre-roll " << preroll_ << ", queue " << target_;
++  return true;
++}
++
++void AudioOutputStreamJamOS::Start(AudioSourceCallback* callback) {
++  DCHECK(out_.is_open());
++  DCHECK(thread_.is_null());
++  callback_ = callback;
++  stop_.store(false);
++  VLOG(1) << "jamos audio: start";
++  if (!base::PlatformThread::CreateWithType(
++          0, this, &thread_, base::ThreadType::kRealtimeAudio)) {
++    thread_ = base::PlatformThreadHandle();
++    callback_->OnError(AudioSourceCallback::ErrorType::kUnknown);
++  }
++}
++
++void AudioOutputStreamJamOS::Stop() {
++  if (!thread_.is_null()) {
++    stop_.store(true);
++    out_.Wake();
++    base::PlatformThread::Join(thread_);
++    thread_ = base::PlatformThreadHandle();
++    // What the mixer had taken is not heard (or played out, if another
++    // stream keeps the device open); the queue goes.
++    out_.Pause();
++    out_.Discard();
++    VLOG(1) << "jamos audio: stop";
++  }
++  callback_ = nullptr;
++}
++
++void AudioOutputStreamJamOS::Flush() {
++  if (out_.is_open() && thread_.is_null()) {
++    out_.Discard();
++  }
++}
++
++void AudioOutputStreamJamOS::SetVolume(double volume) {
++  DCHECK(0.0 <= volume && volume <= 1.0) << volume;
++  volume_.store(static_cast<float>(volume));
++}
++
++void AudioOutputStreamJamOS::GetVolume(double* volume) {
++  *volume = volume_.load();
++}
++
++void AudioOutputStreamJamOS::Close() {
++  Stop();
++  out_.Close();
++  manager_->ReleaseOutputStream(this);  // deletes this
++}
++
++void AudioOutputStreamJamOS::ThreadMain() {
++  base::PlatformThread::SetName("JamAudioOutput");
++  if (!Fill(preroll_, false)) {
++    return;
++  }
++  if (out_.Start() != JamOutput::Result::kOk) {
++    ReportError();
++    return;
++  }
++  while (!stop_.load()) {
++    JamOutput::Result r = out_.ArmRoom(wake_room_);
++    // Stop() sets stop_ and then wakes: a wake that came before the arm
++    // (which clears it) is seen here instead.
++    if (r == JamOutput::Result::kWait && !stop_.load()) {
++      r = out_.WaitForRoom(kWaitSlice);
++    }
++    if (stop_.load()) {
++      break;
++    }
++    if (r != JamOutput::Result::kOk && r != JamOutput::Result::kWait) {
++      ReportError();
++      return;
++    }
++    if (!Fill(target_, true)) {
++      return;
++    }
++  }
++}
++
++bool AudioOutputStreamJamOS::Fill(size_t target, bool started) {
++  size_t queued = out_.Queued();
++  if (queued >= target) {
++    return true;
++  }
++  // The source's delay: how long until its next frame is heard. Before
++  // the start, the time from the start (the first frame is heard as the
++  // mixer opens the device).
++  base::TimeDelta delay;
++  base::TimeTicks at;
++  if (started) {
++    if (out_.Position(&delay, &at) != JamOutput::Result::kOk) {
++      ReportError();
++      return false;
++    }
++  } else {
++    delay = AudioTimestampHelper::FramesToTime(queued, params_.sample_rate());
++    at = base::TimeTicks::Now();
++  }
++  const int frames = bus_->frames();
++  const base::TimeDelta duration = params_.GetBufferDuration();
++  while (queued < target && !stop_.load()) {
++    int filled = callback_->OnMoreData(delay, at, {}, bus_.get());
++    if (filled < frames) {
++      bus_->ZeroFramesPartial(filled, frames - filled);
++    }
++    const float volume = volume_.load();
++    if (volume != 1.0f) {
++      bus_->Scale(volume);
++    }
++    bus_->ToInterleaved<Float32SampleTypeTraits>(interleaved_);
++    JamOutput::Result error = JamOutput::Result::kOk;
++    long written = out_.Write(interleaved_.data(), frames, &error);
++    if (written < 0) {
++      ReportError();
++      return false;
++    }
++    // The ring holds far more than the target: it takes the whole buffer.
++    DCHECK_EQ(written, frames);
++    queued += static_cast<size_t>(frames);
++    delay += duration;
++  }
++  return true;
++}
++
++void AudioOutputStreamJamOS::ReportError() {
++  LOG(WARNING) << "jamos audio: the mixer's stream failed";
++  callback_->OnError(AudioSourceCallback::ErrorType::kUnknown);
++}
++
++}  // namespace media
+--- /dev/null
++++ b/media/audio/jamos/audio_output_stream_jamos.h
+@@ -0,0 +1,80 @@
++// Jam OS's AudioOutputStream (ports/chromium in Jam OS, its
++// docs/CR-PLAN.md section 11): a stream on Jam OS's mixer (JamOutput),
++// fed by a thread of its own that waits for the mixer to take frames.
++//
++// The mixer takes a period (2048 frames, 43 ms) at a time from the
++// stream's ring, and its lead (4 periods, 171 ms) at once when it opens the
++// device. So Start() pre-rolls the lead and a period, then lets the mixer
++// take, and from then on the thread wakes each time the mixer has taken
++// frames and asks the source for buffers until two periods are queued
++// again. Stop() ends the thread and throws the queue away (Jam OS's pause
++// then discard): a Start() after it goes on with the source's next frames.
++
++#ifndef MEDIA_AUDIO_JAMOS_AUDIO_OUTPUT_STREAM_JAMOS_H_
++#define MEDIA_AUDIO_JAMOS_AUDIO_OUTPUT_STREAM_JAMOS_H_
++
++#include <atomic>
++#include <memory>
++#include <vector>
++
++#include "base/memory/raw_ptr.h"
++#include "base/threading/platform_thread.h"
++#include "media/audio/audio_io.h"
++#include "media/audio/jamos/jam_output.h"
++#include "media/base/audio_parameters.h"
++
++namespace media {
++
++class AudioBus;
++class AudioManagerJamOS;
++
++class AudioOutputStreamJamOS : public AudioOutputStream,
++                               public base::PlatformThread::Delegate {
++ public:
++  // The manager outlives the stream.
++  AudioOutputStreamJamOS(AudioManagerJamOS* manager,
++                         const AudioParameters& params);
++  AudioOutputStreamJamOS(const AudioOutputStreamJamOS&) = delete;
++  AudioOutputStreamJamOS& operator=(const AudioOutputStreamJamOS&) = delete;
++  ~AudioOutputStreamJamOS() override;
++
++  // AudioOutputStream, on the audio thread.
++  bool Open() override;
++  void Start(AudioSourceCallback* callback) override;
++  void Stop() override;
++  void Flush() override;
++  void SetVolume(double volume) override;
++  void GetVolume(double* volume) override;
++  void Close() override;
++
++ private:
++  // The thread: pre-roll, start, then a fill each time there is room.
++  void ThreadMain() override;
++  // Buffers from the source until `target` frames are queued; false if
++  // the stream failed (the source was told).
++  bool Fill(size_t target, bool started);
++  void ReportError();
++
++  const raw_ptr<AudioManagerJamOS> manager_;
++  const AudioParameters params_;
++  const std::unique_ptr<AudioBus> bus_;
++  std::vector<float> interleaved_;
++  JamOutput out_;
++
++  // Our frames: the pre-roll, what the thread keeps queued, and the room
++  // that wakes it (a buffer's below that).
++  size_t preroll_ = 0;
++  size_t target_ = 0;
++  size_t wake_room_ = 0;
++
++  // Set by Start() before the thread starts, cleared by Stop() after it
++  // ends.
++  raw_ptr<AudioSourceCallback> callback_ = nullptr;
++  base::PlatformThreadHandle thread_;
++  std::atomic<bool> stop_{false};
++  std::atomic<float> volume_{1.0f};
++};
++
++}  // namespace media
++
++#endif  // MEDIA_AUDIO_JAMOS_AUDIO_OUTPUT_STREAM_JAMOS_H_
+--- /dev/null
++++ b/media/audio/jamos/jam_output.cc
+@@ -0,0 +1,199 @@
++// Jam OS's sound output for Chromium: libjam's <audio.h> (jam_output.h).
++
++#include "media/audio/jamos/jam_output.h"
++
++#include "base/logging.h"
++#include "base/no_destructor.h"
++#include "base/synchronization/lock.h"
++
++// libjam's headers come last (OK and ERR_* are macros) and as C; they are
++// the sysroot's include/jamos/libos (media/audio:jamos_libos).
++#define restrict __restrict
++extern "C" {
++#include <jamos/libjam.h>
++#include <audio.h>
++}
++#undef restrict
++
++namespace media {
++
++namespace {
++
++constexpr char kName[] = "chromium";
++
++// Openers of our own (svc_open), MIXER_STREAMS_PER_CLIENT streams each,
++// taken once the opener svc_get keeps is full: with it, the mixer's
++// MIXER_MAX_STREAMS. A browser's audio service holds a stream for each page
++// that plays (each AudioContext, each frame's media elements), all in this
++// one process. Closed when its last stream closes.
++constexpr int kOpeners = MIXER_MAX_STREAMS / MIXER_STREAMS_PER_CLIENT - 1;
++struct Opener {
++  handle_t ch;
++  unsigned streams;
++};
++Opener g_openers[kOpeners];
++
++base::Lock& OpenersLock() {
++  static base::NoDestructor<base::Lock> lock;
++  return *lock;
++}
++
++JamOutput::Result FromStatus(int st) {
++  switch (st) {
++    case OK:
++      return JamOutput::Result::kOk;
++    case ERR_SHOULD_WAIT:
++      return JamOutput::Result::kWait;
++    case ERR_NOT_FOUND:
++      return JamOutput::Result::kNoDevice;
++    case ERR_NO_RESOURCES:
++      return JamOutput::Result::kNoStreams;
++    case ERR_PEER_CLOSED:
++      return JamOutput::Result::kGone;
++    default:
++      LOG(ERROR) << "jamos audio: " << status_str(st);
++      return JamOutput::Result::kFailed;
++  }
++}
++
++}  // namespace
++
++struct JamOutput::Out {
++  struct audio_out a;
++  handle_t event = HANDLE_INVALID;
++  uint64_t rate = AUDIO_RATE;
++  uint64_t lead = 0;  // the mixer's frames (48 kHz)
++};
++
++JamOutput::JamOutput() : out_(std::make_unique<Out>()) {}
++
++JamOutput::~JamOutput() {
++  Close();
++}
++
++JamOutput::Result JamOutput::Open(int rate, int channels) {
++  DCHECK(!open_);
++  int st = audio_open_fmt(&out_->a, rate, channels, AUDIO_F32, kName);
++  if (st == ERR_NO_RESOURCES) {
++    base::AutoLock hold(OpenersLock());
++    for (int i = 0; i < kOpeners && st == ERR_NO_RESOURCES; i++) {
++      Opener& o = g_openers[i];
++      if (o.streams >= MIXER_STREAMS_PER_CLIENT) {
++        continue;
++      }
++      if (o.ch == HANDLE_INVALID && svc_open(SVC_AUDIO, &o.ch) != OK) {
++        o.ch = HANDLE_INVALID;
++        break;
++      }
++      st = audio_open_on(&out_->a, o.ch, rate, channels, AUDIO_F32, kName);
++      if (st == OK) {
++        o.streams++;
++        opener_ = i;
++      } else if (o.streams == 0) {
++        jam_handle_close(o.ch);
++        o.ch = HANDLE_INVALID;
++      }
++    }
++  }
++  if (st != OK) {
++    return FromStatus(st);
++  }
++  open_ = true;
++  out_->event = audio_room_event(&out_->a);
++  out_->rate = static_cast<uint64_t>(rate);
++  // The mixer's lead: what it takes at once when it opens the device.
++  struct audio_pos pos;
++  out_->lead = audio_position(&out_->a, &pos) == OK ? pos.lead : 4 * 2048;
++  return Result::kOk;
++}
++
++void JamOutput::Close() {
++  if (!open_) {
++    return;
++  }
++  audio_close(&out_->a);
++  open_ = false;
++  if (opener_ >= 0) {
++    base::AutoLock hold(OpenersLock());
++    Opener& o = g_openers[opener_];
++    if (--o.streams == 0) {
++      jam_handle_close(o.ch);
++      o.ch = HANDLE_INVALID;
++    }
++    opener_ = -1;
++  }
++}
++
++long JamOutput::Write(const float* frames, size_t n, Result* error) {
++  long done = audio_try_write(&out_->a, frames, n);
++  if (done < 0) {
++    *error = FromStatus(static_cast<int>(done));
++  }
++  return done;
++}
++
++size_t JamOutput::Queued() const {
++  // As the room counts them, so that room for n (ArmRoom) is never fewer
++  // than RoomMax() - n queued here.
++  return audio_room_max(&out_->a) - audio_room(&out_->a);
++}
++
++size_t JamOutput::Lead() const {
++  return static_cast<size_t>((out_->lead * out_->rate + AUDIO_RATE - 1) /
++                             AUDIO_RATE);
++}
++
++size_t JamOutput::RoomMax() const {
++  return audio_room_max(&out_->a);
++}
++
++JamOutput::Result JamOutput::ArmRoom(size_t frames) {
++  return FromStatus(audio_arm_room(&out_->a, frames));
++}
++
++JamOutput::Result JamOutput::WaitForRoom(base::TimeDelta timeout) {
++  signals_t seen = 0;
++  int st = jam_object_wait_one(
++      out_->event, MIXER_SIG_SPACE,
++      now() + static_cast<uint64_t>(timeout.InNanoseconds()), &seen);
++  return st == ERR_TIMED_OUT ? Result::kOk : FromStatus(st);
++}
++
++void JamOutput::Wake() {
++  // The event's own bit: the waiter takes it for the mixer's.
++  jam_event_signal(out_->event, 0, MIXER_SIG_SPACE);
++}
++
++JamOutput::Result JamOutput::Position(base::TimeDelta* delay,
++                                      base::TimeTicks* at) {
++  struct audio_pos pos;
++  int st = audio_position(&out_->a, &pos);
++  if (st != OK) {
++    return FromStatus(st);
++  }
++  *delay = base::Nanoseconds(static_cast<int64_t>(pos.latency_ns));
++  *at = base::TimeTicks() + base::Nanoseconds(static_cast<int64_t>(pos.at));
++  return Result::kOk;
++}
++
++JamOutput::Result JamOutput::Start() {
++  return FromStatus(audio_start(&out_->a));
++}
++
++JamOutput::Result JamOutput::Pause() {
++  return FromStatus(audio_pause(&out_->a));
++}
++
++JamOutput::Result JamOutput::Discard() {
++  return FromStatus(audio_discard(&out_->a));
++}
++
++// static
++JamOutput::Result JamOutput::Probe() {
++  JamOutput probe;
++  Result r = probe.Open(AUDIO_RATE, 2);
++  probe.Close();
++  return r;
++}
++
++}  // namespace media
+--- /dev/null
++++ b/media/audio/jamos/jam_output.h
+@@ -0,0 +1,88 @@
++// Jam OS's sound output for Chromium (ports/chromium in Jam OS, its
++// docs/CR-PLAN.md section 11): one stream on Jam OS's mixer through libjam's
++// <audio.h>, float samples at the stream's rate. This file and
++// jam_output.cc are the only ones that see libjam's headers (their status
++// names, OK and ERR_*, are macros); AudioOutputStreamJamOS uses this.
++//
++// One thread uses an output at a time (libjam's rule), except Wake(),
++// which any thread may call. Every call but WaitForRoom() returns at once
++// or after one call into the mixer.
++
++#ifndef MEDIA_AUDIO_JAMOS_JAM_OUTPUT_H_
++#define MEDIA_AUDIO_JAMOS_JAM_OUTPUT_H_
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include <memory>
++
++#include "base/time/time.h"
++
++namespace media {
++
++class JamOutput {
++ public:
++  enum class Result {
++    kOk,
++    kWait,       // no room yet: WaitForRoom()
++    kNoDevice,   // no mixer on our list, or no sound card behind it
++    kNoStreams,  // the mixer has all the streams it takes
++    kGone,       // the mixer was given up on: close and open again
++    kFailed,     // anything else (said in the log)
++  };
++
++  JamOutput();
++  JamOutput(const JamOutput&) = delete;
++  JamOutput& operator=(const JamOutput&) = delete;
++  ~JamOutput();  // closes
++
++  // A stream of `rate` Hz (8000 to 192000) and 1 or 2 channels, named
++  // "chromium" for `vol`, stopped. Past the four streams the process's
++  // opener holds, it opens on openers of its own (16 streams in all).
++  Result Open(int rate, int channels);
++  void Close();
++  bool is_open() const { return open_; }
++
++  // Interleaved frames into the ring, as many as there is room for: how
++  // many, or a negative number (then *error says why).
++  long Write(const float* frames, size_t n, Result* error);
++  // Frames written that the mixer hasn't taken, in our frames (as the
++  // ring's room counts them: RoomMax() less the room).
++  size_t Queued() const;
++  // The mixer's lead in our frames: how far ahead of what is heard it
++  // takes frames (4 periods, 171 ms), all at once when it opens the device.
++  size_t Lead() const;
++  // The most the ring holds, in our frames.
++  size_t RoomMax() const;
++  // kOk: the ring has room for `frames` now; kWait: WaitForRoom(), which
++  // returns when the mixer has taken some (once a period, 43 ms), at
++  // Wake(), or after `timeout`. Then ask again.
++  Result ArmRoom(size_t frames);
++  Result WaitForRoom(base::TimeDelta timeout);
++  // Ends a WaitForRoom() on another thread.
++  void Wake();
++
++  // How long until a frame written now is heard, and when that was so
++  // (base::TimeTicks: the kernel clock, as CLOCK_MONOTONIC is).
++  Result Position(base::TimeDelta* delay, base::TimeTicks* at);
++
++  // The mixer takes frames (Start) or stops taking them, keeping what is
++  // in the ring (Pause); Discard drops the ring (on a paused stream at
++  // once, with no fade).
++  Result Start();
++  Result Pause();
++  Result Discard();
++
++  // Whether the mixer takes a stream now: one opened and closed.
++  static Result Probe();
++
++ private:
++  struct Out;
++  std::unique_ptr<Out> out_;
++  bool open_ = false;
++  int opener_ = -1;  // the opener of our own it holds a place on, or -1
++};
++
++}  // namespace media
++
++#endif  // MEDIA_AUDIO_JAMOS_JAM_OUTPUT_H_
+--- a/media/audio/linux/audio_manager_linux.cc
++++ b/media/audio/linux/audio_manager_linux.cc
+@@ -14,6 +14,9 @@
+ #if defined(USE_ALSA)
+ #include "media/audio/alsa/audio_manager_alsa.h"
+ #endif
++#if defined(USE_JAMOS_AUDIO)
++#include "media/audio/jamos/audio_manager_jamos.h"
++#endif
+ 
+ #if BUILDFLAG(USE_CRAS)
+ #include "media/audio/cras/audio_manager_cras.h"
+@@ -54,7 +57,10 @@
+                   "available or could not be initialized.";
+ #endif
+ 
+-#if defined(USE_ALSA)
++#if defined(USE_JAMOS_AUDIO)
++  return std::make_unique<AudioManagerJamOS>(std::move(audio_thread),
++                                             audio_log_factory);
++#elif defined(USE_ALSA)
+   return std::make_unique<AudioManagerAlsa>(std::move(audio_thread),
+                                             audio_log_factory);
+ #else
+--- a/media/media_options.gni
++++ b/media/media_options.gni
+@@ -213,6 +213,11 @@
+   # Enables runtime selection of ALSA library for audio.
+   use_alsa = false
+ 
++  # Jam OS's sound output (media/audio/jamos): Jam OS's mixer through
++  # libjam's <audio.h>, in place of ALSA, PulseAudio and CRAS (Jam OS's
++  # args.gn turns those off).
++  use_jamos_audio = false
++
+   # Alsa should be used on all non-Android, non-Mac POSIX systems - with the
+   # exception of CastOS desktop builds.
+   #
+@@ -235,6 +240,9 @@
+     }
+   }
+ }
++
++assert(!use_jamos_audio || (!use_alsa && !use_pulseaudio && !use_cras),
++       "use_jamos_audio is Jam OS's only sound output")
+ 
+ # Use another declare_args() to include possible overrides of media_use_ffmpeg
+ # from --args command line flags in the evaluation. See "gn help declare_args".

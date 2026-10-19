@@ -1,6 +1,11 @@
 /* libjam's calls (<os.h>: handles, spawn, the namespace, the startup
  * message's roles) for code built on musl: the POSIX layer itself
  * (user/posix/) and a POSIX program that also speaks Jam OS (posixtest).
+ * The tree's own find <os.h> in user/include; a port finds it, and the
+ * few other libos headers a port uses (<audio.h>), in the sysroot's
+ * include/jamos/libos (-isystem <sysroot>/include/jamos/libos). In C++
+ * they go inside extern "C", with `restrict` defined as __restrict, and
+ * after the program's own headers: libos's names are macros (OK, ERR_*).
  *
  * <os.h> is written for libos, and two of its names meet musl's here:
  * its PAGE_SIZE (4096ull) and musl's <limits.h> one (PAGESIZE, 4096) are

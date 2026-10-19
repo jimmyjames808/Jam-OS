@@ -1,0 +1,37 @@
+# cr-test.sh's sound script (docs/CR-PLAN.md section 11, CA1):
+# content_shell with every process type its own (--no-zygote --no-sandbox,
+# as the multi case: the audio service is a utility process, forked and
+# exec'd by the browser) loads tools/cr/sound.html by name, whose sound
+# goes through Jam OS's mixer to QEMU's intel-hda and on into a WAV file
+# (tools/cr/sound-check.py reads it). Autoplay without a click
+# (--autoplay-policy); the back end's own lines (--vmodule) say each
+# stream's open, start and stop with the process they are in. The page
+# says each step as a console line ("crsnd: ..."), the last "crsnd: done".
+# Super+Q closes the window (exit 0), and the mixer logs each stream's
+# close with its underruns.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send export TMPDIR=/data/cr/tmp HOME=/data/cr/tmp FONTCONFIG_FILE=/data/cr/out/jamos/fonts/fonts.conf
+wait {prompt}
+send H=/data/cr/out/jamos/content_shell; U=http://www.jam:8000/page.html; A=--autoplay-policy=no-user-gesture-required
+wait {prompt}
+send run $H --no-sandbox --no-zygote --disable-gpu --enable-logging=stderr $A --vmodule=audio_output_stream_jamos=1 $U &
+wait 240 crsnd: done
+sleep 2
+shot sound-page
+pointer 1000 600
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+monitor sendkey meta_l-q
+sleep 20
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send jobs
+wait 30 re:\[\d+\] +\d+ +done \(exit 0\) +content_shell
+wait {prompt}
+send reboot -f
+wait 60 reboot: resetting
