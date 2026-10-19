@@ -100,15 +100,24 @@ program using that volume loses its descriptors at once. Not a directory
 handle bug (the file window is M13.6's), but directory channels went the
 same way (harmless there: the directory is on the volume).
 
-*Fix:* `op_made` before the slot is taken, in both. A request that then
-fails leaves a mark adopt.c acts on only for an OK reply (`reply_again`)
-or a rerun (`unmake`, which forgets the slot either way). Test: a test
-power `die=slot` (extfs's test.c) at the window, and utest
-`extfs_restart_slot` (extfs ended there at an open with `FS_CREATE`, then
-at an opendir: each runs again and every channel carries on). Without the
-fix (batch 20092748): "extfs_restart_slot: FAILED ... t_open(&a, "new",
-FS_WRITE | FS_CREATE, &f) is ERR_PEER_CLOSED", the successor "starting
-fresh (an open file that isn't on the volume)". views.c and watch.c take
+A second half made it wider: `user/services/extfs/adopt.c` checked the
+slots (`files_check`) before `unmake` forgot what the uncommitted request
+had made, so a kill anywhere between an `FS_CREATE` open taking its slot
+and its journal commit, not only before `op_made`, gave the state up.
+
+*Fix:* `op_made` before the slot is taken, in both (a request that then
+fails leaves a mark adopt.c acts on only for an OK reply, `reply_again`,
+or a rerun, `unmake`, which forgets the slot either way); and adopt.c
+decides the request in progress (`journal_has`, `unmake`) before it
+checks the slots. Test: a test power `die=slot` (extfs's test.c) at the
+window, and utest `extfs_restart_slot` (extfs ended there at an open with
+`FS_CREATE`, then at an opendir: each runs again and every channel carries
+on). Without either fix (batch 20092748), and with the first alone (batch
+20093441): "t_open(&a, "new", FS_WRITE | FS_CREATE, &f) is
+ERR_PEER_CLOSED", the successor "starting fresh (an open file that isn't
+on the volume)". With both, batch 20101818 on a loaded PC:
+`tools/extfs-svc-test.sh` three times in a row (54 passed, 33 disks clean,
+each) and the init run PASS. views.c and watch.c take
 their slots the same way; a slot left there has no inode to miss (the
 successor closes what the keeper didn't bring back), so they are left.
 

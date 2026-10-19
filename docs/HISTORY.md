@@ -163,9 +163,11 @@ process holding its 64 channels killed, and 4 processes standing in a
 removed directory. The deep tree under kills found the second Medium, on a
 loaded PC only (the merged-main check): `fs.open` and `fs.opendir` took
 their slot in the state before naming it the request's, so a kill between
-kept the slot at the rerun, and for a new file the successor found its inode
-missing and started fresh, closing every client's channels; the mark comes
-first now (test power `die=slot`, utest `extfs_restart_slot`).
+kept the slot at the rerun, and a successor checked the slots before
+forgetting what the uncommitted request made, so for a new file it found
+the inode missing and started fresh, closing every client's channels; the
+mark comes first and the request in progress is settled before the checks
+now (test power `die=slot`, utest `extfs_restart_slot`).
 
 Left, none on Chromium's path:
 - **L3.** A removed directory's `..` can name removed parents that lay
