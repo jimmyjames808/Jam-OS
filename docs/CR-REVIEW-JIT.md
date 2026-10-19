@@ -201,3 +201,208 @@ case `spawn`: all PASS. `make check` on the Mac, PASS. No kernel change.
   `prctl(PR_SET_MDWE)` (`user/posix/sys/prctl.c`, `mem.c`); Chromium's
   non-renderers close it at their start (ports/chromium patch 0914;
   [CR-PLAN](CR-PLAN.md#cr-e-notes)).
+
+# CJR2: the JIT's second half (CR-e, SwiftShader)
+
+Track CJR2 (2026-10-19): the code CJR never saw, read by an agent that
+wrote none of it, at main d3ee42b9 (line numbers are of that commit): the
+JIT merge 5d3d728a (7820f3d0 `SR_JIT` and `startup_handle_drop`; ee610670
+the power as `SR_JIT` alone, handed on to forked children and an exec of
+`/proc/self/exe`, given up with `prctl(PR_SET_MDWE)`, and `MAP_FIXED` over
+JIT memory decommitting in place; e280e16d ports/chromium's patches 0913
+and 0914; 9730bcb4 cr-test's jit case), `ps`'s `[jit]`, and SWS's merge
+d3ee42b9 (0913 for memory asked executable from the start, 0914's GPU
+process under SwiftShader, 0915's Reactor in `MAP_JIT` memory, cr-test's
+webgl case).
+
+The questions: can any process but a renderer (or the GPU process under
+SwiftShader) end up able to map memory writable and executable, by
+posix_spawn, a fork then an exec of another program, an exec of
+`/proc/self/exe` with other arguments, a crash and restart, the browser
+itself, or a child that never calls `prctl`? Is `PR_SET_MDWE` irrevocable
+and inherited as Linux's is, or can a process get the power back (a
+handle left in its table, a duplicate, a startup handle not dropped)? Can
+a web page, or a flag a page can influence, turn on SwiftShader's JIT in
+the GPU process? Does the decommit in place leave stale code, a writable
+alias, a leaked VMO, or a race with a thread running the code? Does the
+kernel, not only libc, still keep "never writable and executable" for
+every program without the power? Is `[jit]` exact? Severity as in CJR.
+
+Counts: **0 High, 1 Medium, 4 Low, 4 notes; SWS's question 1 answered.**
+No process without the power gets W+X memory: the kernel is unchanged
+since CJR and stays the rule's one enforcer, and every path the power
+takes is a handle its holder chose to pass. The Medium is a renderer told
+`--jitless` keeping the power; the Lows are the browser's own use of the
+power it hands on, `/svc/exec` ignoring `PR_SET_MDWE`, `PR_SET_MDWE`
+missing a second handle, and what `[jit]` says.
+
+## Findings
+
+| # | Sev | Where | What is wrong | How to make it happen | Outcome |
+|---|---|---|---|---|---|
+| 1 | Medium | ports/chromium/patches/0914-jit-for-renderers-only-on-jamos.patch:63 (`ContentMainRunnerImpl::Initialize`'s test) | A renderer keeps `SR_JIT` whatever its V8 is told. One whose `--js-flags` say `--jitless` makes no code, yet can map W+X memory: the browser's way to run a site's renderer without a JIT (`RenderProcessHostImpl::IsJitDisabled` adds `--js-flags=--jitless`; on Windows such a renderer also loses the right to make code), or the owner's own `--js-flags=--jitless`. | cr-test's jit case's second load and the multi case (`--js-flags=--jitless`): every renderer holds the power it never uses; one that is compromised calls `mmap(MAP_JIT)` and has W+X pages. | Fixed (cb370c82): a renderer whose `--js-flags` end in `--jitless` (the last of `--jitless`, `--no-jitless`, `--nojitless`, as V8 reads them) gives the power up with every non-renderer; gin logs at `VLOG(1)` whether V8 compiles code and whether the process holds the power. cr-test jit (`--vmodule=v8_initializer=1`) checks every renderer of the `--jitless` load runs `--jitless` without the power. Needs a Chromium build. |
+| 2 | Low | user/lib/fork.c:78, user/posix/sys/mem.c:308, patch 0914:63 (an empty `--type` keeps it) | The browser holds the power it hands on and can use it: `MAP_JIT` works there. V8 runs `--jitless` in the browser, so nothing in it makes code today, but W^X no longer guards the most powerful process: one that is compromised has W+X pages for the asking. Section 12 says so ("keeps the power to hand on but never runs compiled code"); this is the cost of that choice. No user-space change can split "may hand on" from "may use": a duplicate can only narrow, and the browser picks which child gets it, so it can always pick itself. | Code running in the browser calls `mmap(..., PROT_READ \| PROT_WRITE \| PROT_EXEC, MAP_PRIVATE \| MAP_ANONYMOUS \| MAP_JIT, -1, 0)`: it succeeds. | Open, for CR-f: a launcher outside the browser (section 13's per-type table at spawn) gives `SR_JIT` to renderers only and the browser gives the power up at its start; or Chromium's zygote holds it (forked before any input, the browser then giving it up). Design question 1. |
+| 3 | Low | user/services/init/exec.c:602, user/posix/sys/prctl.c:21 | `PR_SET_MDWE` isn't inherited across `/svc/exec`: a program on a file system started through it gets its own approval whatever its caller holds (CE1, the owner's rule), so one whose list says `right jit` gets the power from init although its caller gave the power up. Linux's MDWE is inherited across every `execve`. prctl.c and section 12 promised Linux's rule. Not reachable from Chromium: content_shell's list has no `svc exec` (a child exec of a `/data` path is `EACCES`), and its children are `/proc/self/exe` execs. | A program whose list says `svc exec`, after `PR_SET_MDWE`, `posix_spawn`s an approved `/data` program whose list says `right jit`: the child holds `SR_JIT`. | Documented (prctl.c, section 12): the exception named. Making it Linux's would need the kernel to know the process gave the power up (a process flag `vmo_make_jit` refuses and `/svc/exec` reads from the caller's pid): design question 2. |
+| 4 | Low | user/lib/start.c:114 (`startup_handle_drop`) | `PR_SET_MDWE` closed only the first `SR_JIT` handle: a process started with two (a native starter's choice; a warm spare's promotion appends to the table too) kept the power with the second while `prctl` returned 0 (Chromium's `PCHECK` passes). And the drop closed the table up by moving the later entries down while another thread (libc's signal thread) could be reading it: a lookup of another role could find its neighbour's handle in the moment between the two stores. | utest spawns bin/jittest with two `SR_JIT` handles and `jittest giveup`: after `PR_SET_MDWE`, `MAP_JIT` still works and `PR_GET_MDWE` is 0. | Fixed (bdad478d): every entry with the role is emptied where it is (its role `SR_NONE` first, then its handle closed); utest `jit_mdwe` (two handles: `jittest power` 0, `jittest giveup` 1; without the fix, the PC, batch 19222522: `jit_mdwe: FAILED ... jittest_two_powers(jit, "giveup") == 1: 0 vs 1`). |
+| 5 | Low | kernel/mm/aspace.c:1618, 1754, 2021; user/services/shell/cmd/ps.c:66 | `[jit]` is "has mapped JIT memory to run since this image started", not "may write and run its own code": it stays after the JIT memory is unmapped; a program spawned from a JIT VMO (CJR finding 1) is marked though it can't write its code; a holder that hasn't used the power (the browser, a SwiftShader GPU process before its first shader) isn't. And `ps` can't name process types, so cr-test counts marks (one more with SwiftShader) rather than checking which process holds them. | `ps` after a renderer's JIT memory is gone; `ps` in the webgl case. | Left (CJR's choice of a mark for use, section 12); the footnote's present tense is loose. gin's new line (finding 1) now names the holders by type in the jit case. |
+
+**Notes** (no change):
+
+- **6.** A `MAP_FIXED` of private anonymous memory over JIT memory keeps it
+  JIT memory (user/posix/sys/mem.c:763), which is what Linux's decommit by
+  remap needs; but a program that reuses a former code range for data and
+  then forks loses that data in the child (mem_fork drops `MT_JIT`
+  entries, mem.c:249, and the kernel leaves a writable JIT mapping out of
+  a clone), where Linux copies it. No Jam OS program does; Chromium's
+  renderers don't fork. The `-EACCES` fallback to replace_locked there
+  can't happen for libc's own JIT memory (always mapped through a handle
+  that writes and executes).
+- **7.** The decommit itself is sound: the protect comes first and is the
+  only step that can fail; `vmo_decommit` of a JIT VMO can't fail (no
+  pins since CJF, no children), and it is the kernel's ordinary decommit
+  (each mapping's entries gone, the TLB shot down, before a page is
+  freed); the range keeps its one VMO, so nothing leaks and no second
+  mapping (an alias) exists in the process; another thread running the
+  code faults once the protect drops execute, as on Linux, or runs zeroes
+  after the decommit if the new protection keeps it.
+- **8.** `exec_replace` (user/posix/sys/spawn.c:592) passes a duplicate of
+  `SR_JIT` only to `/proc/self/exe`, through the self-image (the same
+  sealed or boot-image pages) or, without one, a boot-image program by our
+  own name (a file program goes to `/svc/exec` instead); the duplicate is
+  in the startup message, which dies with the channel if the replace
+  fails, so no copy is left in the table to take back after `PR_SET_MDWE`.
+  A forked child's duplicate is the fork message's, closed if it is never
+  written. `PR_SET_MDWE` and a fork or an exec in another thread at the
+  same moment are not ordered (the reads of `SR_JIT` there take no lock):
+  the call is for a process's start (Chromium's, one thread).
+- **9.** `SR_JIT`'s handle, a root narrowed to `RIGHT_ROOT_JIT`,
+  `RIGHT_DUPLICATE` and `RIGHT_TRANSFER`, is the first root that can be
+  sent; every other call on a root (sysinfo_check_root's, the hardware
+  calls' `RIGHT_SLICE`, `RIGHT_INSPECT`, `RIGHT_WRITE`, `RIGHT_MAP`,
+  `RIGHT_MANAGE`) needs a right it lacks, so it carries the JIT power and
+  nothing else.
+
+## SwiftShader in the GPU process (SWS's question 1)
+
+The GPU process keeps the power exactly when its own command line says
+`--type=gpu-process` and `--use-angle` is `swiftshader` or
+`swiftshader-webgl`, compared as strings in content's child start (patch
+0914:59, before anything is read). Only the browser writes that command
+line: the switches of its own it copies to the GPU process and the ones
+its GPU mode adds (Chromium's `GpuDataManagerImplPrivate::
+AppendGpuCommandLine`, `--use-angle=swiftshader-webgl` in its SwiftShader
+mode); a renderer or a page writes no part of it.
+
+- **A page.** It can't add a flag; it can only make the GPU process
+  crash, and the browser starts it again in the next mode of its fallback
+  list. SwiftShader is in that list only when the browser allows it
+  (Chromium's `--enable-unsafe-swiftshader`, or a feature the owner turns
+  on with `--enable-features`), so a crash moves the GPU process to
+  SwiftShader only where the owner has opted in already. Checked on Jam OS
+  by cr-test's webgl case: `--disable-gpu` alone gives no WebGL and no
+  extra `[jit]`, and (new, 8783eee9) neither do no GPU flags at all, the
+  hardware's GL then failing to start and the browser falling back. Not
+  read in Chromium 155's source (this track may not touch `~/cr`): the
+  main session can confirm `IsSwiftShaderAllowed`'s rule and its feature's
+  default there with one grep.
+- **A restart after a crash** is a fresh fork and exec of `/proc/self/exe`
+  from the browser, which still holds the power: content's child start
+  decides again from the new command line, so a GPU process started again
+  in another mode gives it up.
+- **Every other case gives it up**: `--disable-gpu` alone (its display
+  compositor mode adds no `--use-angle`), any other `--use-angle` value
+  (with SwiftShader ANGLE's only Vulkan, `--use-angle=vulkan` would run
+  SwiftShader without the power: Reactor's `MAP_JIT` is `EPERM` and it
+  fails closed). One owner flag keeps it without
+  `--enable-unsafe-swiftshader`: `--use-angle=swiftshader` itself, which
+  the browser passes on and which asks for SwiftShader by name. And an
+  in-process GPU (`--in-process-gpu`, `--single-process`) runs SwiftShader
+  in the browser, which holds the power anyway (finding 2).
+- **The main session's call** (SwiftShader opt-in only until CR-f, never
+  a default for `chrome` in CR-d): agreed; nothing found that turns it on
+  without the owner's flag. If `--enable-unsafe-swiftshader` alone is to
+  be the opt-in, 0914 would also need that switch on the GPU process's
+  command line; whether the browser passes it there is a question for the
+  source.
+
+## Checked, no finding
+
+- **posix_spawn**: no `SR_JIT` (spawn.c's start passes none); a
+  `/proc/self/exe` child of `posix_spawn` holds none (jittest).
+- **A fork, then an exec of another program**: in place, `p->self` is
+  false and no duplicate goes; a file program goes to `/svc/exec` (finding
+  3). The forked child holds the power between its fork and its exec, as
+  its parent does.
+- **An exec of `/proc/self/exe` with other arguments**: keeps it, and
+  content's child start gives it up for every process type but the
+  renderer and the SwiftShader GPU process (crashpad's handler, a zygote,
+  a utility of any sub-type, an unknown type: all of them pass through
+  `ContentMainRunnerImpl::Initialize`, content_shell's `main` being
+  `ContentMain`); a process that gave it up has nothing to pass on.
+- **A child that never calls `prctl`**: a forked child before its exec
+  (holds it, as its parent), a death-test child of base_unittests (a test
+  program whose list says `right jit`); headless_shell's list has no
+  `right jit`, so none of its processes holds it.
+- **Approval**: the four starters give `SR_JIT` from the list alone, as
+  CJR checked; init's test run narrows its duplicate to `DP_JIT_RIGHTS`
+  itself, the others in the send; every error path closes it.
+- **0913 and 0915**: `MAP_JIT` for memory PartitionAlloc is asked for
+  executable, and for Reactor's code buffers (`need_exec`), in a process
+  without the power is `EPERM` where the old path failed at `mprotect`:
+  the same refusal, sooner.
+- **The kernel's W^X** (unchanged since CJR): `perms_ok` and
+  `protect_span` allow write with execute only over a JIT VMO and within
+  the handle's rights; libc's `MAP_JIT`, `PR_SET_MDWE` and decommit are
+  courtesy above it, and a process without the power gets `EACCES` or
+  `EPERM` from libc and the kernel's refusal underneath.
+
+## Design questions
+
+1. **The browser's power (finding 2).** (a) Keep it: the browser picks
+   the renderers, as on every other platform (Linux's and macOS's
+   browsers may JIT too). (b) CR-f's launcher holds `SR_JIT` and gives it
+   to renderers by the per-type table, the browser giving it up at its
+   start. (c) Chromium's zygote: forked before the browser reads
+   anything, holding the power, the browser giving it up after. **Recommended:
+   (b) with CR-f** (the table is planned there anyway, and it takes the
+   power out of the browser without a zygote); (a) until then.
+2. **`PR_SET_MDWE` across `/svc/exec` (finding 3).** (a) Leave it named
+   as the one exception (only programs with `svc exec` can meet it, and
+   Chromium's can't). (b) A process flag in the kernel, set by a new call
+   (`PR_SET_MDWE` makes it), never cleared, copied to a process its
+   holder creates, refused by `vmo_make_jit`, and read by `/svc/exec` from
+   the caller's pid (CBF2a's writer pid) to withhold `SR_JIT`. That is
+   Linux's rule exactly, and also covers a JIT root a process receives
+   later. **Recommended: (a) now, (b) with CR-f's sandbox**, when
+   processes that give the power up may also reach `/svc/exec`.
+
+## Tests (CJR2)
+
+- utest `jit_mdwe` (finding 4), in every init run.
+- cr-test jit's power checks (finding 1): a renderer compiling code and
+  holding the power, every renderer of the `--jitless` load without it,
+  no other process type holding it, the browser never compiling code.
+  They need patch 0914 as changed here built into `out/jamos`; on the
+  build before it they fail for want of gin's lines.
+- cr-test webgl's third load (SwiftShader's question): no GPU flags, no
+  WebGL, as many `[jit]` children as with `--disable-gpu` alone.
+
+**On the branch's head** (main d3ee42b9 merged; the PC): batch 19220853,
+the init run (`jit_mdwe` in it), ktest at 4 CPUs, `basic.txt`,
+`cmds.txt`, `files.txt`, `jit.txt`, kdump `save`, cr-test `multi` and
+`webgl` (its third load: no WebGL, 2 children marked as with
+`--disable-gpu` alone, 3 with SwiftShader): PASS; `commands.txt` failed
+on utest `extfs_watch_unread`'s message-bytes check (known under load,
+track SQ's) and passed on its rerun (19221757); cr-test `jit` passed every
+check but the two new ones, which found no gin line in a Chromium built
+before this patch, as they should. `make check` on the PC: PASS. No
+kernel change.
+
+## Fixes (CJR2)
+
+- Finding 1 (cb370c82): patch 0914's child start and gin's line;
+  tools/cr/jit.txt and jit-check.py.
+- Finding 4 (bdad478d): libos's `startup_handle_drop` (user/lib/start.c;
+  every program linked against libos takes it at its next link, Chromium's
+  at its next relink).
+- Finding 3: prctl.c's comment and section 12 name the exception.

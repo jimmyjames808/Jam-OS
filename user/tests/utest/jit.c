@@ -13,6 +13,7 @@
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <os.h>
+#include <posixfds.h>
 #include "utest.h"
 
 #define PG  PAGE_SIZE
@@ -188,6 +189,54 @@ bool t_jit_spawn(void)
     CHECK_EQ(info.exit_code, 0);
     CHECK_ST(jam_handle_close(proc), OK);
     CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
+/* bin/jittest in mode `mode` with two SR_JIT handles (duplicates of ours):
+ * its exit code, or -1. */
+static int jittest_two_powers(handle_t jit, const char *mode)
+{
+    handle_t job, proc;
+    struct spawn_handle x[2] = { { SR_JIT, HANDLE_INVALID }, { SR_JIT, HANDLE_INVALID } };
+    if (new_job(&job) != OK)
+        return -1;
+    for (unsigned i = 0; i < 2; i++)
+        if (jam_handle_duplicate(jit, RIGHT_SAME, &x[i].h) != OK) {
+            if (i)
+                jam_handle_close(x[0].h);
+            jam_handle_close(job);
+            return -1;
+        }
+    struct posixfds_out ho = { .cwd = "/" };
+    const char *argv[] = { "jittest", mode };
+    struct spawn_args a = { .path = "bin/jittest", .argc = 2, .argv = argv, .job = job,
+                            .extra = x, .nextra = 2, .handover = &ho,
+                            .stack_size = 8ull << 20 };
+    struct process_info info;
+    int code = -1;
+    if (spawn(&a, &proc) == OK) {
+        if (spawn_wait(proc, 10 * NS_PER_S, &info) == OK && !info.killed)
+            code = (int)info.exit_code;
+        jam_handle_close(proc);
+    }
+    jam_handle_close(job);
+    return code;
+}
+
+/* PR_SET_MDWE gives the power up whole (docs/CR-REVIEW-JIT.md, CJR2
+ * finding 4): bin/jittest started with two SR_JIT handles holds the power
+ * (mode "power": 0), and after PR_SET_MDWE holds none (mode "giveup": 1;
+ * before the fix libc closed the first handle only, so MAP_JIT still
+ * worked with the second and PR_GET_MDWE said not in force: 0). */
+bool t_jit_mdwe(void)
+{
+    handle_t jit = startup_handle(SR_JIT);
+    if (!jit) {
+        printf("utest: %s: no JIT power (SR_JIT): skipped\n", utest_cur);
+        return true;
+    }
+    CHECK_EQ(jittest_two_powers(jit, "power"), 0);
+    CHECK_EQ(jittest_two_powers(jit, "giveup"), 1);
     return true;
 }
 

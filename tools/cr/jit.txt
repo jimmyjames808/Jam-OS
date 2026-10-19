@@ -9,7 +9,11 @@
 # its timings as console lines ("crjit: ..."), which the browser logs on
 # its stderr. `ps` after each: tools/cr/jit-check.py looks for the
 # renderers alone marked [jit] in the first (the browser holds the power
-# but never maps JIT memory, the rest gave it up) and none in the second.
+# but never maps JIT memory, the rest gave it up) and none in the second;
+# and gin's line in each process starting V8 (--vmodule=v8_initializer=1:
+# whether V8 compiles code there and whether it holds the power) for a
+# renderer holding it in the first and none in the second (a renderer told
+# --jitless gives it up: patch 0914, docs/CR-REVIEW-JIT.md CJR2 finding 1).
 # Super+Q closes the window each time (exit 0).
 wait 120 Jam OS shell
 wait {prompt}
@@ -19,7 +23,7 @@ wait {prompt}
 send H=/data/cr/out/jamos/content_shell; U=http://www.jam:8000/page.html
 wait {prompt}
 # with the JIT
-send run $H --no-sandbox --no-zygote --disable-gpu --enable-logging=stderr --js-flags=--allow-natives-syntax $U &
+send run $H --no-sandbox --no-zygote --disable-gpu --enable-logging=stderr --vmodule=v8_initializer=1 --js-flags=--allow-natives-syntax $U &
 wait 300 crjit: done
 sleep 2
 shot jit-on
@@ -43,7 +47,7 @@ send jobs
 wait 30 re:\[\d+\] +\d+ +done \(exit 0\) +content_shell
 wait {prompt}
 # --jitless: no compiler, no WebAssembly, no process marked
-send run $H --no-sandbox --no-zygote --disable-gpu --enable-logging=stderr --js-flags=--jitless $U &
+send run $H --no-sandbox --no-zygote --disable-gpu --enable-logging=stderr --vmodule=v8_initializer=1 --js-flags=--jitless $U &
 wait 600 crjit: done
 sleep 2
 shot jit-off

@@ -605,6 +605,7 @@ static const struct {
     { "vmo_make_exec_verified", t_vmo_make_exec_verified },
     { "jit", t_jit },
     { "jit_spawn", t_jit_spawn },
+    { "jit_mdwe", t_jit_mdwe },
     { "fork_memory", t_fork_memory },
     { "fork_threads", t_fork_threads },
     { "fork_handles", t_fork_handles },
