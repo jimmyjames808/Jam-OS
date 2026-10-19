@@ -3264,11 +3264,15 @@ stricter modes later through the same capability. `--jitless` until it
 lands (no WebAssembly then).
 
 **The design**:
-- **The power** (CJ1): a new root-resource right, `RIGHT_ROOT_JIT` (the
-  next free bit, 27), sliced into the resource a program gets when its
-  list says `right jit` (`WANT_RIGHT_JIT` beside `klog`, `sysinfo`,
-  `clock` and `debug` in `user/include/wants.h`), as every `right` word
-  is today.
+- **The power** (CJ1, CR-e): a new root-resource right, `RIGHT_ROOT_JIT`
+  (the next free bit, 27), given when a program's list says `right jit`
+  (`WANT_RIGHT_JIT` beside `klog`, `sysinfo`, `clock` and `debug` in
+  `user/include/wants.h`). Since CR-e (CJR's design question 2, its option
+  (b)) it comes alone, never on the program's root: a startup role of its
+  own, `SR_JIT` (`user/include/roles.h`), a duplicate of the starter's
+  root narrowed to `RIGHT_ROOT_JIT`, `RIGHT_DUPLICATE` and
+  `RIGHT_TRANSFER` (`DP_JIT_RIGHTS`, `<dataprog.h>`), so its holder may
+  hand it on, and nothing else of its root goes with it.
 - **JIT VMOs** (CJ1): a new call, `vmo_make_jit(vmo, root, *out)`, in
   `vmo_make_exec`'s shape: a plain paged VMO holding nothing (one handle,
   no page, no mapping, no pin; never a pager VMO, a pager VMO's child or a
@@ -3303,9 +3307,9 @@ lands (no WebAssembly then).
   code (JIT memory): the system can't check that code, so allow it only if
   you trust the program"), then shows the list's words ("may write and run
   its own code: JIT") and asks, as for every grant. Every starter gives the
-  power from the list alone through `dp_root_rights` (the shell, `/svc/exec`,
-  init's apps), and init's test run gives it only to an init.cfg program
-  whose list asks (utest; posixtest and usbtest keep W^X whole). `pkg`
+  power from the list alone, as `SR_JIT` (the shell, `/svc/exec`, init's
+  apps), and init's test run gives it only to an init.cfg program whose
+  list asks (utest; posixtest and usbtest keep W^X whole). `pkg`
   doesn't exist yet on Jam OS (M13.7's PO6): the package verifier already
   allows `right jit` for a package (checkwants' rule for ports/), and
   init's pkgctl (PO5) and `pkg` must show the same words and ask, as
@@ -3316,31 +3320,44 @@ lands (no WebAssembly then).
   free on x86-64 Linux, the top one below the huge-page field
   `MAP_HUGE_SHIFT`, farthest from where Linux's flags grow) with
   `MAP_PRIVATE | MAP_ANONYMOUS` (else `EINVAL`) in a process holding the
-  power maps a JIT VMO made for it (`vmo_make_jit`); then `PROT_EXEC` is
+  power (`SR_JIT`) maps a JIT VMO made for it (`vmo_make_jit`); then `PROT_EXEC` is
   allowed on it in `mmap` and `mprotect`, alone or with `PROT_WRITE`.
   Without the power `MAP_JIT` is `EPERM`, and execute anywhere else stays
   `EACCES`. The switching the plan asks for is `mprotect`: a program may
   keep the pages writable and executable (V8's default on x64) or move
   them between `PROT_READ | PROT_WRITE` and `PROT_READ | PROT_EXEC`
   (macOS's per-thread `pthread_jit_write_protect_np` is for arm64 and has
-  no x86 use until the stricter modes below). `MAP_FIXED | MAP_JIT` over
-  JIT memory decommits in place (a reservation cut and committed again
-  keeps one VMO); a `MAP_FIXED` without it replaces JIT memory with plain
-  memory. `MAP_JIT` is in `<sys/mman.h>` through an override of musl's
+  no x86 use until the stricter modes below). A `MAP_FIXED` of private
+  anonymous memory over JIT memory, with `MAP_JIT` or without it (CR-e:
+  Linux's decommit by remap, which V8's WebAssembly code space does through
+  PartitionAlloc), decommits in place (a reservation cut and committed again
+  keeps one VMO) and stays JIT memory; anything else mapped over it
+  replaces it. `prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN)` (Linux's
+  memory-deny-write-execute) gives the power up for good: libc closes
+  `SR_JIT`, under the table's lock; `PR_GET_MDWE` says it is in force
+  exactly when the process holds no power. A forked child gets a duplicate
+  of `SR_JIT` (libjam's fork), and an exec of the same program
+  (`/proc/self/exe`) keeps it; posix_spawn and an exec of any other program
+  pass none. `MAP_JIT` is in `<sys/mman.h>` through an override of musl's
   `arch/x86_64/bits/mman.h`, and an override of its `src/mman/mmap.c`
   keeps the `EPERM` (upstream turns an anonymous mapping's `EPERM` into
   `ENOMEM`, a fix-up for Linux) (user/posix/musl/OVERRIDES).
-- **V8** (still to do, with CB5): V8 already tells its page allocator
-  when a reservation will hold code (`kNoAccessWillJitLater`, made for
-  macOS's `MAP_JIT`); a few-line patch in its POSIX platform passes
-  `MAP_JIT` on Jam OS too (and its decommit of code pages, a `MAP_FIXED`
-  remap, must keep `MAP_JIT`, or the pages become plain memory).
-- **Only renderers** (still to do, with CB5): the owner's default is
-  Chromium's renderers, nothing else. The browser holds the power (its
-  list asks for it) and hands it to renderer children only; every other
-  Chromium process runs V8 with `--jitless`. How, now that the launcher
-  is Chromium's own `fork` and no launcher branch picks the children:
-  [FORK-PLAN](FORK-PLAN.md#110-jit-memory-the-power-wx) and its Q4.
+- **V8** (CR-e, built): V8 already tells its page allocator when a
+  reservation will hold code (`kNoAccessWillJitLater`, made for macOS's
+  `MAP_JIT`: its code range and its WebAssembly code space). In Chromium
+  that allocator is gin's, over PartitionAlloc's, which passes `MAP_JIT`
+  on macOS; ports/chromium's patch 0913 passes it on Jam OS too (no Linux
+  path says which reservation holds code). Its decommit of code pages, a
+  `MAP_FIXED` remap without `MAP_JIT`, needs no patch: libc keeps that JIT
+  memory (above).
+- **Only renderers** (CR-e, built: FORK-PLAN Q4's (A)): the browser holds
+  the power (content_shell's list says `right jit`) and keeps it to hand
+  on; every child it forks keeps `SR_JIT` across its exec of
+  `/proc/self/exe`; patch 0914 has every process type but the renderer
+  give it up at its start (`PR_SET_MDWE`, in content's
+  `ContentMainRunnerImpl::Initialize`), and gin run V8 `--jitless` unless
+  the process is a renderer still holding it. So `ps` marks the renderers
+  alone `[jit]`.
 - **Stricter modes later** through the same power: a per-thread switch
   with Intel's protection keys (the PC has PKU; the kernel would enable
   PKRU in XCR0 and give `pkey_alloc`/`pkey_mprotect`), or dual mapping
@@ -3351,7 +3368,8 @@ lands (no WebAssembly then).
   ([CR-REVIEW-JIT.md](CR-REVIEW-JIT.md): no program without the power gets
   W+X memory, no JIT memory becomes approved code; 3 Low, one fixed; pins
   and handing the power to renderers are design questions). V8's patch and
-  the launcher (CB5) get a look of their own when they land.
+  the launcher (CB5) get a look of their own when they land: CR-e's
+  ("CR-e notes") are ready for it.
 
 ### 13. Jam OS's sandbox for Chromium (later: CR-f)
 
@@ -3888,10 +3906,81 @@ Track CJ2's program half (2026-10-14); section 12 has the design as built.
   without`); posixtest's `jit` section runs without the power and starts
   `jittest without` as its child; tools/shell-tests/jit.txt runs both from
   the shell, `ps`'s mark, and a copy on `/data` through `allow`.
-- **Still to do** (with CB5, when Chromium runs multi-process): V8's
-  `MAP_JIT` patch, the launcher giving the power to renderers only,
-  `--jitless` for every other process type, and cr-test.sh `chrome` with a
-  Wasm page (CR-e). `pkg`'s words when PO5 and PO6 land (section 12).
+- **Still to do**: `pkg`'s words when PO5 and PO6 land (section 12). The
+  Chromium half (V8's `MAP_JIT`, the power to renderers only, `--jitless`
+  for the rest, a Wasm page) is CR-e's: "CR-e notes", below.
+
+## CR-e notes
+
+Milestone CR-e, the JIT (2026-10-19): CJ2's Chromium half and the power as
+a handle of its own; section 12 has the design as built.
+
+- **The power alone** (CJR's design question 2, option (b); FORK-PLAN Q4
+  (A)): `SR_JIT` (`user/include/roles.h`), a root narrowed to
+  `DP_JIT_RIGHTS` (`RIGHT_ROOT_JIT`, `RIGHT_DUPLICATE`, `RIGHT_TRANSFER`),
+  given by the shell's `run`, `/svc/exec`, init's apps and init's test run
+  to a program whose list says `right jit`; `dp_root_rights` no longer puts
+  `RIGHT_ROOT_JIT` on the root, so the handle is the only place the power
+  is. libc's `MAP_JIT` takes it from there; libjam's fork gives a forked
+  child a duplicate (`dup_roles`); libc's exec in place gives it to
+  `/proc/self/exe` again, never to another program (posix_spawn gives
+  none, as before).
+- **Giving it up**: Linux's own call, `prctl(PR_SET_MDWE,
+  PR_MDWE_REFUSE_EXEC_GAIN)` (memory-deny-write-execute, Linux 6.3), so
+  the Chromium side is a call Linux knows. libc closes `SR_JIT` under its
+  memory lock (`startup_handle_drop`); `PR_GET_MDWE` reads
+  `PR_MDWE_REFUSE_EXEC_GAIN` exactly when the process holds no power (Jam
+  OS's W^X is that rule for every process without it), clearing it is
+  `EPERM` then, and `PR_MDWE_NO_INHERIT` is `EINVAL` (a child free of it
+  can't be given the power back). JIT memory already mapped stays (Linux
+  would refuse execute added to it): Chromium sets it before it has any.
+  The table has no lock against another thread's fork at that moment, so
+  the call is for a process's start, while it is one thread (Chromium's).
+- **Decommit**: Linux programs decommit by mapping fresh anonymous memory
+  over a range (`MAP_FIXED`, `PROT_NONE`): PartitionAlloc's
+  `DecommitAndZeroSystemPages`, which gin's page allocator uses for V8's
+  WebAssembly code space, which V8 makes executable again later. libc now
+  decommits JIT memory in place for that too, with `MAP_JIT` or without
+  (where the kernel refuses the protection, a forked child's execute-only
+  copy, it is replaced by plain memory as before). A layer, not a patch.
+- **Chromium's patches** (ports/chromium/patches, each hunk's reason in its
+  header): 0913, PartitionAlloc's page allocator passes `MAP_JIT` for
+  `kInaccessibleWillJitLater` on Jam OS as it does on macOS (V8's code
+  range and WebAssembly code space ask so; no Linux path says which
+  reservation holds code, and making every reservation JIT memory would
+  also keep PartitionAlloc's pools out of a forked child); 0914, content's
+  `ContentMainRunnerImpl::Initialize` has every process type but the
+  renderer give the power up at its start, and gin runs V8 `--jitless`
+  unless the process is a renderer still holding it (the browser keeps the
+  power to hand on but never runs compiled code; a single-process renderer
+  is jitless). content_shell's list says `right jit`.
+- **Tests**: jittest's handed-on checks (a forked child keeps the power,
+  `/proc/self/exe` exec'd keeps it, another program exec'd and a
+  posix_spawn child get none, `PR_SET_MDWE` gives it up there and in what
+  it starts after) and its decommit checks; utest `fork_jit` (the power in
+  the child, used); posixtest's jit section (`PR_GET_MDWE`, `PR_SET_MDWE`
+  without the power); cr-test.sh `jit` (content_shell loads a page whose
+  hot loop and WebAssembly module are timed with the JIT and `--jitless`;
+  `ps` marks the renderer alone `[jit]`) and `bench` (JetStream 2.2 and
+  Speedometer 3.1 parts, both ways: [BENCH](BENCH.md)).
+- **Measured** (cr-test `jit`, [BENCH](BENCH.md#chromiums-jit-cr-e-qemu-on-the-pc-2026-10-19)):
+  the page's loop 6.0x faster than `--jitless` in one long call, 29x once
+  TurboFan has compiled it; WebAssembly as fast as TurboFan's JavaScript;
+  a WebAssembly out-of-bounds load is the `RuntimeError` it should be (V8's
+  trap handler, SG's fault signals); a function called often reaches
+  TurboFan in the background. `ps` marks the two renderers (the page's and
+  a spare) `[jit]`, never the browser, the GPU process or the services.
+  The long call stays at Maglev's speed with V8's compiles in the
+  background (they take tens of milliseconds of wall time while the main
+  thread loops, a fraction of one when it is idle), and reaches TurboFan's
+  with them on the main thread (`--no-concurrent-recompilation
+  --no-concurrent-osr`): V8's tiering as far as can be seen, an open
+  question until the same build runs on Linux. The page is told it is
+  visible but not focused (`document.hasFocus()` false), with no change
+  when V8's efficiency mode is forced off.
+- **base_unittests**: FileLockingTest (7) passes since RL and came off the
+  skip list; FilePathWatcher* and ProcessMetrics* pass too (177 of 177 on
+  ext, batch 19204004).
 
 ## CE1 notes
 

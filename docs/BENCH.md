@@ -899,3 +899,29 @@ errors the last one stopped on), so there is no clean build's time yet.
 | `headless_shell` | 335.7 MB (code 213.4 MB, data 6.5 MB, bss 2.3 MB), static, no debug information (the symbol table kept) |
 | `base_unittests` | 76.7 MB (code 56.8 MB, data 1.7 MB, bss 0.8 MB) |
 | `chrome_crashpad_handler`, `test_child_process` | 6.3 MB, 2.6 MB |
+
+## Chromium's JIT (CR-e), QEMU on the PC 2026-10-19
+
+content_shell multi-process (`--no-sandbox --no-zygote --disable-gpu`),
+4 CPUs and 6 GiB under KVM on the i7-14700, the renderer with V8's
+compilers under `right jit` ([CR-PLAN](CR-PLAN.md#cr-e-notes)) against
+`--js-flags=--jitless`. `tools/cr-test.sh jit` (tools/cr/jit.html: the
+loop `acc = acc * 31 + i`, 32-bit, 30 million times; 5 runs, the best),
+batch 19203354.
+
+| What | With the JIT | `--jitless` | |
+|---|---|---|---|
+| The loop in one call (on-stack replacement) | 110.0 ms | 656.7 ms | 6.0x |
+| The loop compiled by TurboFan first (`%OptimizeFunctionOnNextCall`) | 22.4 ms | | 29x |
+| The loop in WebAssembly | 23.0 ms | no WebAssembly | |
+| The loop in 40 tasks of 100 short calls, the last task (V8's background tier-up) | 2.8 ms | 16.9 ms | 6.0x |
+
+The one long call stays at Maglev's speed: V8 compiles it for
+on-stack replacement in the background, Maglev's code first, and enters
+it; TurboFan's comes too, yet the loop keeps the first. With the
+compiles on the main thread (`--no-concurrent-recompilation
+--no-concurrent-osr`) the same call takes 23.1 ms. A function called
+often reaches TurboFan in the background (V8's status 41). V8's
+tiering, not a Jam OS layer: the JIT memory, the worker threads and the
+installs all work (an open question until the same build is measured on
+Linux).

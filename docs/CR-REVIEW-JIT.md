@@ -99,6 +99,7 @@ than it may mean to (finding 1).
 
    **Recommended: (b)**: the power is delegable by its holder, as the JIT
    VMOs are, and nothing else is. CB5's to decide with the launcher.
+   **Built in CR-e: (b)**, as `SR_JIT` (Fixes, below).
 
 ## Checked, no finding
 
@@ -193,4 +194,10 @@ case `spawn`: all PASS. `make check` on the Mac, PASS. No kernel change.
   (bin/jittest, in `jit.txt`).
 - Finding 3 (CJF): `kernel/mm/aspace.c`'s aspace_map and aspace_protect
   set the mark only for JIT memory that may execute.
-- Design question 2: left to CB5.
+- Design question 2 (CR-e, option (b)): the power alone as `SR_JIT`
+  (`user/include/roles.h`; every starter gives it for `right jit`, never on
+  the root), handed to a forked child (`user/lib/fork.c`) and across an exec
+  of `/proc/self/exe` (`user/posix/sys/spawn.c`), closed by
+  `prctl(PR_SET_MDWE)` (`user/posix/sys/prctl.c`, `mem.c`); Chromium's
+  non-renderers close it at their start (ports/chromium patch 0914;
+  [CR-PLAN](CR-PLAN.md#cr-e-notes)).

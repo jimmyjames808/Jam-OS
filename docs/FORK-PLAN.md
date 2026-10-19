@@ -232,7 +232,7 @@ handle in place of the parent's value, or removes the entry.
 | `SR_STDOUT`, `SR_CONSOLE`, `SR_BOOTFS`, `SR_SELF_IMAGE` | duplicates |
 | `SR_SIGNALS` | a new signal channel's server end (1.7) |
 | `SR_RESOURCE` | nothing: a program's root has no `RIGHT_TRANSFER`, and posix_spawn gives a child no root either (CL2) |
-| the JIT power's own handle (CJR's design question 2, option (b), when built) | a duplicate, kept across an exec of the same program (1.10, Q4) |
+| `SR_JIT`, the JIT power's own handle (CJR's design question 2, option (b); built in CR-e) | a duplicate, kept across an exec of the same program (1.10, Q4) |
 | every service role (keep, state, standby, devmgr, audio ...) | nothing |
 
 Every other handle libjam or the layer keeps (a cached `/svc/dns`,
@@ -366,7 +366,10 @@ accepted (CS1).
   which child gets it, so this plan recommends every forked child keeping
   it, across its exec of the same program, and Chromium's non-renderer
   processes closing it as they start (Q4). An exec of any other program
-  doesn't pass it, as posix_spawn passes no power today.
+  doesn't pass it, as posix_spawn passes no power today. Built in CR-e
+  ([CR-PLAN](CR-PLAN.md#cr-e-notes)): `SR_JIT`, fork.c's `dup_roles`,
+  spawn.c's exec of `/proc/self/exe`, and libc's `prctl(PR_SET_MDWE)` as
+  the call that closes it.
 - **W^X.** Every mapping keeps its permissions and maximum; *copy*
   mappings are never executable (a child VMO never has `RIGHT_EXEC`); the
   only mapping that could be writable and executable, a JIT VMO's with
@@ -738,7 +741,7 @@ utests `fork_*`):
   after the start, as spawn sends it; svc_get's cache starts empty.
 - **The roles** are fork.c's `dup_roles` and the made ones, each only if
   ours has `RIGHT_DUPLICATE` and `RIGHT_TRANSFER`; CJR's JIT-only handle
-  (Q4 (A)) is one line there once CJ2 gives it a startup role. The child
+  (Q4 (A)) is one line there, `SR_JIT` (CR-e). The child
   ends with `FORK_BAD_MESSAGE` (3) if its message is malformed.
 - **The child's stack** is its copy of the forking thread's, from 128 bytes
   below the saved block; its set-up runs there.
@@ -1304,4 +1307,8 @@ owner's (his JIT rule meets his no-launcher-patch decision).
 CJR's JIT-only handle across an `exec` of the same program, and
 Chromium's content child start closes it in every process that isn't a
 renderer (a few lines of policy in Chromium, not a missing layer).
+Built in CR-e ([CR-PLAN](CR-PLAN.md#cr-e-notes)): the handle is `SR_JIT`,
+the call that closes it Linux's `prctl(PR_SET_MDWE,
+PR_MDWE_REFUSE_EXEC_GAIN)`, and ports/chromium's patch 0914 makes it in
+content's `ContentMainRunnerImpl::Initialize`.
 
