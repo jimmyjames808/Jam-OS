@@ -927,10 +927,11 @@ bool t_extfs_restart_gone(void)
  * and every channel carried on. A slot left taken there named a new
  * file's inode that the journal never committed, and the successor gave
  * its whole state up (a fresh start: every client's channels closed),
- * which extfs_restart_deep met under its kills. */
+ * which extfs_restart_deep met under its kills. Instance 1's first slot
+ * is the open run again, so it ends at its second, the opendir. */
 bool t_extfs_restart_slot(void)
 {
-    static const char *const dies[] = { "die=slot:2", "die=slot:1" };
+    static const char *const dies[] = { "die=slot:2", "die=slot:2" };
     handle_t da, dx;
     struct tfile f;
     CHECK(ramdisk_create(&dd, EXT_DISK_SECTORS));
@@ -939,11 +940,12 @@ bool t_extfs_restart_slot(void)
     CHECK_ST(t_mkdir(s, "/a"), OK);
     CHECK_ST(od(s->fs, "/a", 0, &da, NULL), OK);                        /* slot 1 */
     struct fatrun a = on(da);
-    CHECK_ST(t_open(&a, "new", FS_WRITE | FS_CREATE, &f), OK);          /* slot 2: ends */
+    CHECK_ST(t_open(&a, "new", FS_WRITE | FS_CREATE, &f), OK);          /* slot 2: ends;
+                                                                         * 1's slot 1 */
     CHECK_EQ(extfs_sup_ended(), 1u);
     t_close(&f);
     CHECK_ST(mk(da, "x"), OK);
-    CHECK_ST(od(da, "x", 0, &dx, NULL), OK);                            /* slot 1: ends */
+    CHECK_ST(od(da, "x", 0, &dx, NULL), OK);                            /* slot 2: ends */
     CHECK_EQ(extfs_sup_ended(), 2u);
     CHECK_ST(t_stat(s, "/a/new", NULL, NULL, NULL), OK);
     CHECK(dir_at(da, "x"));
