@@ -174,9 +174,11 @@ grep -q -e "--plan" "$tmp/ports.calls" || fail "start --dry did not count"
 # the build's own first line is the claim (and status shows it while the run waits)
 run=$(ls -1d "$cr"/runs/[0-9]* | tail -1)
 echo "run X: ninja would run 7 steps: claiming 6 CPUs and 12 GB" > "$run/claim"
-first=$(env PATH="$tmp/bin:$PATH" CR_DIR="$cr" CR_JOBS=6 CR_MEM_MB=12288 "$fb" run "$run" 2> /dev/null | head -1)
+rm -f "$tmp/ports.calls"
+env PATH="$tmp/bin:$PATH" CR_DIR="$cr" CR_JOBS=6 CR_MEM_MB=12288 "$fb" run "$run" > "$tmp/run.out" 2>&1
+first=$(head -1 "$tmp/run.out")
 [ "$first" = "cr-build: run X: ninja would run 7 steps: claiming 6 CPUs and 12 GB" ] || fail "the build's first line: \"$first\""
-grep -q -e "build -f -j 6 " "$tmp/ports.calls" || fail "the build did not run with -j 6: $(cat "$tmp/ports.calls")"
+grep -q -e "build -f -j 6 " "$tmp/ports.calls" || fail "the build did not run with -j 6: $(cat "$tmp/ports.calls" 2> /dev/null) / $(cat "$tmp/run.out") / run=$run $(ls "$run" | tr "\n" " ") / $(ls "$cr/runs" | tr "\n" " ")"
 
 [ "$ok" = 1 ] && { echo "build-test: PASS"; exit 0; }
 echo "build-test: FAIL"

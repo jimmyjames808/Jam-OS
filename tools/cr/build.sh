@@ -197,7 +197,7 @@ run() {
     local clean=()
     [ -f "$run/clean" ] && clean=(--clean)
     nice -n 19 ${io[@]+"${io[@]}"} python3 -u tools/ports.py --out "$ports" build -f -j "$jobs" \
-        --kept "$kept" "${clean[@]}" chromium
+        --kept "$kept" ${clean[@]+"${clean[@]}"} chromium
     rc=$?
     t1=$(date +%s)
     kill "$sampler" 2> /dev/null
