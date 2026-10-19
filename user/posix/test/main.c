@@ -62,6 +62,7 @@ static const struct {
     { "efault", pt_efault },
     { "inotify", pt_inotify },
     { "locks", pt_locks },
+    { "dirfd", pt_dirfd },
 };
 
 /* The sections run only when named (long ones). */

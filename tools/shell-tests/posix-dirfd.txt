@@ -1,0 +1,23 @@
+# Directory descriptors from the shell (docs/DIRHANDLE-PLAN.md, DL1):
+# posixtest's dirfd section, on /data and /tmp, where a directory
+# descriptor is the directory's own fs channel (ext): base's DeleteDeep
+# (26 levels of 255-byte names made and removed through descriptors), a
+# renamed directory followed, one removed and made again, renameat,
+# renameat2's exchange and linkat between two descriptors, O_PATH,
+# AT_EMPTY_PATH, ".." above a mount's root, a forked child's, and 300
+# directories open at once (a process's 64 channels, then text
+# descriptions, which the log says once). Also in the init run; this is
+# the section alone. With JAMOS_DATA_FS=fat /data's descriptors are text
+# (today's answers there) and /tmp's still channels.
+#   QEMU_INPUT=tools/shell-tests/posix-dirfd.txt tools/qemu-test.sh <dir> posix-dirfd shell
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send run posixtest dirfd
+wait 180 posixtest: dirfd: ok
+wait 20 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+seen re:posix: /(data|tmp) has no room for more directory channels
+wait {prompt}
+send reboot -f
+wait reboot: resetting
