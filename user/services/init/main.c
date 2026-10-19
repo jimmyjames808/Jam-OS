@@ -60,7 +60,7 @@
  * the root (the screen and the serial port have powers of their own). */
 #define TEST_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_VMEX | \
                    RIGHT_ROOT_PAGER | RIGHT_WRITE)
-#define RUN_TIMEOUT_S 240   /* per program */
+#define RUN_TIMEOUT_S 420   /* per program (utest alone takes 265 s under TCG, in tools/storage-test.sh) */
 
 /* devmgr_ch: its control channel, devmgr_q: its query channel (<devmgr.h>
  * "Trust"); the programs init runs are the test suites: they get both.

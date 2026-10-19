@@ -733,6 +733,7 @@ static const struct {
     { "fswatch_adopt", t_fswatch_adopt },
     { "fswatch_order", t_fswatch_order },
     { "klog_lines", t_klog_lines },
+    { "ramdisk_in_use", t_ramdisk_in_use },
     { "fat_format", t_fat_format },
     { "fat_files", t_fat_files },
     { "fat_dirs", t_fat_dirs },

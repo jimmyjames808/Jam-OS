@@ -4,7 +4,13 @@
  * (the FAT's dirty bit, a directory's short names). One session at a time:
  * ramdisk_serve starts a thread that answers one client channel until the
  * client closes it (or ramdisk_unplug makes the server close its end, as a
- * pulled stick does); the sectors stay for the next session. */
+ * pulled stick does); the sectors stay for the next session.
+ *
+ * A disk whose session is still being served is in use: ramdisk_create and
+ * ramdisk_serve on it fail (naming the test that started the session)
+ * instead of rewriting it under the serving thread, which is what a test
+ * that failed and returned without stopping its service would otherwise do
+ * to the next one that takes the same static disk. */
 #pragma once
 
 #include <os.h>
@@ -24,6 +30,7 @@ struct ramdisk {
     handle_t thread;        /* the serving thread */
     bool     read_only;     /* info says so, and writes are refused */
     bool     buf_given;     /* map_buffer was called (a second call: ERR_BAD_STATE) */
+    const char *owner;      /* the test (utest_cur) that started the session */
 
     /* Shared with the serving thread: RELAXED atomics. */
     bool     stop;          /* the server is to close its end (an unplug) */
@@ -49,9 +56,18 @@ struct ramdisk {
     uint8_t  stack[16384] __attribute__((aligned(16)));   /* the thread's */
 };
 
-/* A zeroed disk of `blocks` sectors. */
+/* The test that started rd's session if its thread is still serving it, else
+ * NULL. */
+const char *ramdisk_busy(const struct ramdisk *rd);
+/* ramdisk_create and ramdisk_serve count each disk in use they refuse
+ * (ramdisk_refused); they print the failure, unless a test that provokes
+ * the refusal asks for it to be quiet. */
+unsigned ramdisk_refused(void);
+void     ramdisk_quiet_refusals(bool on);
+/* A zeroed disk of `blocks` sectors; fails if rd is in use. */
 bool     ramdisk_create(struct ramdisk *rd, uint64_t blocks);
-/* Start a session; *out_client is the `block` channel for the client. */
+/* Start a session; *out_client is the `block` channel for the client. Fails
+ * if rd is in use. */
 bool     ramdisk_serve(struct ramdisk *rd, bool read_only, handle_t *out_client);
 /* The session's thread must end by itself (its client closed the channel);
  * then free the session. */

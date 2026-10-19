@@ -385,6 +385,7 @@ bool t_svc_child_gets_views(void);
 int  ns_svc_child(const char *name);   /* "utest ns-svc <name>|-" */
 int  ns_view_child(const char *how);   /* "utest ns-view r|w" */
 bool t_view_etc_names(void);
+bool t_ramdisk_in_use(void);
 bool t_fat_views(void);
 /* fs_attr.c: the calls M13.6 added to fs and file, as fat and the boot image answer. */
 bool t_dirent_types(void);
