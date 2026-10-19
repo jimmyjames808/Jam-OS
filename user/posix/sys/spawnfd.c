@@ -1,6 +1,8 @@
 /* The descriptor table a spawned child gets (docs/M13-PLAN.md section 5):
  * a copy of ours, posix_spawn's file actions applied to it, then each of
- * its descriptors exported into the hand-over (<posixfds.h>).
+ * its descriptors exported into the hand-over (<posixfds.h>), and its
+ * current directory (a directory description, as ours is: a channel goes
+ * as itself, docs/DIRHANDLE-PLAN.md 4.5).
  *
  * The copy holds a reference to each description, not our descriptor
  * numbers: another thread closing or reusing one of ours mid-spawn
@@ -9,8 +11,9 @@
  * open action opens the file here (with O_CLOEXEC), takes a reference to
  * the new description and closes our descriptor at once; closefrom drops
  * every slot from its number up. chdir and fchdir
- * change only the copy's directory, which the later actions' relative
- * paths start from.
+ * change only the copy's directory (chdir opens one as chdir(2) does,
+ * fchdir shares the descriptor's), which the later actions' relative
+ * paths start from (an open's by its text).
  *
  * Export asks each description what a child gets (ops->give, B1's
  * fd.h): new handles of the child's own (duplicates, or a file's fresh
@@ -55,15 +58,45 @@ long spawn_absolute(const char *path, const char *dir, char *out)
     return st == OK ? 0 : -EINVAL;
 }
 
-/* Our current directory into cwd, as the layer keeps it: removed or not
- * (getcwd says ENOENT then), the child starts there and finds it gone, as
- * Linux's child inherits a removed directory, and a relative program path
- * names nothing, never a file of some other directory
- * (docs/FORK-REVIEW-LIBC.md, finding 2). */
-static void our_cwd(char *cwd)
+/* The copy's directory now d (its reference consumed). */
+static void set_cwd(struct spawnfd *t, struct fd_desc *d)
 {
-    _Static_assert(PATH_MAX == PATH_BYTES, "spawnfd's cwd holds path_cwd's");
-    path_cwd(cwd);
+    if (t->cwd)
+        fd_put(t->cwd);
+    t->cwd = d;
+    jam_free(t->cwd_text);
+    t->cwd_text = NULL;
+}
+
+/* The copy's directory's text: our current directory's as the layer keeps
+ * it (a channel's asked of its service, a removed one's its last known),
+ * so a child starts there and finds it gone, as Linux's child inherits a
+ * removed directory, and a relative program path names nothing, never a
+ * file of some other directory (docs/FORK-REVIEW-LIBC.md, finding 2). 0
+ * and *out, or -errno. */
+static long cwd_text(struct spawnfd *t, const char **out)
+{
+    _Static_assert(PATH_MAX == PATH_BYTES, "spawnfd's text holds dir_text_now's");
+    if (!t->cwd_text) {
+        char *text = jam_malloc(PATH_MAX);
+        long e = !text ? -ENOMEM : t->cwd ? dir_text_now(t->cwd, text) : 0;
+        if (!e && !t->cwd)
+            memcpy(text, "/", 2);
+        if (e) {
+            jam_free(text);
+            return e;
+        }
+        t->cwd_text = text;
+    }
+    *out = t->cwd_text;
+    return 0;
+}
+
+long spawnfd_absolute(struct spawnfd *t, const char *path, char *out)
+{
+    const char *dir = "/";
+    long e = path[0] == '/' ? 0 : cwd_text(t, &dir);
+    return e ? e : spawn_absolute(path, dir, out);
 }
 
 long spawnfd_begin(struct spawnfd **out)
@@ -75,7 +108,9 @@ long spawnfd_begin(struct spawnfd **out)
     t->desc = NULL;
     t->given = NULL;
     t->from = NULL;
-    our_cwd(t->cwd);
+    t->cwd = path_cwd();
+    t->cwd_text = NULL;
+    memset(&t->cwd_given, 0, sizeof(t->cwd_given));
     struct fd_desc *d;
     bool cloexec;
     for (long fd = fd_next(0, &d, &cloexec); fd >= 0; fd = fd_next(fd + 1, &d, &cloexec))
@@ -132,7 +167,7 @@ static long act_open(struct spawnfd *t, const struct jam_spawn_op *op)
     if (op->fd < 0 || op->fd >= FD_MAX)
         return -EBADF;
     char *abs = jam_malloc(PATH_MAX);
-    long e = abs ? spawn_absolute(op->path, t->cwd, abs) : -ENOMEM;
+    long e = abs ? spawnfd_absolute(t, op->path, abs) : -ENOMEM;
     int fd = -1;
     if (!e) {
         fd = open(abs, op->oflag | O_CLOEXEC, (mode_t)op->mode);
@@ -148,22 +183,17 @@ static long act_open(struct spawnfd *t, const struct jam_spawn_op *op)
     return set(t, op->fd, d, op->oflag & O_CLOEXEC);
 }
 
+/* chdir's directory from the copy's, opened as chdir opens one. */
 static long act_chdir(struct spawnfd *t, const struct jam_spawn_op *op)
 {
-    char *abs = jam_malloc(PATH_MAX);
-    long e = abs ? spawn_absolute(op->path, t->cwd, abs) : -ENOMEM;
-    bool dir = false;
-    status_t st = e ? OK : fs_stat(abs, NULL, &dir, NULL);
-    if (!e && st != OK)
-        e = lx_err(st);
-    else if (!e && !dir)
-        e = -ENOTDIR;
+    struct fd_desc *d = NULL;
+    long e = dir_cwd_open(t->cwd, op->path, &d);
     if (!e)
-        strcpy(t->cwd, abs);
-    jam_free(abs);
+        set_cwd(t, d);
     return e;
 }
 
+/* The copy's descriptor's directory, shared as fchdir shares it. */
 static long act_fchdir(struct spawnfd *t, const struct jam_spawn_op *op)
 {
     struct spawnfd_slot *s = find(t, op->fd);
@@ -171,14 +201,9 @@ static long act_fchdir(struct spawnfd *t, const struct jam_spawn_op *op)
         return -EBADF;
     if (!dir_is(s->desc))
         return -ENOTDIR;
-    char *text = jam_malloc(PATH_BYTES);   /* the directory's text now (the child's is text) */
-    long e = text ? dir_text_now(s->desc, text) : -ENOMEM;
-    if (!e && strnlen(text, PATH_MAX) == PATH_MAX)
-        e = -ENAMETOOLONG;
-    if (!e)
-        strcpy(t->cwd, text);
-    jam_free(text);
-    return e;
+    fd_ref(s->desc);
+    set_cwd(t, s->desc);
+    return 0;
 }
 
 /* Every descriptor from `from` up closed (addclosefrom_np): what the
@@ -286,16 +311,54 @@ long spawnfd_export(struct spawnfd *t, struct posixfds_out *ho)
     if (e) {
         posixfds_discard(ho);
         ho->nfds = 0;
+        ho->cwd_dir = HANDLE_INVALID;
     }
     return e;
+}
+
+long spawnfd_export_cwd(struct spawnfd *t, struct posixfds_out *ho, bool text)
+{
+    struct fd_given *g = &t->cwd_given;
+    ho->cwd = "/";
+    ho->cwd_dir = HANDLE_INVALID;
+    if (!t->cwd)
+        return 0;
+    if (!text) {
+        long e = t->cwd->ops->give(t->cwd, g);
+        if (!e && g->kind == POSIXFDS_DIR_CHANNEL) {
+            ho->cwd_dir = g->handles[0];   /* the hand-over's now */
+            g->handles[0] = HANDLE_INVALID;
+            g->nhandles = 0;
+            ho->cwd_data = g->data;
+            ho->cwd_data_len = g->data_len;
+            return 0;
+        }
+        if (!e) {
+            ho->cwd = g->data;   /* a text one's path */
+            return 0;
+        }
+        fd_given_drop(g);
+        if (e == -ENOMEM)
+            return e;
+    }
+    const char *dir;   /* narrowed, or a gone channel: its text, else "/" */
+    long e = cwd_text(t, &dir);
+    if (!e)
+        ho->cwd = dir;
+    return e == -ENOMEM ? e : 0;
 }
 
 void spawnfd_end(struct spawnfd *t, struct posixfds_out *ho)
 {
     ho->fds = NULL;
     ho->nfds = 0;
+    ho->cwd_dir = HANDLE_INVALID;   /* consumed with the hand-over */
     if (!t)
         return;
+    fd_given_drop(&t->cwd_given);   /* its data: its handle went with the hand-over */
+    if (t->cwd)
+        fd_put(t->cwd);
+    jam_free(t->cwd_text);
     for (unsigned i = 0; t->given && i < t->nexported; i++)
         jam_free(t->given[i].data);   /* the handles went with the hand-over */
     jam_free(t->desc);

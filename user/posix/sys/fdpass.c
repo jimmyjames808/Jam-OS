@@ -250,7 +250,8 @@ static unsigned record_kind(uint32_t kind)
     case POSIXFDS_DEV:
     case POSIXFDS_ETC:
     case POSIXFDS_PROC:      return FDPASS_NODE;
-    case POSIXFDS_DIR:       return FDPASS_DIR;
+    case POSIXFDS_DIR:
+    case POSIXFDS_DIR_CHANNEL: return FDPASS_DIR;
     }
     return 0;
 }
@@ -330,7 +331,8 @@ static bool record_ok(const struct posixfds_fd *rec, const void *data)
     if ((rec->status & ~POSIXFDS_STATUS) ||
         (rec->status & POSIXFDS_O_ACCMODE) == POSIXFDS_O_ACCMODE ||
         rec->data_len > POSIXFDS_DATA_MAX ||
-        (rec->offset && rec->kind != POSIXFDS_FILE && rec->kind != POSIXFDS_DIR))
+        (rec->offset && rec->kind != POSIXFDS_FILE && rec->kind != POSIXFDS_DIR &&
+         rec->kind != POSIXFDS_DIR_CHANNEL))
         return false;
     switch (rec->kind) {
     case POSIXFDS_PIPE:
@@ -339,8 +341,24 @@ static bool record_ok(const struct posixfds_fd *rec, const void *data)
     case POSIXFDS_ETC:
     case POSIXFDS_DIR:
     case POSIXFDS_PROC:      return string_ok(data, rec->data_len);
+    case POSIXFDS_DIR_CHANNEL:
+        return posixfds_dirch_parse(data, rec->data_len, NULL, NULL, NULL);
     }
     return true;   /* a memfd's data and a file's: their adopters check or ignore it */
+}
+
+/* A directory channel's data (checked) without its text: the sender's
+ * word for a name, which a later reopen would resolve with our rights
+ * (dir.c's replacement), so it is not believed, as a file's path isn't.
+ * buf: room for POSIXFDS_DATA_MAX bytes; the new length. */
+static uint32_t dirch_untold(const void *data, uint32_t len, uint8_t *buf)
+{
+    const char *m;
+    (void)posixfds_dirch_parse(data, len, NULL, &m, NULL);
+    uint32_t keep = (uint32_t)(m - (const char *)data) + (uint32_t)strlen(m) + 1;
+    memcpy(buf, data, keep);
+    buf[keep] = '\0';   /* no text */
+    return keep + 1;
 }
 
 long fdpass_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
@@ -358,7 +376,19 @@ long fdpass_adopt(const struct posixfds_fd *rec, const void *data, const handle_
         r.data_len = 0;
         data = NULL;
     }
-    return fd_adopters[r.kind](&r, data, hs, out);
+    uint8_t *untold = NULL;
+    if (r.kind == POSIXFDS_DIR_CHANNEL) {   /* nor a directory channel's text */
+        untold = jam_malloc(POSIXFDS_DATA_MAX);
+        if (!untold) {
+            jam_handle_close(hs[0]);
+            return -ENOMEM;
+        }
+        r.data_len = dirch_untold(data, r.data_len, untold);
+        data = untold;
+    }
+    long res = fd_adopters[r.kind](&r, data, hs, out);
+    jam_free(untold);
+    return res;
 }
 
 /* ---- SCM_RIGHTS ------------------------------------------------------------------------- */

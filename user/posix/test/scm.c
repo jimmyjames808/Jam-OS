@@ -5,7 +5,8 @@
  *     end written, a memfd mapped and written (the sender sees it), a file
  *     read at the sender's offset, /dev/zero read, a socketpair end and a
  *     SOCK_SEQPACKET end talked through, a directory (by its path: CB5) a
- *     start for fstatat and fsync'd, a file on an ext /data unlinked while
+ *     start for fstatat and fsync'd, one on an ext /data as its channel
+ *     (DL2: it follows a rename), a file on an ext /data unlinked while
  *     open (our own open crosses: CB5; FAT refuses the unlink); the kinds that don't (an eventfd, an
  *     epoll set) refused with EINVAL;
  *   - a memfd's read-only twin passed on stays read-only (no write, no
@@ -201,6 +202,23 @@ static void check_kinds(const int *s)
     CHECK(r >= 0 && fsync(r) == 0);
     close(r);
     close(dir);
+    /* On an ext /data a directory crosses as its own channel (DL2): what
+     * arrives follows a rename, as the sender's does. */
+    if (access("/data", W_OK) == 0 && pt_data_ext()) {
+        dir = mkdir("/data/pt-scm-d", 0755) == 0 ? open("/data/pt-scm-d", O_RDONLY | O_DIRECTORY)
+                                                : -1;
+        int in = dir >= 0 ? openat(dir, "in", O_WRONLY | O_CREAT | O_CLOEXEC, 0644) : -1;
+        r = in >= 0 ? pass_one(s, dir) : -1;
+        CHECK(r >= 0 && rename("/data/pt-scm-d", "/data/pt-scm-e") == 0 &&
+              fstatat(r, "in", &st, 0) == 0 && S_ISREG(st.st_mode));
+        CHECK(unlinkat(r, "in", 0) == 0 && rmdir("/data/pt-scm-e") == 0);
+        if (in >= 0)
+            close(in);
+        if (r >= 0)
+            close(r);
+        if (dir >= 0)
+            close(dir);
+    }
     /* A file unlinked while open (base's FLAG_DELETE_ON_CLOSE temp files: Chromium's browser
      * gives each renderer one for its swap): no path to open again, so our own open crosses.
      * Only on an ext /data: FAT refuses to unlink a file that is open. */

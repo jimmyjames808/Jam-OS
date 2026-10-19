@@ -156,7 +156,7 @@ static bool listed(const char *dir, const char *name)
 static void check_missing(void)
 {
     static const char *const gone[] = {
-        "/proc/uptime", "/proc/self/smaps", "/proc/self/task/0", "/proc/self/cwd",
+        "/proc/uptime", "/proc/self/smaps", "/proc/self/task/0", "/proc/self/environ",
         "/proc/self/ns/user", "/proc/sys/kernel/nosuch", "/proc/sys/vm", "/proc/self/fd/01",
         "/proc/self/fd/x", "/proc/self/exe2",
     };
@@ -209,7 +209,8 @@ static void check_self(void)
     errno = 0;
     CHECK(readlink("/proc", buf, sizeof(buf)) == -1 && errno == EINVAL);
     CHECK(listed("/proc", "self") && listed("/proc", want) && listed("/proc", ".."));
-    CHECK(listed("/proc/self", "exe") && listed("/proc/self", "fd") && !listed("/proc/self", "x"));
+    CHECK(listed("/proc/self", "exe") && listed("/proc/self", "fd") && listed("/proc/self", "cwd") &&
+          !listed("/proc/self", "x"));
     CHECK(listed("/proc/self", "task") && listed("/proc/self", "cmdline") && listed("/proc/self", "mem"));
     CHECK(!listed("/proc/self", "ns"));   /* no user namespaces (base's check of ns/user says so) */
     errno = 0;

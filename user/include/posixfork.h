@@ -15,7 +15,9 @@
  *
  *   POSIXFORK_FD     the description first met at descriptor `item` (its
  *                    lowest), or POSIXFORK_CTTY for the process's
- *                    terminal held by no descriptor; `sub` is the kind's
+ *                    terminal held by no descriptor, or POSIXFORK_CWD
+ *                    for the current directory held by neither (its
+ *                    channel, for a directory channel); `sub` is the kind's
  *                    own numbering of its handles (a terminal's tty
  *                    channel 0 and data channel 1; a connection's inner
  *                    socketpair end from 8 on)
@@ -51,6 +53,7 @@
 #define POSIXFORK_PART    (15u << 28)
 #define POSIXFORK_SUBS    16u           /* a description's handles: subs 0 .. 15 */
 #define POSIXFORK_CTTY    1024u         /* the terminal's item (descriptors are 0 .. 1023) */
+#define POSIXFORK_CWD     1025u         /* the current directory's (after the terminal's) */
 #define POSIXFORK_KEY(part, item, sub) ((part) | (uint32_t)(item) * POSIXFORK_SUBS | (sub))
 
 struct posixfork_msg {

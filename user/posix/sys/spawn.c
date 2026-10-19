@@ -21,7 +21,8 @@
  *      /svc/exec (file_program; EACCES without `svc exec` in our list),
  *      ENOENT if missing. Before step 4, which takes things out of ours.
  *   4. The hand-over: every slot without FD_CLOEXEC exported (new handles
- *      of the child's own), the directory, the umask, the signal mask and
+ *      of the child's own), the directory (a directory channel as itself,
+ *      but to a child given grants: its text), the umask, the signal mask and
  *      the ignored signals, our pid as its parent's, its process group and
  *      session (0 meaning its own pid, which nobody knows before it is
  *      made).
@@ -228,13 +229,14 @@ static long program(const char *abs, struct program *p)
 }
 
 /* The program for r into *prog: its path, or its name looked up in
- * r->search (a PATH: ':'-separated; an empty part is the directory dir). */
-static long find_program(const struct jam_spawn_req *r, const char *dir, struct program *prog)
+ * r->search (a PATH: ':'-separated; an empty part is the directory), a
+ * relative one from t's directory. */
+static long find_program(const struct jam_spawn_req *r, struct spawnfd *t, struct program *prog)
 {
     char *abs = jam_malloc(PATH_MAX), *part = jam_malloc(PATH_MAX);
     long e = abs && part ? 0 : -ENOMEM;
     if (!e && (!r->search || strchr(r->path, '/'))) {
-        e = spawn_absolute(r->path, dir, abs);
+        e = spawnfd_absolute(t, r->path, abs);
         if (!e)
             e = program(abs, prog);
     } else if (!e) {
@@ -247,7 +249,7 @@ static long find_program(const struct jam_spawn_req *r, const char *dir, struct 
             e = -ENAMETOOLONG;
             if (l + 1 + ln < PATH_MAX) {
                 snprintf(part, PATH_MAX, "%.*s%s%s", (int)l, p, l ? "/" : "", r->path);
-                e = spawn_absolute(part, dir, abs);
+                e = spawnfd_absolute(t, part, abs);
             }
             if (!e)
                 e = program(abs, prog);
@@ -459,11 +461,15 @@ static int launch(const struct jam_spawn_req *r, bool exec, struct spawnfd *t,
                   const struct program *p, struct posixfds_out *ho, struct started *c)
 {
     long e = child_state(r, exec, &ho->state);
+    /* The directory itself, but to a child whose namespace is narrowed
+     * (grants): a channel reaches what its view does, past the grants, so
+     * that child gets the text, resolved in its own namespace. */
+    if (!e)
+        e = spawnfd_export_cwd(t, ho, r->grants != NULL);
     if (e) {
         posixfds_discard(ho);
         return (int)-e;
     }
-    ho->cwd = t->cwd;
     if (p->sealed)
         ho->exe = p->name;   /* init passes it on as written; spawn names the others */
     else
@@ -521,14 +527,15 @@ static status_t exec_handover(handle_t startup, void *ctx)
     struct exec_job *x = ctx;
     sig_thread_hold();
     x->held = true;
-    long e = spawnfd_export(x->t, x->ho);
+    long e = spawnfd_export_cwd(x->t, x->ho, false);   /* first: it moves nothing of ours */
+    if (!e)
+        e = spawnfd_export(x->t, x->ho);   /* a failure closes the directory's channel too */
     if (e) {
         x->err = e;
         return ERR_BAD_STATE;   /* x->err says what */
     }
     (void)child_state(x->r, true, &x->ho->state);   /* exec's: it can't fail */
     x->ho->state.sigpending = sig_exec_pending();
-    x->ho->cwd = x->t->cwd;
     x->ho->exe = x->exe[0] ? x->exe : NULL;
     /* A raised image's exec starts the new one raised too (FJ1): Linux
      * keeps AT_SECURE while the raised credentials last (euid != uid), and
@@ -638,7 +645,7 @@ static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
     if (!e)
         e = spawnfd_apply(t, r->ops, r->nops);
     if (!e)
-        e = r->path ? find_program(r, t->cwd, &prog) : -EFAULT;
+        e = r->path ? find_program(r, t, &prog) : -EFAULT;
     if (!e && exec && !prog.sealed)
         e = exec_replace(r, t, &prog, &ho);   /* back only if it failed */
     else if (!e)

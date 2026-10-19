@@ -415,10 +415,14 @@ static bool raised(const struct prog *p, const handle_t *image, uint32_t n)
  * and writes the child its own:
  *   - a file keeps its channel and buffer but not its path: the child can
  *     use it, not give it on (ENOTSUP), as a file received with SCM_RIGHTS;
- *   - a directory (a path and nothing else) is left out, and so is a
- *     duplicate of one;
- *   - the current directory is the caller's or "/" (child_dir), the
- *     program's path the one sealed;
+ *   - a directory channel (POSIXFDS_DIR_CHANNEL) keeps its channel but not
+ *     its text, as a file its path: a later reopen of that text (after a
+ *     fresh start of its service) would be the child's authority steered
+ *     by the caller's name;
+ *   - a directory given as a path and nothing else is left out, and so
+ *     is a duplicate of one;
+ *   - the current directory is the caller's or "/" (child_dir, cwd_dir),
+ *     the program's path the one sealed;
  *   - a raised child (above) is marked AT_SECURE (POSIXFDS_SECURE): argv
  *     and the environment are the caller's.
  * The other kinds are objects the caller holds and gives (pipes, sockets,
@@ -427,8 +431,7 @@ static bool raised(const struct prog *p, const handle_t *image, uint32_t n)
  * POSIX program gets a hand-over even when the caller wrote none (no
  * descriptors: a raised one's musl start opens 0 to 2 on /dev/null), for
  * the mark; any other program gets the caller's rewritten, or nothing. A
- * malformed hand-over refuses the start. Names as objects (a directory
- * channel for the current directory) are later: the plan's option C. */
+ * malformed hand-over refuses the start. */
 
 static struct posixfds_desc kept[POSIXFDS_FD_MAX];   /* the descriptors kept (the worker's) */
 static handle_t kept_hs[POSIXFDS_FD_MAX][POSIXFDS_KIND_HANDLES];
@@ -438,7 +441,23 @@ struct rewrite {
     unsigned n;                                /* entries of kept */
     uint32_t used;                             /* bytes of kept_data */
     uint64_t left_out[POSIXFDS_FD_MAX / 64];   /* descriptors left out */
+    handle_t cwd;                              /* the caller's directory as a channel, or 0 */
+    uint32_t cwd_len;                          /* ... its data's bytes in cwd_data */
 };
+
+static uint8_t cwd_data[POSIXFDS_DATA_MAX];   /* the worker's */
+
+/* A directory channel's data (checked) without its text, into out; its
+ * length. */
+static uint32_t dirch_untold(const void *data, uint32_t len, uint8_t *out)
+{
+    const char *m;
+    (void)posixfds_dirch_parse(data, len, NULL, &m, NULL);
+    uint32_t keep = (uint32_t)(m - (const char *)data) + (uint32_t)strlen(m) + 1;
+    memcpy(out, data, keep);
+    out[keep] = '\0';   /* no text */
+    return keep + 1;
+}
 
 static bool was_left_out(const struct rewrite *r, uint32_t fd)
 {
@@ -466,7 +485,9 @@ static status_t keep_fd(void *ctx, const struct posixfds_fd *rec, const void *da
     }
     unsigned i = r->n++;   /* below POSIXFDS_FD_MAX: each descriptor is in it once */
     memcpy(kept_hs[i], hs, rec->nhandles * sizeof(handle_t));
-    if (len)
+    if (rec->kind == POSIXFDS_DIR_CHANNEL)   /* its ids and mount, not its text */
+        len = dirch_untold(data, len, kept_data + r->used);
+    else if (len)
         memcpy(kept_data + r->used, data, len);
     kept[i] = (struct posixfds_desc){
         .fd = rec->fd, .kind = rec->kind, .status = rec->status, .offset = rec->offset,
@@ -483,6 +504,38 @@ static void drop_kept(void *ctx)
     r->n = r->used = 0;
 }
 
+/* posixfds_read's sink: the caller's directory as a channel (cwd_dir
+ * decides what the child gets of it). */
+static void keep_cwd(void *ctx, const void *data, uint32_t len, handle_t ch)
+{
+    struct rewrite *r = ctx;
+    memcpy(cwd_data, data, len);   /* at most POSIXFDS_DATA_MAX: checked */
+    r->cwd_len = len;
+    r->cwd = ch;
+}
+
+/* The child's current directory when its caller's is a channel (r->cwd):
+ * that channel itself, as the caller holds it (docs/DIRHANDLE-PLAN.md
+ * 4.5, the owner's D2), when the child isn't raised and its list gives
+ * the mount the channel names; else none (0, the channel closed), and
+ * child_dir decides by the text. The channel gives the child no more than
+ * a directory descriptor the caller could hand it does: the caller's
+ * view of that directory. A raised child is never steered by it. */
+static handle_t cwd_dir(const struct prog *p, struct rewrite *r)
+{
+    const char *m = NULL;
+    char point[NS_NAME_MAX];
+    if (!r->cwd)
+        return HANDLE_INVALID;
+    (void)posixfds_dirch_parse(cwd_data, r->cwd_len, NULL, &m, NULL);   /* checked */
+    snprintf(point, sizeof(point), "%s", m);
+    if (!p->raised && dp_wants_mounts(&p->w, point))
+        return r->cwd;
+    jam_handle_close(r->cwd);
+    r->cwd = HANDLE_INVALID;
+    return HANDLE_INVALID;
+}
+
 /* The child's current directory, given its caller's (cwd: the hand-over's,
  * text the caller wrote). The caller's when the child isn't raised, the
  * text is an absolute path (taken cleaned: no ".", ".." or "//"), its
@@ -495,9 +548,11 @@ static void drop_kept(void *ctx)
  * child starts in "/" whatever its caller says: a path is text, which
  * proves nothing about what the caller can reach, and a raised child
  * steered by it would make and change files where its caller can't.
- * Directory handles (docs/DIRHANDLE-PLAN.md) will carry the directory as
- * an open one the caller holds, which a raised child may be given too:
- * that replaces the text here. */
+ * A caller whose directory is a channel gives that instead (cwd_dir); the
+ * text here is for a text one (FAT, the boot image), or a channel the
+ * child doesn't get. A raised child gets neither (DL2's call: the channel
+ * would steer it no further than its caller's view, but the fail-safe
+ * start in "/" stays). */
 static const char *child_dir(const struct prog *p, const char *cwd)
 {
     static char clean[POSIXFDS_PATH_MAX], dir[POSIXFDS_PATH_MAX];   /* the worker's */
@@ -538,7 +593,8 @@ static status_t relay(handle_t startup, void *ctx)
     static char cwd[POSIXFDS_PATH_MAX];    /* the caller's, as it wrote it */
     struct posixfds_state state = { .umask = 022 };   /* none written: libc's own */
     memset(&r, 0, sizeof(r));
-    const struct posixfds_sink sink = { .ctx = &r, .fd = keep_fd, .reset = drop_kept };
+    const struct posixfds_sink sink = { .ctx = &r, .fd = keep_fd, .reset = drop_kept,
+                                        .cwd_dir = keep_cwd };
     status_t st = posixfds_read(p->handover, &sink, &state, cwd);
     if (st == ERR_NOT_FOUND && !p->w.posix)
         return OK;   /* nothing for a program that reads none */
@@ -547,9 +603,11 @@ static status_t relay(handle_t startup, void *ctx)
                status_str(st));
         return st;   /* what it carried is closed */
     }
+    handle_t dir = cwd_dir(p, &r);
     const struct posixfds_out out = {
-        .state = state, .cwd = child_dir(p, st == OK ? cwd : "/"), .fds = kept, .nfds = r.n,
-        .exe = p->path, .secure = p->raised,
+        .state = state, .cwd = dir ? "/" : child_dir(p, st == OK && cwd[0] ? cwd : "/"),
+        .cwd_dir = dir, .cwd_data = cwd_data, .cwd_data_len = r.cwd_len,
+        .fds = kept, .nfds = r.n, .exe = p->path, .secure = p->raised,
     };
     return posixfds_write(startup, &out);   /* the handles go whatever happens */
 }

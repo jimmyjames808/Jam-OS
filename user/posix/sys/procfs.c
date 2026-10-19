@@ -50,6 +50,10 @@
  *                         for writing, as Linux), stat stats it;
  *                         posix_spawn and execve of it start this program
  *                         again from its own pages (spawn.c's self-image)
+ *   /proc/self/cwd        a link to the current directory: readlink is
+ *                         getcwd's answer (a removed one's last known
+ *                         path and " (deleted)", as Linux's), stat and open
+ *                         are the directory's ("." from it)
  *   /proc/self/fd         a directory of our open descriptors, listed by
  *                         number as the table is when each getdents runs
  *   /proc/<pid>/fd        a child's: the numbers of its open descriptors as
@@ -57,14 +61,15 @@
  *                         lx_child_fds) on each getdents; a name in it is
  *                         ENOENT (what each one is isn't asked), a child
  *                         we can't ask EACCES, a reaped one ESRCH
- *   /proc/self/fd/N       a link to what descriptor N is: a file's or a
- *                         directory's path, /dev/... for the devices,
+ *   /proc/self/fd/N       a link to what descriptor N is: a file's path, a
+ *                         directory's as getcwd would say it (asked of its
+ *                         channel; removed: " (deleted)"), /dev/... for the devices,
  *                         /etc/... for libc's files, /memfd:NAME (deleted),
  *                         pipe:[I], socket:[I], anon_inode:[KIND] or
  *                         anon_inode:inotify (I: the
  *                         description's serial). open makes a new
  *                         description of the same thing (a path opened again;
- *                         a memfd's object with the access asked, so
+ *                         a directory "." from it; a memfd's object with the access asked, so
  *                         O_RDONLY is a twin that can't be written or mapped
  *                         writable, here or in a child; a pipe end shared
  *                         when the access fits), ENXIO for a socket or an
@@ -136,6 +141,7 @@ enum node {
     N_SYSKERNEL,  /* /proc/sys/kernel */
     N_SYSFS,      /* /proc/sys/fs */
     N_SYSINOTIFY, /* /proc/sys/fs/inotify */
+    N_CWD,        /* /proc/self/cwd */
     N_MAPS,       /* /proc/<pid>/maps (and the files below it) */
     N_STAT,       /* /proc/<pid>/stat */
     N_STATM,      /* /proc/<pid>/statm */
@@ -186,7 +192,8 @@ pfiles[] = {
 
 /* A process directory's entries, after "." and "..", and whose have each. */
 static const struct { enum node node; uint8_t type; const char *name; unsigned who; } pid_names[] = {
-    { N_EXE, DT_LNK, "exe", WHO_SELF }, { N_FDDIR, DT_DIR, "fd", WHO_SELF | WHO_KID },
+    { N_EXE, DT_LNK, "exe", WHO_SELF }, { N_CWD, DT_LNK, "cwd", WHO_SELF },
+    { N_FDDIR, DT_DIR, "fd", WHO_SELF | WHO_KID },
     { N_TASKDIR, DT_DIR, "task", WHO_SELF }, { N_MAPS, DT_REG, "maps", WHO_ALL },
     { N_STAT, DT_REG, "stat", WHO_ALL }, { N_STATM, DT_REG, "statm", WHO_ALL },
     { N_STATUS, DT_REG, "status", WHO_ALL }, { N_CMDLINE, DT_REG, "cmdline", WHO_SELF | WHO_TASK },
@@ -731,7 +738,8 @@ long proc_stat(const struct path *p, bool follow, struct stat *st)
     long r = lookup(p->abs, &a);
     if (r)
         return r;
-    bool link = a.node == N_EXE || a.node == N_FD || (a.node == N_SELF && a.self_link);
+    bool link = a.node == N_EXE || a.node == N_FD || a.node == N_CWD ||
+                (a.node == N_SELF && a.self_link);
     if (link && !follow && !p->must_dir) {   /* "link/" is followed, as Linux */
         node_stat(a.node == N_SELF ? N_SELFLINK : a.node, a.node == N_FD ? a.fd : a.pid, st);
         return 0;
@@ -739,6 +747,8 @@ long proc_stat(const struct path *p, bool follow, struct stat *st)
     const char *e = a.node == N_EXE ? proc_exe() : NULL;
     if (a.node == N_EXE)
         r = e ? lx_newfstatat(AT_FDCWD, (long)(uintptr_t)e, (long)(uintptr_t)st, 0, 0, 0) : -ENOENT;
+    else if (a.node == N_CWD)   /* the directory itself, as Linux's link leads */
+        r = lx_newfstatat(AT_FDCWD, (long)(uintptr_t)".", (long)(uintptr_t)st, 0, 0, 0);
     else if (a.node == N_FD)
         r = lx_fstat(a.fd, (long)(uintptr_t)st, 0, 0, 0, 0);
     else
@@ -776,15 +786,22 @@ long proc_readlink(const struct path *p, char *buf, size_t size)
         const char *e = proc_exe();
         return e ? copy_link(e, buf, size) : -ENOENT;
     }
-    if (a.node != N_FD)
+    if (a.node != N_FD && a.node != N_CWD)
         return -EINVAL;   /* a directory */
-    struct fd_desc *d = fd_get(a.fd);
-    char *text = d ? jam_malloc(PATH_BYTES) : NULL;
-    r = !d ? -ENOENT : !text ? -ENOMEM : 0;
-    if (!r) {
+    /* A directory (the current one, or a descriptor's) is getcwd's
+     * question asked of it: a removed one is its last known text and
+     * " (deleted)", one deeper than PATH_BYTES ENAMETOOLONG. */
+    struct fd_desc *d = a.node == N_CWD ? path_cwd() : fd_get(a.fd);
+    char *text = jam_malloc(PATH_BYTES);
+    r = !text ? -ENOMEM : (!d && a.node == N_FD) ? -ENOENT : 0;
+    if (!r && !d)
+        memcpy(text, "/", 2);   /* the current directory "/" */
+    else if (!r && dir_is(d))
+        r = dir_where(d, text, true);
+    else if (!r)
         link_of(d, text);
+    if (!r)
         r = copy_link(text, buf, size);
-    }
     jam_free(text);
     if (d)
         fd_put(d);
@@ -936,6 +953,9 @@ static long reopen(int fd, long flags, bool dir)
     long r;
     if (d->ops == &memfd_ops)
         r = dir ? -ENOTDIR : memfd_reopen(d, (int)flags);
+    else if (dir_is(d))   /* "." from it: its own channel's, at any depth (or its text) */
+        r = lx_openat(fd, (long)(uintptr_t)".", flags & ~(long)(O_CREAT | O_EXCL | O_NOFOLLOW),
+                      0, 0, 0);
     else
         r = reopen_other(d, flags, dir);
     fd_put(d);
@@ -950,11 +970,15 @@ long proc_open(const struct path *p, long flags)
         return r;
     if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL))
         return -EEXIST;
-    bool link = a.node == N_EXE || a.node == N_FD || (a.node == N_SELF && a.self_link);
+    bool link = a.node == N_EXE || a.node == N_FD || a.node == N_CWD ||
+                (a.node == N_SELF && a.self_link);
     if (link && (flags & O_NOFOLLOW) && !(flags & O_PATH))
         return -ELOOP;
     if (a.node == N_EXE)
         return open_exe(p, flags);
+    if (a.node == N_CWD)   /* the directory itself: "." from it */
+        return lx_openat(AT_FDCWD, (long)(uintptr_t)".",
+                         flags & ~(long)(O_CREAT | O_EXCL | O_NOFOLLOW), 0, 0, 0);
     if (a.node == N_FD)
         return reopen(a.fd, flags, p->must_dir || (flags & O_DIRECTORY));
     if (is_file(a.node))

@@ -5,8 +5,8 @@ docs/DIRHANDLE-PLAN.md, DL0 and DL1):
 
     checkpathdone.py [--selftest] [file.c ...]
 
-A struct path made by path_get, path_set, path_of, path_in_dir or
-file_where_path holds the directory description a relative path starts
+A struct path made by path_get, path_get_at, path_set, path_of,
+path_in_dir or file_where_path holds the directory description a relative path starts
 from (`at`), and path_done lets it go. A function that makes one and
 never calls path_done leaks the description and its channel, one of the
 volume's 256, every time it runs. So each function in user/posix/sys/*.c
@@ -24,7 +24,7 @@ import glob
 import re
 import sys
 
-MAKERS = ('path_get', 'path_set', 'path_of', 'path_in_dir', 'file_where_path')
+MAKERS = ('path_get', 'path_get_at', 'path_set', 'path_of', 'path_in_dir', 'file_where_path')
 MAKER_CALL = re.compile(r'\b(' + '|'.join(MAKERS) + r')\s*\(')
 DONE_CALL = re.compile(r'\bpath_done\s*\(')
 EXEMPT = '(path_done: the caller\'s)'

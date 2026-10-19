@@ -39,9 +39,12 @@
  * (the errno table is posixtest's files section); rename replaces what
  * is at the new name (fs.rename's FS_RENAME_REPLACE). A rename or link
  * between two directory descriptors is fs.rename_at or fs.link_at
- * (dir_meet). Children: a forked child gets a duplicate of a channel; a
- * spawned one, and a socket's receiver, the directory's text now (asked
- * of the service), as before (DL2 hands the channel on). */
+ * (dir_meet). Children: a forked child gets a duplicate of a channel (the
+ * fork hook, DL1's); a spawned or exec'd one and a socket's receiver the
+ * channel itself (POSIXFDS_DIR_CHANNEL, DL2; a socket's receiver without
+ * its text), a text description its path. The current directory is one
+ * of these descriptions too (path.c keeps it; chdir, fchdir and getcwd at
+ * the end of this file). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
@@ -666,21 +669,62 @@ static long dir_place(struct fd_desc *d, struct path *out)
     return x->chan ? path_in_dir(d, "", 0, out) : path_set(x->path, out);
 }
 
+/* x's channel as POSIXFDS_DIR_CHANNEL's data (<posixfds.h>): its ids,
+ * its mount and its last known text (none if it doesn't fit), in a new
+ * buffer of *len bytes; NULL: no memory. */
+static uint8_t *chan_data(const struct dir *x, uint32_t *len)
+{
+    const size_t head = sizeof(struct posixfds_dirch), ml = strlen(x->mount) + 1;
+    size_t pl = x->path ? strlen(x->path) + 1 : 1;
+    if (head + ml + pl > POSIXFDS_DATA_MAX)
+        pl = 1;   /* a hint too long to send: none */
+    uint8_t *b = jam_malloc(head + ml + pl);
+    if (!b)
+        return NULL;
+    const struct posixfds_dirch ids = { x->id, x->volume };
+    memcpy(b, &ids, head);
+    memcpy(b + head, x->mount, ml);
+    if (pl > 1)
+        memcpy(b + head + ml, x->path, pl);
+    else
+        b[head + ml] = '\0';
+    *len = (uint32_t)(head + ml + pl);
+    return b;
+}
+
+/* What a child or a socket's receiver gets of d: a channel's
+ * description its channel (a duplicate) as POSIXFDS_DIR_CHANNEL, a text
+ * one its text as POSIXFDS_DIR. A channel's that is gone is left out
+ * (-ENOTSUP): no channel is the directory now, and its text may name
+ * another. */
 static long dir_give(struct fd_desc *d, struct fd_given *out)
 {
-    char *text = jam_malloc(PATH_BYTES);
-    if (!text)
-        return -ENOMEM;
-    if (dir_text_now(d, text)) {
-        jam_free(text);
-        return -ENOTSUP;   /* no text names it (too deep, or gone): left out until DL2 */
+    const struct dir *x = d->priv;
+    handle_t ch = HANDLE_INVALID;
+    uint32_t len = 0;
+    uint8_t *data = NULL;
+    if (x->chan) {
+        long r = dir_channel(d, &ch);
+        if (r)
+            return r == -ENOENT ? -ENOTSUP : r;
+        data = chan_data(x, &len);
+        if (!data) {
+            jam_handle_close(ch);
+            return -ENOMEM;
+        }
+    } else {
+        data = (uint8_t *)jam_strdup(x->path);
+        if (!data)
+            return -ENOMEM;
+        len = (uint32_t)strlen(x->path) + 1;
     }
     lock_take(&d->lock);
     int64_t off = d->offset;
     lock_give(&d->lock);
     *out = (struct fd_given){
-        .kind = POSIXFDS_DIR, .status = fd_status(d) & POSIXFDS_STATUS, .offset = (uint64_t)off,
-        .data = text, .data_len = (uint32_t)strlen(text) + 1,
+        .kind = x->chan ? POSIXFDS_DIR_CHANNEL : POSIXFDS_DIR,
+        .status = fd_status(d) & POSIXFDS_STATUS, .offset = (uint64_t)off,
+        .handles = { ch }, .nhandles = x->chan ? 1 : 0, .data = data, .data_len = len,
     };
     return 0;
 }
@@ -754,6 +798,95 @@ long dir_adopt_fd(const struct posixfds_fd *rec, const void *data, const handle_
     if (!r)
         (*out)->offset = (int64_t)rec->offset;
     return r;
+}
+
+/* hint (a starter's word: an absolute path) as a last known text on the
+ * mount m: cleaned (fs_path_clean: no ".", ".." or "//"), and only if it
+ * is on m; else NULL (no hint). */
+static char *hint_given(const char *m, const char *hint)
+{
+    size_t ml = strlen(m), hl = strlen(hint);
+    char *clean = hl > 1 && hl < PATH_BYTES ? jam_malloc(PATH_BYTES) : NULL;
+    if (!clean)
+        return NULL;
+    clean[0] = '/';   /* fs_path_clean gives the names without it */
+    if (fs_path_clean(hint, (uint32_t)hl, clean + 1) != OK || strncmp(clean, m, ml) ||
+        (clean[ml] && clean[ml] != '/')) {
+        jam_free(clean);
+        return NULL;
+    }
+    return clean;
+}
+
+/* A description of the directory channel ch (consumed) that data
+ * (len bytes, a POSIXFDS_DIR_CHANNEL's) describes, with open's status
+ * flags (O_PATH: the channel was opened without FS_READ, so its
+ * replacement is too). The channel is believed; its ids are the
+ * starter's word, and its text a hint (hint_given). */
+static long chan_adopt(handle_t ch, const void *data, uint32_t len, uint32_t status,
+                       struct fd_desc **out)
+{
+    struct posixfds_dirch ids;
+    const char *m, *hint;
+    if (!posixfds_dirch_parse(data, len, &ids, &m, &hint)) {
+        jam_handle_close(ch);
+        return -EINVAL;
+    }
+    struct dir *x = jam_calloc(1, sizeof(*x));
+    struct fd_desc *d = x ? fd_new(&dir_ops, (status & ~FD_ACCMODE) | O_RDONLY, x) : NULL;
+    if (!d) {
+        jam_free(x);
+        jam_handle_close(ch);
+        return -ENOMEM;
+    }
+    x->chan = true;
+    x->ch = ch;
+    x->flags = (status & O_PATH) ? 0 : FS_READ;
+    x->id = ids.id;
+    x->volume = ids.volume;
+    memcpy(x->mount, m, strlen(m) + 1);   /* shorter than NS_NAME_MAX: parsed */
+    x->path = hint_given(m, hint);
+    *out = d;
+    return 0;
+}
+
+long dir_adopt_ch(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
+                  struct fd_desc **out)
+{
+    if (rec->offset > INT64_MAX) {
+        jam_handle_close(hs[0]);
+        return -EINVAL;
+    }
+    long r = chan_adopt(hs[0], data, rec->data_len, rec->status, out);
+    if (!r)
+        (*out)->offset = (int64_t)rec->offset;
+    return r;
+}
+
+long dir_adopt_cwd(handle_t ch, const void *data, uint32_t len, struct fd_desc **out)
+{
+    return chan_adopt(ch, data, len, O_RDONLY | O_PATH, out);
+}
+
+long dir_new_text(const char *abs, struct fd_desc **out)
+{
+    size_t n = strlen(abs);
+    if (abs[0] != '/' || n >= PATH_BYTES)
+        return -EINVAL;
+    char *clean = jam_malloc(PATH_BYTES);
+    struct dir *x = jam_calloc(1, sizeof(*x));
+    struct fd_desc *d = clean && x ? fd_new(&dir_ops, O_RDONLY | O_PATH, x) : NULL;
+    if (!d) {
+        jam_free(x);
+        jam_free(clean);
+        return -ENOMEM;
+    }
+    clean[0] = '/';   /* fs_path_clean gives the names without it */
+    if (fs_path_clean(abs, (uint32_t)n, clean + 1) != OK)
+        memcpy(clean, "/", 2);
+    x->path = clean;
+    *out = d;
+    return 0;
 }
 
 /* ---- calls that change directories ------------------------------------------- */
@@ -1077,6 +1210,13 @@ long dir_meet(const struct path *a, const struct path *b, uint32_t flags, bool l
 
 /* ---- the current directory ------------------------------------------------------ */
 
+/* The current directory is a directory description (path.c keeps it,
+ * docs/DIRHANDLE-PLAN.md 4.4): chdir opens one, fchdir shares the
+ * descriptor's (Linux's fchdir takes the directory, not the listing), and
+ * getcwd asks it where it is now. On a mount with directory channels it
+ * is the directory's own channel, so it works at any depth, follows a
+ * rename and, removed, still answers ".." (chdir("..") gets out). */
+
 /* chdir's check of p (a directory), and its physical form. */
 static long chdir_path(struct path *p)
 {
@@ -1095,47 +1235,142 @@ static long chdir_path(struct path *p)
     return r ? r : path_place(p);   /* where a link led: getcwd says that */
 }
 
-long lx_chdir(long pathname, long b, long c, long d, long e, long f)
+/* The directory at p as the current directory: its channel's description
+ * (fs.opendir without FS_READ: the walk's search bits alone, one call) on
+ * a mount with directory channels, else (and when the service has no
+ * room) a text one once p is found to be a directory. -errno, or
+ * PATH_LINK_OUT. */
+static long cwd_open(struct path *p, struct fd_desc **out)
 {
-    struct path p;
-    long r = path_get(AT_FDCWD, (const char *)(uintptr_t)pathname, &p);
+    const uint32_t status = O_RDONLY | O_PATH | O_DIRECTORY;
+    if (p->where == PATH_MOUNT && path_libc(p) == LIBC_NONE &&
+        (path_features(p) & FS_FEAT_DIRS)) {
+        long r = dir_open(p, status, out);
+        if (r || ((const struct dir *)(*out)->priv)->chan)
+            return r;
+        fd_put(*out);   /* a text one: found to be a directory below first */
+        *out = NULL;
+    }
+    long r = chdir_path(p);
+    return r ? r : text_open(p, status, out);
+}
+
+long dir_cwd_open(struct fd_desc *base, const char *in, struct fd_desc **out)
+{
+    struct path *p = jam_malloc(sizeof(*p));
+    if (!p)
+        return -ENOMEM;
+    long r = path_get_at(base, in, p);
     if (!r)
         do
-            r = chdir_path(&p);
-        while (path_again(&p, &r));
-    if (!r)
-        path_cwd_set(p.abs);
-    path_done(&p);
+            r = cwd_open(p, out);
+        while (path_again(p, &r));
+    path_done(p);
+    jam_free(p);
     return r;
 }
 
-/* The current directory is text until DL2 (docs/DIRHANDLE-PLAN.md 4.4):
- * fchdir takes the directory's text now (a channel's asked of its service,
- * so a rename is followed; ENAMETOOLONG past PATH_BYTES). */
+long lx_chdir(long pathname, long b, long c, long d, long e, long f)
+{
+    struct fd_desc *base = path_cwd(), *dir = NULL;
+    long r = dir_cwd_open(base, (const char *)(uintptr_t)pathname, &dir);
+    if (base)
+        fd_put(base);
+    if (!r)
+        path_cwd_set(dir);
+    return r;
+}
+
 long lx_fchdir(long fd, long b, long c, long d, long e, long f)
 {
     struct fd_desc *desc = fd_get(fd);
     if (!desc)
         return -EBADF;
-    char *text = dir_is(desc) ? jam_malloc(PATH_BYTES) : NULL;
-    long r = !dir_is(desc) ? -ENOTDIR : !text ? -ENOMEM : dir_text_now(desc, text);
-    if (!r)
-        path_cwd_set(text);
-    jam_free(text);
-    fd_put(desc);
+    if (!dir_is(desc)) {
+        fd_put(desc);
+        return -ENOTDIR;
+    }
+    path_cwd_set(desc);   /* our reference is the current directory's now */
+    return 0;
+}
+
+/* Is the text description x's directory removed (the service says it is
+ * not there)? Only a mount of ours can say: a program started without
+ * the mount its directory is on (the shell's cd, then a program that has
+ * no /data) keeps the name. A service that's slow or refuses doesn't
+ * count. */
+static bool text_removed(const struct dir *x)
+{
+    struct path *p = jam_malloc(sizeof(*p));
+    if (!p)
+        return false;
+    bool gone = false;
+    char m[NS_NAME_MAX];
+    if (!path_set(x->path, p) && p->where == PATH_MOUNT && path_libc(p) == LIBC_NONE &&
+        p->mount_len < NS_NAME_MAX) {
+        memcpy(m, p->abs, p->mount_len);
+        m[p->mount_len] = '\0';
+        struct path_info i;
+        long r = path_is_mount(m) ? path_info(p, &i) : 0;
+        gone = r == -ENOENT || r == -ENOTDIR;
+    }
+    path_done(p);
+    jam_free(p);
+    return gone;
+}
+
+/* A removed directory's last known text with " (deleted)" into out, as
+ * Linux's /proc links say it; -ENOENT if it has none. */
+static long deleted_text(const struct dir *x, char *out)
+{
+    if (!x->path)
+        return -ENOENT;
+    int n = snprintf(out, PATH_BYTES, "%s (deleted)", x->path);
+    return n < 0 || n >= (int)PATH_BYTES ? -ENAMETOOLONG : 0;
+}
+
+/* Is the channel's directory removed (no links), not just cut off from
+ * its view? */
+static bool chan_removed(struct fd_desc *d)
+{
+    struct path p;
+    struct path_info i;
+    bool gone = !dir_place(d, &p) && !path_info(&p, &i) && i.has_attr && !i.nlink;
+    path_done(&p);
+    return gone;
+}
+
+long dir_where(struct fd_desc *d, char *out, bool deleted)
+{
+    const struct dir *x = d->priv;
+    if (!x->chan) {
+        if (text_removed(x))
+            return deleted ? deleted_text(x, out) : -ENOENT;
+        memcpy(out, x->path, strlen(x->path) + 1);
+        return 0;
+    }
+    long r = chan_text(d, out);   /* fs.resolve of "": removed or cut off, ERR_NOT_FOUND */
+    if (r == -ENOENT && deleted && chan_removed(d))
+        r = deleted_text(x, out);
     return r;
 }
 
 long lx_getcwd(long buf, long size, long c, long d, long e, long f)
 {
-    if (path_cwd_removed())
-        return -ENOENT;   /* a directory removed under us: Linux's getcwd says so */
-    char *cwd = jam_malloc(PATH_BYTES);
-    if (!cwd)
+    char *text = jam_malloc(PATH_BYTES);
+    if (!text)
         return -ENOMEM;
-    path_cwd(cwd);
-    size_t n = strlen(cwd) + 1;
-    long r = (size_t)size < n ? -ERANGE : uc_put((void *)(uintptr_t)buf, cwd, n) ? -EFAULT : (long)n;
-    jam_free(cwd);
+    struct fd_desc *cwd = path_cwd();
+    long r = 0;
+    if (cwd)
+        r = dir_where(cwd, text, false);   /* removed under us: ENOENT, as Linux's */
+    else
+        memcpy(text, "/", 2);
+    if (cwd)
+        fd_put(cwd);
+    size_t n = r ? 0 : strlen(text) + 1;
+    if (!r)
+        r = (size_t)size < n ? -ERANGE : uc_put((void *)(uintptr_t)buf, text, n) ? -EFAULT : (long)n;
+    jam_free(text);
     return r;
 }

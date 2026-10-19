@@ -44,12 +44,15 @@
  * receiver opens its own /proc's file there, so a process's own statm
  * and status, which Chromium's browser gives each renderer, read live; a
  * process the receiver can't see is ENOENT at the receipt); a
- * directory by its path, opened again in the receiver's namespace at its
- * getdents position (a directory is only a path here until directory
- * handles: docs/DIRHANDLE-PLAN.md; the receiver gets nothing its own
- * namespace doesn't already name, and a path it lacks is ENOENT at the
- * receipt; Chromium's storage service fsyncs a leveldb directory the
- * browser opens for it); a pipe or
+ * directory as its own channel at its getdents position
+ * (POSIXFDS_DIR_CHANNEL: a capability within the sender's view, as
+ * Linux passes the directory itself, docs/DIRHANDLE-PLAN.md DL2; its
+ * text is not believed, as a file's path isn't, so a reopen after its
+ * service's fresh start never resolves the sender's name with our
+ * rights: the receiver's is gone then; Chromium's storage service fsyncs
+ * a leveldb directory the browser opens for it), or a text one (FAT, the
+ * boot image, past a process's 64 channels) by its path, opened again in
+ * the receiver's namespace (a path it lacks is ENOENT at the receipt); a pipe or
  * socketpair end as above (its leftover stays here). What arrives is made
  * by the hand-over's adopters (fd.c's fd_adopters), after this file's
  * checks: the kind among the policy's, the handles of the kind's object

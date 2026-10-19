@@ -169,6 +169,7 @@ int  pt_child_locks(int argc, char **argv);   /* locks a file, waits for stdin's
 int  pt_child_links(void);
 int  pt_child_fault(int argc, char **argv);   /* ends by a fault (fault.c says which) */
 int  pt_child_fork(int argc, char **argv);    /* one of fork.c's cases, in a job of its own */
+int  pt_child_dirfd(int argc, char **argv);   /* started in a directory (dirfd.c) */
 /* forkfd.c: fork.c's cases for a forked child's descriptors and mappings (FL2). */
 void pt_fork_fds(void);
 void pt_fork_chromium(void);

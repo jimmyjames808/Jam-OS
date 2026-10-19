@@ -156,6 +156,8 @@ int main(int argc, char **argv)
         return pt_child_exec(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-inotify"))
         return pt_child_inotify(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-dirfd"))
+        return pt_child_dirfd(argc, argv);
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {

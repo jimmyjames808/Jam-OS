@@ -177,12 +177,13 @@ void fd_fork(int step)
 
 /* ---- fork's walk (docs/FORK-PLAN.md section 1.6, FL2) -------------------------------
  * Every description in the table, at its lowest descriptor, then the
- * process's terminal, the same on both sides: in the parent (the table's
+ * process's terminal and the current directory (path.c's, under
+ * POSIXFORK_CWD), the same on both sides: in the parent (the table's
  * lock held since before the clone) each kind's hook puts its handles; in
  * the child each takes them, and the copy keeps what its kind keeps (a
  * netstack socket's and an epoll set's descriptors, and any whose handles
  * didn't come, are left out). The child counts each kept description's
- * references again: a slot's each, and the terminal's (the parent's calls
+ * references again: a slot's each, the terminal's and the directory's (the parent's calls
  * in progress and its signal thread's aren't in the child). A slot an open
  * had reserved in another thread is free there. */
 
@@ -271,6 +272,7 @@ void fd_fork_walk(struct lx_fork_io *io)
         }
     }
     tty_fork_ctty(io);
+    path_fork_cwd(io);
     if (child) {
         shm_forked(io);
         fobj_forked(io);
@@ -522,6 +524,7 @@ fd_adopt_fn *const fd_adopters[POSIXFDS_KIND_COUNT] = {
     [POSIXFDS_DUP] = dup_adopt,
     [POSIXFDS_SEQPACKET] = seqp_adopt,
     [POSIXFDS_PROC] = proc_adopt,
+    [POSIXFDS_DIR_CHANNEL] = dir_adopt_ch,
 };
 
 /* "posix: descriptor <n> (<kind>) left out: <why>\n" in the log. */
