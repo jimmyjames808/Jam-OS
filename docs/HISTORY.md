@@ -304,8 +304,7 @@ installed drive.
 
 Open: the milestone's closing sign-off (All tests and `soak 10` on the PC
 booted from the internal disk) is the main session's pre-push pass, not a
-separate run; the real power-cut check above; FAT is still the Jam OS ESP's
-format, ext is the data partition's (M13.6).
+separate run; the real power-cut check above.
 
 ## M13.6: the ext filesystem
 
