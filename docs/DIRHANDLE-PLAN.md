@@ -1033,7 +1033,7 @@ renamed directory followed (`fchdir` and `getcwd` say the new place),
 removed and made again, `renameat`/`renameat2`'s exchange/`linkat` between
 two descriptors and with a whole path, `EXDEV` to the other mount,
 `O_PATH`, `AT_EMPTY_PATH`, `..` from a mount's root, a forked child's
-channel and file, 300 directories open (the first a channel that follows
+channel and file, 300 directories open (100 since a1bee4cb: the init run neared its cap) (the first a channel that follows
 a rename, the last text that doesn't); on a FAT `/data` today's answers.
 files2.c's `deep_names` makes 26 levels on ext.
 
