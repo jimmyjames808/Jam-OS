@@ -14,6 +14,13 @@
        ref|<name>|<ink>|<hash>        a missing-character reference
        row|<name>|<lang>|<clusters>|<missing>|<what is missing>
        cjk|<lang>|<char>|<face>|<same as that face drawn by name: 1 or 0>
+       face|<name>|<ink>|<hash>       a few faces drawn by name
+       gen|<generic>|<ink>|<hash>     the generic families drawn
+     The face and gen lines are what the system's configuration and caches
+     decide (docs/SANDBOX-PLAN.md, SB1): a fonts.conf or a cache that is not
+     the packages' (a planted /data/.config/fontconfig/fonts.conf, a cache
+     another configuration wrote) shows as faces that are not themselves or
+     a generic family drawn with another face.
      The rows' places in the screenshot are fixed (TOP, ROW below, in pixels),
      which fonts-check.py knows. -->
 <html lang="en">
@@ -148,6 +155,17 @@ Object.keys(FACE).forEach(function (lang) {
     var by = draw(ch, '28px "Noto Sans CJK ' + FACE[lang] + '"', lang);
     out.push('cjk|' + lang + '|' + ch + '|' + FACE[lang] + '|' + (fb.hash === by.hash && fb.ink > 0 ? 1 : 0) + '|' + by.hash);
   });
+});
+
+// A few faces by name and the generic families, the same Latin letters each
+// (fonts-check.py compares them within a run and between runs)
+['Noto Sans', 'Liberation Sans', 'Noto Serif', 'Liberation Serif', 'Inter'].forEach(function (f) {
+  var d = draw('Rag', '28px "' + f + '"', 'en');
+  out.push('face|' + f + '|' + d.ink + '|' + d.hash);
+});
+['sans-serif', 'serif'].forEach(function (g) {
+  var d = draw('Rag', '28px ' + g, 'en');
+  out.push('gen|' + g + '|' + d.ink + '|' + d.hash);
 });
 document.getElementById('result').textContent = out.join('\n');
 </script>

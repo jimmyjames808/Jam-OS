@@ -304,7 +304,9 @@ static bool fd_gone(int fd)
 
 /* What every child of init's /svc/exec has (docs/CR-REVIEW-POSIX.md, Q1):
  * AT_SECURE, so no TMPDIR and no secure_getenv (HOME is there for
- * getenv), "/" for its current directory and the path init sealed (exe)
+ * getenv), none of fontconfig's FONTCONFIG_FILE, FONTCONFIG_PATH and
+ * FONTCONFIG_SYSROOT (docs/SANDBOX-PLAN.md, SB1: the caller set all
+ * three), "/" for its current directory and the path init sealed (exe)
  * for /proc/self/exe. 0, or the first check that failed. */
 static int sealed_common(const char *exe)
 {
@@ -313,6 +315,8 @@ static int sealed_common(const char *exe)
         return 11;
     if (getenv("TMPDIR") || !getenv("HOME") || secure_getenv("HOME"))
         return 12;
+    if (getenv("FONTCONFIG_FILE") || getenv("FONTCONFIG_PATH") || getenv("FONTCONFIG_SYSROOT"))
+        return 22;
     if (!getcwd(buf, sizeof(buf)) || strcmp(buf, "/"))
         return 13;
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);

@@ -93,10 +93,17 @@
 #           every cluster of every line drawn on a canvas and compared with the
 #           box Chromium draws for a character no font has) and --screenshot
 #           (1000x1400) with the system fonts, then both again with a fonts.conf
-#           of Inter alone, the control that must show boxes;
+#           of Inter alone, the control that must show boxes. Between them
+#           (docs/SANDBOX-PLAN.md, SB1) what the system's configuration must
+#           not read: a fonts.conf planted at /data/.config/fontconfig putting
+#           Inter first for every family, and a cache another configuration
+#           (poison.conf, a scan rule renaming every face) wrote to
+#           /data/.cache/fontconfig; and two timed runs with a cache of the
+#           program's own (own.conf), for the cost of a scan at start;
 #           tools/cr/fonts-check.py checks the DOM dumps, the PNGs and the log
 #           (no tofu in any line, each language's CJK face the right one, the
-#           control's tofu, fontconfig's cache written); needs an ext /data;
+#           faces by name themselves and nothing planted read, no cache written
+#           on /data, the control's tofu) and prints the times; needs an ext /data;
 #           <outdir>/fonts/ has the files
 #   multi   content_shell (track CB5) with every process type its own
 #           (--no-zygote --no-sandbox: Chromium's launcher forks and execs
@@ -582,11 +589,33 @@ case_fonts() {
         '<fontconfig><dir>/data/cr/out/jamos/fonts</dir><cachedir>/data/cr/tmp/fccache</cachedir></fontconfig>' \
         > "$dir/add/out/jamos/fonts/fonts.conf"
     cp tools/cr/fonts.html "$dir/add/out/jamos/fonts.html"
+    pkgdir=/pkg
     if [ "${CR_FONTS_FCFILE:-0}" = 1 ]; then
+        pkgdir=/data/pkg
         for f in "$dir/data/pkg/share/fonts/fonts.conf" "$dir/data/pkg/share/fonts/noto-extra/fonts.conf"; do
             sed 's|/pkg/share|/data/pkg/share|g' "$f" > "$f.new" && mv "$f.new" "$f"
         done
     fi
+    # What the system's configuration must not read (docs/SANDBOX-PLAN.md,
+    # SB1), as any program with `mount /data rw` could write it: a fonts.conf
+    # where the owner's own was read (/data/.config/fontconfig), putting the
+    # Inter beside the program first for every family (sans-serif among them,
+    # the browser's own UI font); and poison.conf, run once, which scans the
+    # packages' jamos directory with a rule renaming every face there and
+    # writes that cache where the configuration's shared one was
+    # (/data/.cache/fontconfig). own.conf: a cache of the program's own.
+    mkdir -p "$dir/data/.config/fontconfig"
+    printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">' \
+        '<fontconfig><dir>/data/cr/out/jamos/fonts</dir>' \
+        '<match target="pattern"><edit name="family" mode="prepend_first" binding="strong"><string>Inter</string></edit></match>' \
+        '</fontconfig>' > "$dir/data/.config/fontconfig/fonts.conf"
+    printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">' \
+        "<fontconfig><dir>$pkgdir/share/fonts/jamos</dir><cachedir>/data/.cache/fontconfig</cachedir>" \
+        '<match target="scan"><edit name="family" mode="assign" binding="same"><string>Poisoned</string></edit></match>' \
+        '</fontconfig>' > "$dir/add/out/jamos/poison.conf"
+    printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">' \
+        "<fontconfig><include>$pkgdir/share/fonts/fonts.conf</include><cachedir>/data/cr/tmp/own-cache</cachedir></fontconfig>" \
+        > "$dir/add/out/jamos/own.conf"
     # The shell cuts a command line at 240 characters (USING.md).
     if awk '/^send / && length($0) > 245 { print "cr-test: fonts: line too long (" length($0) - 5 "): " $0; bad = 1 } END { exit bad }' tools/cr/fonts.txt; then
         :
@@ -618,15 +647,15 @@ case_fonts() {
     fi
     sed "s|@SYSENV@|$sysenv|" tools/cr/fonts.txt > "$dir/fonts.txt"
     say "fonts: the system runs: $sysenv"
-    # the first launch scans about a hundred font files (two of them 20 MB):
-    # QEMU's time is long
-    QEMU_SAVE=$dir/saved.img QEMU_IMAGE=$stick QEMU_INPUT=$dir/fonts.txt QEMU_TIMEOUT=${QEMU_TIMEOUT:-1800} \
+    # a launch with no cache scans about a hundred font files (two of them
+    # 20 MB), and there are eight launches: QEMU's time is long
+    QEMU_SAVE=$dir/saved.img QEMU_IMAGE=$stick QEMU_INPUT=$dir/fonts.txt QEMU_TIMEOUT=${QEMU_TIMEOUT:-3000} \
         QEMU_MEM=${QEMU_MEM:-4G} QEMU_NET=1 \
         tools/qemu-test.sh "$dir/run" fonts shell > "$dir/qemu.out" 2>&1
     qrc=$?
     rm -f "$stick"
     # what the guest wrote, out of the saved stick
-    for f in dom-sys.html dom-ctl.html sys.png ctl.png; do
+    for f in dom-sys.html dom-psn.html dom-ctl.html sys.png own2.png ctl.png; do
         build/host/jamext -q --part 2 get "$dir/saved.img" "/cr/tmp/$f" "$dir/$f" > /dev/null 2>&1 ||
             say "fonts: no $f on the stick"
     done

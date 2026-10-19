@@ -32,16 +32,30 @@ done
 pkg=$tmp/pkg
 conf=$pkg/share/fonts/fonts.conf
 [ -f "$conf" ] || { echo "fonts-check: no share/fonts/fonts.conf in the stages (fonts-jamos)" >&2; exit 2; }
-# the packages' /pkg is this directory; the fallback cache is a scratch one
+
+fail=0
+# What every program's fontconfig reads (docs/SANDBOX-PLAN.md, SB1): each
+# <dir>, <cachedir> and <include> of the packages' fonts.conf files is a
+# place under /pkg (read only to every program), never one a program can
+# write (/data, a home or XDG directory, a relative name), which would let
+# it steer every other program's fonts or plant cache files they trust.
+bad=$(find "$pkg/share/fonts" -name fonts.conf -exec grep -Hn -e '<dir' -e '<cachedir' -e '<include' {} + |
+      grep -Ev '<(dir|cachedir|include)( ignore_missing="yes")?>/pkg/')
+if [ -z "$bad" ]; then
+    echo "ok    every dir, cachedir and include of the packages' fonts.conf is under /pkg"
+else
+    echo "$bad" | sed "s|^$pkg/|FAIL  not under /pkg: |"
+    fail=1
+fi
+
+# the packages' /pkg is this directory (its cache directory, which the
+# packages do not fill, is then a scratch one fc-match may write)
 find "$pkg/share/fonts" -name fonts.conf | while read -r f; do
-    sed -e "s|/pkg/|$pkg/|g" -e "s|/data/.cache/fontconfig|$tmp/cache2|g" -e "s|/data/.config|$tmp/none|g" "$f" > "$f.new"
+    sed -e "s|/pkg/|$pkg/|g" "$f" > "$f.new"
     mv "$f.new" "$f"
 done
 FONTCONFIG_FILE=$conf
-XDG_CACHE_HOME=$tmp/cache
-export FONTCONFIG_FILE XDG_CACHE_HOME
-
-fail=0
+export FONTCONFIG_FILE
 # check <pattern> <family> [style]: the best match of the pattern is from the
 # packages, in that family (and that style).
 check() {

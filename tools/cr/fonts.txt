@@ -6,9 +6,13 @@
 # a fonts.conf of Inter alone, the control that must show boxes. Each run
 # twice: --dump-dom (the page's own check of every cluster, into a file here)
 # and --screenshot (1000x1400 PNG there); the case copies the files out of the
-# saved stick and tools/cr/fonts-check.py looks at them. Lines are kept short
-# with variables (the shell cuts a line at 240 characters): H the program, T the
-# scratch directory, U the page.
+# saved stick and tools/cr/fonts-check.py looks at them. Between them, what
+# the system's configuration must not read (docs/SANDBOX-PLAN.md, SB1): a
+# fonts.conf planted at /data/.config/fontconfig/fonts.conf (on the stick from
+# the start) and a cache another configuration wrote to /data/.cache/fontconfig
+# (poison.conf); and the time a launch takes with no cache and with one.
+# Lines are kept short with variables (the shell cuts a line at 240
+# characters): H the program, T the scratch directory, U the page.
 wait 120 Jam OS shell
 wait {prompt}
 seen 60 init: /data mounted
@@ -29,29 +33,52 @@ wait {prompt}
 send @SYSENV@
 wait {prompt}
 
-# the system fonts: the first launch scans them and writes fontconfig's cache
+# the system fonts, the planted file beside them: the configuration names no
+# cache a program can write (only the packages' own under /pkg), so each
+# launch scans the fonts and writes nothing; the second is timed
 send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --dump-dom $U > $T/dom-sys.html; echo rc1-$?
 wait 900 re:rc1-[0-9]
 wait {prompt}
-send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --window-size=1000,1400 --screenshot=$T/sys.png $U; echo rc2-$?
-wait 600 re:rc2-[0-9]
+send time run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --window-size=1000,1400 --screenshot=$T/sys.png $U; echo rc2-$?
+wait 900 re:rc2-[0-9]
 wait {prompt}
-send ls -l /data/cr/tmp/.cache/fontconfig; echo ls1-"x"
+send ls -l /data/cr/tmp/.cache/fontconfig /data/.cache/fontconfig; echo ls1-"x"
 wait 30 ls1-x
 wait {prompt}
 
-# a program started by the shell with no HOME of its own has HOME=/ and no
-# XDG_CACHE_HOME: the xdg cache is unwritable there, and fontconfig writes the
-# one /data/.cache/fontconfig that fonts-jamos's fonts.conf names after it
-send export HOME=/
+# a cache of the program's own (own.conf: the packages' fonts.conf and a cache
+# directory under $T): the first launch scans and writes it, the second reads
+# it; with rc2 the cost of a scan at start
+send export FONTCONFIG_FILE=/data/cr/out/jamos/own.conf
 wait {prompt}
-send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --dump-dom $U > $T/dom-home.html; echo rc5-$?
-wait 900 re:rc5-[0-9]
+send time run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --window-size=1000,1400 --screenshot=$T/own1.png $U; echo rcA-$?
+wait 900 re:rcA-[0-9]
+wait {prompt}
+send time run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --window-size=1000,1400 --screenshot=$T/own2.png $U; echo rcB-$?
+wait 900 re:rcB-[0-9]
+wait {prompt}
+
+# a cache another configuration wrote: poison.conf scans the packages' jamos
+# directory renaming every face (a scan rule, which the cache keeps) and
+# writes its cache to /data/.cache/fontconfig; the system run after it must
+# draw as the first. The planted file goes first, so this stands alone.
+send rm /data/.config/fontconfig/fonts.conf; echo rm-"x"
+wait 30 rm-x
+wait {prompt}
+send export FONTCONFIG_FILE=/data/cr/out/jamos/poison.conf
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --dump-dom $U > $T/dom-psn0.html; echo rcP-$?
+wait 900 re:rcP-[0-9]
 wait {prompt}
 send ls -l /data/.cache/fontconfig; echo ls2-"x"
 wait 30 ls2-x
 wait {prompt}
-send export HOME=/data/cr/tmp
+send unset FONTCONFIG_FILE
+wait {prompt}
+send @SYSENV@
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --dump-dom $U > $T/dom-psn.html; echo rc6-$?
+wait 900 re:rc6-[0-9]
 wait {prompt}
 
 # the control: only Inter, so every other script is a box
