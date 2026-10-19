@@ -79,11 +79,13 @@ static long stat_path(struct path *p, struct stat *st)
 
 /* stat of dirfd + pathname with flags (fstatat's and faccessat's AT_*):
  * the path's, or with AT_EMPTY_PATH and "" dirfd's own. The path goes
- * into *p (for the caller's next question about it); p->abs is "" for a
- * descriptor's stat without a path. */
+ * into *p (for the caller's next question about it, and the caller's
+ * path_done, whatever the answer); p->abs is "" for a descriptor's stat
+ * without a path. */
 static long stat_at(long dirfd, const char *pathname, long flags, struct path *p,
                     struct stat *st)
 {
+    p->at = NULL;
     if ((flags & AT_EMPTY_PATH) && pathname && !uc_strnlen(pathname, 1)) {   /* the caller's "" */
         if (dirfd == AT_FDCWD) {
             char cwd[PATH_BYTES];
@@ -106,6 +108,7 @@ long lx_newfstatat(long dirfd, long pathname, long out, long flags, long e, long
     struct path p;
     struct stat st;
     long r = stat_at(dirfd, (const char *)(uintptr_t)pathname, flags, &p, &st);
+    path_done(&p);
     return r ? r : uc_put((void *)(uintptr_t)out, &st, sizeof(st));
 }
 
@@ -162,6 +165,7 @@ long lx_statfs(long pathname, long out, long c, long d, long e, long f)
     struct statfs s;
     if (!r)
         r = statfs_path(&p, &s);
+    path_done(&p);
     return r ? r : uc_put((void *)(uintptr_t)out, &s, sizeof(s));
 }
 
@@ -178,11 +182,27 @@ long lx_fstatfs(long fd, long out, long c, long d, long e, long f)
     struct statfs s;
     if (!r)
         r = statfs_path(&p, &s);
+    path_done(&p);
     fd_put(desc);
     return r ? r : uc_put((void *)(uintptr_t)out, &s, sizeof(s));
 }
 
 /* ---- access ---------------------------------------------------------------------- */
+
+/* access(2)'s answer for mode, from st and the path p it came from ("" for
+ * a descriptor's own). */
+static long access_of(const struct path *p, const struct stat *st, long mode)
+{
+    enum path_libc which = p->abs[0] ? path_libc(p) : LIBC_NONE;
+    bool ro = p->abs[0] && (which == LIBC_ETC || (which == LIBC_NONE && path_read_only(p)));
+    if ((mode & W_OK) && ro && !S_ISSOCK(st->st_mode))
+        return -EROFS;   /* access(2): write asked of a read-only filesystem */
+    unsigned may = path_perm(st->st_mode, st->st_uid);
+    if (((mode & R_OK) && !(may & 4)) || ((mode & W_OK) && !(may & 2)) ||
+        ((mode & X_OK) && !(may & 1)))
+        return -EACCES;
+    return 0;
+}
 
 long lx_faccessat2(long dirfd, long pathname, long mode, long flags, long e, long f)
 {
@@ -191,17 +211,10 @@ long lx_faccessat2(long dirfd, long pathname, long mode, long flags, long e, lon
     struct path p;
     struct stat st;
     long r = stat_at(dirfd, (const char *)(uintptr_t)pathname, flags, &p, &st);
-    if (r)
-        return r;
-    enum path_libc which = p.abs[0] ? path_libc(&p) : LIBC_NONE;
-    bool ro = p.abs[0] && (which == LIBC_ETC || (which == LIBC_NONE && path_read_only(&p)));
-    if ((mode & W_OK) && ro && !S_ISSOCK(st.st_mode))
-        return -EROFS;   /* access(2): write asked of a read-only filesystem */
-    unsigned may = path_perm(st.st_mode, st.st_uid);
-    if (((mode & R_OK) && !(may & 4)) || ((mode & W_OK) && !(may & 2)) ||
-        ((mode & X_OK) && !(may & 1)))
-        return -EACCES;
-    return 0;
+    if (!r)
+        r = access_of(&p, &st, mode);
+    path_done(&p);
+    return r;
 }
 
 long lx_faccessat(long dirfd, long pathname, long mode, long d, long e, long f)
@@ -271,6 +284,7 @@ static long change_at(long dirfd, const char *pathname, long flags, const struct
     struct path *p = jam_malloc(sizeof(*p));
     if (!p)
         return -ENOMEM;
+    p->at = NULL;   /* a branch that makes no path leaves nothing for path_done */
     long r;
     if ((flags & AT_EMPTY_PATH) && pathname && !uc_strnlen(pathname, 1) && dirfd != AT_FDCWD) {
         struct fd_desc *d = fd_get(dirfd);
@@ -303,6 +317,7 @@ static long change_at(long dirfd, const char *pathname, long flags, const struct
         p->nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
         r = change_path(p, c);
     }
+    path_done(p);
     jam_free(p);
     return r;
 }
@@ -427,7 +442,10 @@ static long cant_make_at(long dirfd, const char *pathname)
 {
     struct path p;
     long r = path_get(dirfd, pathname, &p);
-    return r ? r : cant_make(&p);
+    if (!r)
+        r = cant_make(&p);
+    path_done(&p);
+    return r;
 }
 
 /* Do two paths (physical) lie on one mount of the namespace? */
@@ -480,18 +498,22 @@ long lx_linkat(long olddirfd, long oldpath, long newdirfd, long newpath, long fl
         struct path p;
         struct stat st;
         long r = stat_at(olddirfd, from, AT_EMPTY_PATH, &p, &st);
+        path_done(&p);
         return r ? r : cant_make_at(newdirfd, (const char *)(uintptr_t)newpath);
     }
     struct path *two = jam_malloc(2 * sizeof(*two));
     if (!two)
         return -ENOMEM;
     long r = path_get(olddirfd, from, &two[0]);
+    two[1].at = NULL;   /* if the second path_get is not made, path_done still can be */
     if (!r)
         r = path_get(newdirfd, (const char *)(uintptr_t)newpath, &two[1]);
     if (!r) {
         two[0].nofollow = !(flags & AT_SYMLINK_FOLLOW);   /* Linux's linkat follows no link */
         r = link_paths(&two[0], &two[1]);
     }
+    path_done(&two[0]);
+    path_done(&two[1]);
     jam_free(two);
     return r;
 }
@@ -535,6 +557,7 @@ long lx_symlinkat(long target, long newdirfd, long newpath, long d, long e, long
         do
             r = symlink_path(&p, t, tlen);
         while (path_again(&p, &r));
+    path_done(&p);
     return r;
 }
 
@@ -597,6 +620,7 @@ long lx_readlinkat(long dirfd, long pathname, long buf, long size, long e, long 
         do
             r = readlink_path(&p, (char *)(uintptr_t)buf, (size_t)size);
         while (path_again(&p, &r));
+    path_done(&p);
     return r;
 }
 
@@ -665,14 +689,16 @@ long lx_syncfs(long fd, long b, long c, long d, long e, long f)
     struct path p;
     const char *abs = desc->ops->path ? desc->ops->path(desc) : NULL;
     long r = 0;
-    if (abs && !path_set(abs, &p) && p.where == PATH_MOUNT && path_libc(&p) == LIBC_NONE) {
-        char m[NS_NAME_MAX];
-        if (p.mount_len < NS_NAME_MAX) {
+    if (abs) {
+        if (!path_set(abs, &p) && p.where == PATH_MOUNT && path_libc(&p) == LIBC_NONE &&
+            p.mount_len < NS_NAME_MAX) {
+            char m[NS_NAME_MAX];
             memcpy(m, p.abs, p.mount_len);
             m[p.mount_len] = '\0';
             status_t st = fs_sync(m);
             r = st == OK ? 0 : path_err(&p, st);
         }
+        path_done(&p);
     }
     fd_put(desc);
     return r;

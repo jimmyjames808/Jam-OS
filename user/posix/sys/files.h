@@ -42,7 +42,14 @@
  *
  * **The mount's channel.** Each call asks libjam's namespace for a
  * duplicate of the mount's `fs` channel (ns_channel) and closes it after,
- * so a mount replaced meanwhile is seen at the next call. */
+ * so a mount replaced meanwhile is seen at the next call.
+ *
+ * **A path's reference.** A call that made a struct path (path_get,
+ * path_set) ends it with path_done on every way out, whatever the answer
+ * was (docs/DIRHANDLE-PLAN.md 4.2): `at` is the directory description a
+ * relative path started from, held until then. It is NULL for now, so
+ * path_done has nothing to drop yet, but a call that forgets it would leak
+ * a description once it is not. */
 #pragma once
 
 #include <stdbool.h>
@@ -60,8 +67,15 @@ enum path_where {
     PATH_MOUNT,      /* inside a mount (its root included) */
 };
 
-/* A resolved path. */
+/* A resolved path. path_get and path_set make one (they set `at`), and
+ * whoever called them ends it with path_done: a copy (`struct path q = *p`)
+ * only borrows `at` and is not ended. */
 struct path {
+    struct fd_desc *at;                 /* the directory description a relative path started
+                                         * from, held (path_done drops it); NULL for a path from
+                                         * "/". Always NULL for now (docs/DIRHANDLE-PLAN.md 4.2:
+                                         * a directory's channel will go here, and abs will then
+                                         * be the path as written, from it) */
     char            abs[PATH_BYTES];    /* absolute and clean: "/", "/data", "/data/a/b"; on a
                                          * mount with links clean up to the mount only */
     enum path_where where;
@@ -101,10 +115,15 @@ struct path_info {
 /* Resolve `in` (a C string from the program) against dirfd (AT_FDCWD:
  * the current directory; else a directory descriptor, needed only when
  * in is relative). 0, or -EFAULT (NULL), -ENOENT (empty), -ENAMETOOLONG,
- * -EBADF (dirfd isn't open), -ENOTDIR (dirfd isn't a directory). */
+ * -EBADF (dirfd isn't open), -ENOTDIR (dirfd isn't a directory). A
+ * relative path is walked on from the base's text where it stands in
+ * out->abs (the current directory's and a description's are kept clean). */
 long path_get(long dirfd, const char *in, struct path *out);
 /* Resolve an absolute path the layer made itself (a description's). */
 long path_set(const char *abs, struct path *out);
+/* End a path path_get or path_set made (even one they refused): drop what
+ * `at` holds. Every call ends its paths on every way out. */
+void path_done(struct path *p);
 /* The path inside the mount as fs.idl wants it ("/" for its root), and
  * its length. */
 const char *path_rel(const struct path *p, uint32_t *len);
