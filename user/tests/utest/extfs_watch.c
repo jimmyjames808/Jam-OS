@@ -1869,7 +1869,11 @@ bool t_extfs_watch_unread(void)
     CHECK(rung(&a));
     CHECK(j2.used[JOB_LIMIT_PAGES] <= j1.used[JOB_LIMIT_PAGES] + 2);
     CHECK_EQ(j2.used[JOB_LIMIT_HANDLES], j1.used[JOB_LIMIT_HANDLES]);
-    CHECK(j2.used[JOB_LIMIT_MSG_BYTES] <= j1.used[JOB_LIMIT_MSG_BYTES]);
+    /* One message of slack: the sample can land while a request or its reply
+     * is still queued (j1 3,648 and j2 3,720 B once: 72 B in flight). The
+     * biggest here is a request with the 200-byte name, under 256 B; a
+     * queue that grew with the changes would be 2,000 of them. */
+    CHECK(j2.used[JOB_LIMIT_MSG_BYTES] <= j1.used[JOB_LIMIT_MSG_BYTES] + 256);
     CHECK(j1.used[JOB_LIMIT_PAGES] <= j0.used[JOB_LIMIT_PAGES] + 32);   /* 16 KiB of records */
     CHECK(take_all(&a));
     CHECK_EQ(ngot, (int)(FSWATCH_QUEUE_BYTES / (FSWATCH_RECORD_FIXED + 200) + 1));
