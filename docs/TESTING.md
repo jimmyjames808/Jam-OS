@@ -1157,6 +1157,17 @@ summary look), and passes when `ok` passes the script and the others fail it
 with the right reason. `serial-feed.py --scan <log>...` says what a saved log
 would have failed on.
 
+A failed utest can leave its service running on a RAM disk that the next
+test takes again (the `extfs_*` cases share static disks), which used to
+crash that test (the disk's struct zeroed under its serving thread: utest
+page-faulted at 0 in its "ramdisk" thread, after `extfs_watch_unread`
+failed once). `ramdisk_create` and `ramdisk_serve` (`user/tests/utest/ramdisk.c`)
+now refuse a disk whose session is still being served, with a failure that
+names the test that left it (`ramdisk_create: the RAM disk is still serving a
+session that test extfs_watch_unread left ...`): one failure, not two.
+`utest only ramdisk_in_use` shows the refusal (quietly: both calls refused,
+the session left answering, the disk free again once its client is gone).
+
 | Script | What it covers | Extra setup |
 |---|---|---|
 | `basic.txt` | line editing, history, console protocol levels, restarting serialin and the console; `contest flood` (a client that floods the console must not stop Ctrl+C or other clients) | |
