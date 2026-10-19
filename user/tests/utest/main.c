@@ -838,6 +838,7 @@ static const struct {
     { "extfs_dirs_storm", t_extfs_dirs_storm },
     { "extfs_dirs_killed", t_extfs_dirs_killed },
     { "extfs_restart_deep", t_extfs_restart_deep },
+    { "extfs_restart_slot", t_extfs_restart_slot },
     { "fs_no_locks", t_fs_no_locks },
     { "view_keys_names", t_view_keys_names },
     { "fat_view_keys", t_fat_view_keys },

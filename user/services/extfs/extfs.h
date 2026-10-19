@@ -891,6 +891,8 @@ enum xf_die {
                                * remembered), not committed */
     XF_DIE_HEARD,             /* a file.sync's open heard of a write-back error (the mark
                                * in the state, wback.c), the answer not committed */
+    XF_DIE_SLOT,              /* an open's or opendir's slot taken in the state, its
+                               * handles not made (files.c, dirs.c) */
     XF_DIE_COUNT,
 };
 bool     test_word(const char *w);

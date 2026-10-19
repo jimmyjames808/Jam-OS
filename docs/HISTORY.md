@@ -145,7 +145,7 @@ init's `/tmp` and is off the skip list; the whole of `base_unittests` was 8,901
 pass, 37 self-skip and 18 listed, and it found the one regression, below.
 
 The review (docs/DIRHANDLE-REVIEW.md, by an agent that wrote none of it): 0
-High, 1 Medium, 3 Low, 8 notes. No channel reached past its view by any path
+High, 2 Medium, 3 Low, 8 notes. No channel reached past its view by any path
 tried, no held inode was freed, no hand-over dropped or doubled a channel.
 Fixed with a case that fails without each fix: the Medium (DC's lead),
 `FilePathWatcherTest.RecursiveWatch`, because `futimens`, `fchmod` and
@@ -156,11 +156,18 @@ by a scan, at the event, with no table of names for a rename to follow and a
 restart to lose. L1: libc's reopen after a fresh start compared the inode
 number and not the volume. L2: a freed directory inode read as a removed
 held one (no path reached it; ext gained `ext_inode_used`, which asks the
-bitmap). The hostile runs found nothing: 8 threads moving directories in and
-out of a subview under 4 walkers (29,684 moves, none answered from outside),
-extfs killed every 200 ms in the middle of DeleteDeep's tree (86 rounds), a
+bitmap). The hostile runs: 8 threads moving directories in and out of a
+subview under 4 walkers (29,684 moves, none answered from outside), extfs
+killed every 200 ms in the middle of DeleteDeep's tree (86 rounds), a
 process holding its 64 channels killed, and 4 processes standing in a
-removed directory.
+removed directory. The deep tree under kills found the second Medium, on a
+loaded PC only (the merged-main check): `fs.open` and `fs.opendir` took
+their slot in the state before naming it the request's, so a kill between
+kept the slot at the rerun, and a successor checked the slots before
+forgetting what the uncommitted request made, so for a new file it found
+the inode missing and started fresh, closing every client's channels; the
+mark comes first and the request in progress is settled before the checks
+now (test power `die=slot`, utest `extfs_restart_slot`).
 
 Left, none on Chromium's path:
 - **L3.** A removed directory's `..` can name removed parents that lay
