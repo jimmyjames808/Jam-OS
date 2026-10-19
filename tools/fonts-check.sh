@@ -38,11 +38,13 @@ fail=0
 # <dir>, <cachedir> and <include> of the packages' fonts.conf files is a
 # place under /pkg (read only to every program), never one a program can
 # write (/data, a home or XDG directory, a relative name), which would let
-# it steer every other program's fonts or plant cache files they trust.
+# it steer every other program's fonts or plant cache files they trust;
+# and /dev/null, the cache directory fontconfig writes to and nothing is
+# read from.
 bad=$(find "$pkg/share/fonts" -name fonts.conf -exec grep -Hn -e '<dir' -e '<cachedir' -e '<include' {} + |
-      grep -Ev '<(dir|cachedir|include)( ignore_missing="yes")?>/pkg/')
+      grep -Ev '<(dir|cachedir|include)( ignore_missing="yes")?>/pkg/' | grep -v '<cachedir>/dev/null</cachedir>')
 if [ -z "$bad" ]; then
-    echo "ok    every dir, cachedir and include of the packages' fonts.conf is under /pkg"
+    echo "ok    every dir, cachedir and include of the packages' fonts.conf is under /pkg (or /dev/null)"
 else
     echo "$bad" | sed "s|^$pkg/|FAIL  not under /pkg: |"
     fail=1

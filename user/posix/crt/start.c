@@ -161,12 +161,15 @@ static void sink_secure(void *ctx)
 }
 
 /* What a program started AT_SECURE leaves out of its environment: the
- * variables glibc drops for a set-user-ID program (its unsecvars.h), and
- * musl's locale path. Each names files or libraries a less trusted
- * starter could point the program at. */
+ * variables glibc drops for a set-user-ID program (its unsecvars.h),
+ * musl's locale path, and fontconfig's configuration file, directory and
+ * root (docs/SANDBOX-PLAN.md, SB1: every program finds the system fonts
+ * without them). Each names files or libraries a less trusted starter
+ * could point the program at. */
 static const char *const unsecure_vars[] = {
-    "GCONV_PATH", "GETCONF_DIR", "GLIBC_TUNABLES", "HOSTALIASES", "LD_AUDIT", "LD_DEBUG",
-    "LD_DEBUG_OUTPUT", "LD_DYNAMIC_WEAK", "LD_HWCAP_MASK", "LD_LIBRARY_PATH", "LD_ORIGIN_PATH",
+    "FONTCONFIG_FILE", "FONTCONFIG_PATH", "FONTCONFIG_SYSROOT", "GCONV_PATH", "GETCONF_DIR",
+    "GLIBC_TUNABLES", "HOSTALIASES", "LD_AUDIT", "LD_DEBUG", "LD_DEBUG_OUTPUT",
+    "LD_DYNAMIC_WEAK", "LD_HWCAP_MASK", "LD_LIBRARY_PATH", "LD_ORIGIN_PATH",
     "LD_PRELOAD", "LD_PROFILE", "LD_SHOW_AUXV", "LD_USE_LOAD_BIAS", "LOCALDOMAIN", "LOCPATH",
     "MALLOC_TRACE", "MUSL_LOCPATH", "NIS_PATH", "NLSPATH", "RESOLV_HOST_CONF", "RES_OPTIONS",
     "TMPDIR", "TZDIR",
