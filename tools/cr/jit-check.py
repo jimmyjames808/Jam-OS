@@ -21,6 +21,12 @@ log, read for what tools/cr/jit.html said in each of its two loads
             [jit] (the renderers: the page's and a spare), never the browser
             and never every child (the GPU process, the network and storage
             services gave the power up); --jitless none
+    power   gin's line for each process that started V8 (patch 0914,
+            --vmodule=v8_initializer=1): with the JIT a renderer compiles
+            code holding the power; --jitless every renderer runs
+            --jitless without it (docs/CR-REVIEW-JIT.md, CJR2 finding 1);
+            in both no other process type compiles code or holds it, and
+            the browser (which keeps it to hand on) never compiles code
     shots   the page's text drawn in both (its yellow on the dark ground)
 
 Prints a line for each check, the timings (the figures BENCH.md takes),
@@ -56,6 +62,15 @@ def runs(log):
             out.append(cur)
             cur = []
     return out
+
+
+def v8_lines(log):
+    """gin's line for each process that started V8 (patch 0914's VLOG(1),
+    --vmodule=v8_initializer=1): [(process type, compiles code, holds the
+    JIT power)]."""
+    return [(m.group(2), m.group(1) == "compiles code", m.group(3) == "held")
+            for m in re.finditer(r"Jam OS: V8 (compiles code|runs --jitless) in process type "
+                                 r"'([^']*)', the JIT power (held|not held)", log)]
 
 
 def field(run, name):
@@ -167,6 +182,25 @@ def main(argv):
             check("%s: [jit] marks" % name, browser == [False] and len(kids) >= 4 and
                   lo <= marked <= hi and not all(kids),
                   "%d processes, %d marked" % (len(t), marked))
+    # Who holds the power, by gin's lines: split at the second load's
+    # command line, the one with --js-flags=--jitless.
+    at = log.find("--js-flags=--jitless")
+    parts = (("on", v8_lines(log[:at] if at >= 0 else log)),
+             ("off", v8_lines(log[at:] if at >= 0 else "")))
+    for name, lines in parts:
+        rs = [(c, h) for t, c, h in lines if t == "renderer"]
+        if name == "on":
+            check("on: a renderer compiles code, holding the power", (True, True) in rs,
+                  "%d renderer lines" % len(rs))
+        else:   # CJR2 finding 1: a renderer told --jitless gives the power up
+            check("off: every renderer --jitless, the power given up",
+                  rs and not any(c or h for c, h in rs),
+                  "%d renderer lines, %d holding it" % (len(rs), sum(1 for _, h in rs if h)))
+        others = [t for t, c, h in lines if t not in ("", "renderer") and (c or h)]
+        check("%s: no other process type compiles code or holds the power" % name,
+              not others, " ".join(others))
+        check("%s: the browser never compiles code" % name,
+              not any(c for t, c, _ in lines if t == ""))
     for shot in ("jit-on", "jit-off"):
         check("%s drawn" % shot, text_drawn(os.path.join(d, shot + ".png")))
     print("jit: %s" % ("PASS" if ok else "FAIL"))

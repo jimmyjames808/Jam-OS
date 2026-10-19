@@ -15,22 +15,33 @@ Description: V8 compiles code in renderers only on Jam OS, SwiftShader in a soft
    reads anything and while it is one thread, with Linux's own call for
    it, prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN) (memory-deny-write-
    execute: never undone, inherited by its children), which Jam OS's libc
-   answers by closing SR_JIT. The browser keeps it to hand on.
+   answers by closing SR_JIT. The browser keeps it to hand on. So does a
+   renderer whose V8 is told --jitless in its --js-flags (the browser's for
+   a renderer whose site may not JIT, RenderProcessHostImpl::IsJitDisabled,
+   or the owner's): it makes no code (docs/CR-REVIEW-JIT.md, CJR2 finding
+   1). The flags are read as V8 reads them, the last of --jitless,
+   --no-jitless and --nojitless deciding; a spelling this misses keeps the
+   power unused, as before.
  - gin's V8 flags: V8 runs --jitless unless the process is a renderer that
    still holds the power (PR_GET_MDWE is 0 exactly then): the browser, the
    GPU process, the utilities, and a single-process renderer, rather than
-   failing to reserve a code range it can't make executable.
+   failing to reserve a code range it can't make executable. A VLOG(1)
+   line says which (cr-test's jit case: --vmodule=v8_initializer=1).
  Neither has a Linux path a layer could take: every Linux process may JIT.
 Forwarded: not-needed (Jam OS's: its JIT power)
 ---
 --- a/content/app/content_main_runner_impl.cc
 +++ b/content/app/content_main_runner_impl.cc
-@@ -189,6 +189,15 @@
- 
+@@ -189,6 +189,19 @@
+
  #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
- 
+
 +#if defined(__jamos__)
 +#include <sys/prctl.h>
++
++#include <string_view>
++
++#include "base/strings/string_split.h"
 +
 +#ifndef PR_SET_MDWE  // Linux 6.3's; musl 1.2.6's <sys/prctl.h> has none
 +#define PR_SET_MDWE 65
@@ -41,7 +52,7 @@ Forwarded: not-needed (Jam OS's: its JIT power)
  #if BUILDFLAG(USE_ZYGOTE)
  #include "base/stack_canary_linux.h"
  #include "content/browser/sandbox_host_linux.h"
-@@ -865,6 +874,27 @@
+@@ -865,6 +878,44 @@
    std::string process_type =
        command_line.GetSwitchValueASCII(switches::kProcessType);
 
@@ -56,12 +67,29 @@ Forwarded: not-needed (Jam OS's: its JIT power)
 +  // start, before it reads anything and while it is one thread:
 +  // PR_SET_MDWE closes it for good, as Linux's memory-deny-write-execute;
 +  // V8 runs --jitless there (gin/v8_initializer.cc), and in the GPU process.
++  // So does a renderer whose V8 is told --jitless (the browser's --js-flags
++  // for a renderer whose site may not JIT, RenderProcessHostImpl::
++  // IsJitDisabled, or the owner's): it makes no code, so it holds no power
++  // to make any. V8 reads its flags in order, the last one deciding.
++  const std::string js_flags =
++      command_line.GetSwitchValueASCII(switches::kJavaScriptFlags);
++  bool jitless = false;
++  for (std::string_view flag :
++       base::SplitStringPiece(js_flags, " ", base::TRIM_WHITESPACE,
++                              base::SPLIT_WANT_NONEMPTY)) {
++    if (flag == "--jitless") {
++      jitless = true;
++    } else if (flag == "--no-jitless" || flag == "--nojitless") {
++      jitless = false;
++    }
++  }
++  const bool jit_renderer =
++      process_type == switches::kRendererProcess && !jitless;
 +  const std::string angle = command_line.GetSwitchValueASCII("use-angle");
 +  const bool swiftshader_gpu =
 +      process_type == switches::kGpuProcess &&
 +      (angle == "swiftshader" || angle == "swiftshader-webgl");
-+  if (!process_type.empty() && process_type != switches::kRendererProcess &&
-+      !swiftshader_gpu) {
++  if (!process_type.empty() && !jit_renderer && !swiftshader_gpu) {
 +    PCHECK(prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0UL, 0UL, 0UL) == 0);
 +  }
 +#endif  // defined(__jamos__)
@@ -71,7 +99,7 @@ Forwarded: not-needed (Jam OS's: its JIT power)
    // thread pool (and, in Chrome, the stack sampling profiler) is created below.
 --- a/gin/v8_initializer.cc
 +++ b/gin/v8_initializer.cc
-@@ -45,6 +45,12 @@
+@@ -45,6 +45,13 @@
  #include "tools/v8_context_snapshot/buildflags.h"
  #include "v8/include/v8-initialization.h"
  #include "v8/include/v8-snapshot.h"
@@ -80,13 +108,14 @@ Forwarded: not-needed (Jam OS's: its JIT power)
 +#include <sys/prctl.h>
 +
 +#include "base/command_line.h"
++#include "base/logging.h"
 +#endif
- 
+
  #if defined(V8_USE_EXTERNAL_STARTUP_DATA)
  #if BUILDFLAG(IS_ANDROID)
-@@ -269,6 +275,26 @@
+@@ -269,6 +276,26 @@
  };
- 
+
  namespace {
 +
 +#if defined(__jamos__)
@@ -108,19 +137,27 @@ Forwarded: not-needed (Jam OS's: its JIT power)
 +         prctl(PR_GET_MDWE, 0UL, 0UL, 0UL, 0UL) == 0;
 +}
 +#endif  // defined(__jamos__)
- 
+
  // Sets mandatory V8 flags.
  void SetFlags(IsolateHolder::ScriptMode mode,
-@@ -287,6 +313,12 @@
+@@ -287,6 +314,20 @@
        v8::V8::SetFlagsFromString(std::string(flag).c_str(), flag.size());
      }
    }
 +
 +#if defined(__jamos__)
-+  if (!MayJitOnJamOS()) {
++  // Which processes compile code and which hold the power: cr-test's jit
++  // case reads these lines (--vmodule=v8_initializer=1).
++  const bool may_jit = MayJitOnJamOS();
++  VLOG(1) << "Jam OS: V8 " << (may_jit ? "compiles code" : "runs --jitless")
++          << " in process type '"
++          << base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("type")
++          << "', the JIT power "
++          << (prctl(PR_GET_MDWE, 0UL, 0UL, 0UL, 0UL) == 0 ? "held" : "not held");
++  if (!may_jit) {
 +    SetV8Flags("--jitless");
 +  }
 +#endif
  }
- 
+
  // Sets feature flags that are default to enabled.
