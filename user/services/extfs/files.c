@@ -505,6 +505,7 @@ status_t files_open(const struct ext_inode *in, uint32_t flags, bool nochange,
     fh[i].ch = fh[i].vmo = HANDLE_INVALID;
     fh[i].armed = false;
     f->used = true;
+    test_die(XF_DIE_SLOT);
     status_t st = attach(f, out_ch, out_vmo);
     if (st != OK) {
         files_release(i);

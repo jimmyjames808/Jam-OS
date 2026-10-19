@@ -474,6 +474,7 @@ bool t_extfs_restart_tree(void);   /* extfs_restart.c: the channels across the s
 bool t_extfs_dirs_storm(void);
 bool t_extfs_dirs_killed(void);
 bool t_extfs_restart_deep(void);
+bool t_extfs_restart_slot(void);
 int  extfs_dirs_child(int argc, char **argv);
 bool t_fs_no_locks(void);
 int  extfs_watch_child(int argc, char **argv);
