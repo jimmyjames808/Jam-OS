@@ -6,7 +6,7 @@
 # monospace and Arial as docs/G2-PLAN.md section 4 says run on the build host
 # with its own fc-match (tools/fonts-check.sh): Jam OS has no fontconfig.
 send run $S/sha256sum /data/pkg/share/fonts/fonts.conf
-wait cc87ab9371083a9d58f7c212495ae6c3d1843d568e81d0a0cfb887e5e04ebe45  /data/pkg/share/fonts/fonts.conf
+wait 9e3e6325381c6117a5355d60cdab0e0be53d839903438500de0fd18b7643c455  /data/pkg/share/fonts/fonts.conf
 wait {prompt}
 send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-Black.ttf
 wait 6342d3ea6dc088b43867f615e807d898adf100c93edb978b8e52c5eb71a264da  /data/pkg/share/fonts/jamos/inter/Inter-Black.ttf

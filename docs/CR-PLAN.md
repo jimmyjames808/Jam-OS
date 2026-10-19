@@ -2823,6 +2823,69 @@ replaced by the relink's, out/jamos: a relink does not refresh the stage).
 ProcessUtilTest and ProcessTest among them, 66 tests): 60 pass, 6 on the
 skip list, 0 failures. `GetChildOpenFdCount` came off the skip list.
 
+#### FONTS notes (2026-10-19)
+
+Track FONTS: the system fonts for the browser, full coverage (the owner:
+every language displays). The package, the fontconfig rules and why the
+browser finds them by default are in
+[G2-PLAN's GP2 notes, continued](G2-PLAN.md#gp2-notes-continued-the-fonts-track);
+this is the browser side.
+
+- **The case** (`tools/cr-test.sh <out> fonts`, about 25 s): `headless_shell`
+  on `tools/cr/fonts.html`, one line of text in each of 29 scripts and symbol
+  sets, the packages built (`fonts-jamos`, `fonts-noto-extra`) and put on the
+  stick's `/data/pkg` (`tools/cr/base-stick.py --add-data`), where init's
+  `/pkg` view shows them; no `FONTCONFIG_FILE`. The page checks itself: every
+  grapheme cluster of each line is drawn on a canvas and its pixels compared
+  with those of a character no font has (Chromium draws the primary font's
+  box, 102 pixels at 28 px) and with nothing; the DOM dump carries the
+  counts, `tools/cr/fonts-check.py` reads them with the screenshot. It also
+  runs the page with a `fonts.conf` of Inter alone, which must show boxes in
+  every script but Latin (the cut Inter beside the program has Latin only:
+  Greek and Cyrillic are boxes too): the check's own proof that it can fail.
+  The four regional CJK faces draw "直骨返刃令海草" differently, and the
+  fallback for each `lang` (`ja`, `ko`, `zh-CN`, `zh-Hans`, `zh-Hant`,
+  `zh-TW`, `zh-HK`) draws the same pixels as the face asked for by name:
+  Chromium's fallback search (`ui/gfx/font_fallback_linux.cc`) with the
+  page's `lang` picks the face the rules say. Result (interim run, below): all
+  29 lines, 0 missing clusters of about 800; the screenshot shows every
+  script, the emoji in colour (`build/t/fonts/fonts/sys.png`).
+- **The stale-program trap.** A program's `mount` list is linked into it (the
+  `program` lines' `wants/<name>`), and the shell grants what the binary's
+  note says, not what the approval line shows: `mount /pkg r` added to
+  `ports/chromium/wants/headless_shell` and `content_shell` does nothing until
+  they are **relinked**, and a static program carries its libc, so libc's
+  `/etc/fonts/fonts.conf` too. The first runs showed it: `access()` on
+  `/pkg/...` failed inside headless_shell (fontconfig's `FcConfigFileExists`),
+  `file:///pkg/...` was `ERR_FILE_NOT_FOUND`, and a directory listing of `/`
+  showed `data`, `svc` and `tmp`. The case therefore asks the program's note
+  first (`fonts-check.py --has-pkg`, with `tools/checkwants.py`) and fails
+  with the relink message; `CR_FONTS_FCFILE=1` is the interim run the
+  branch was tested with (the two packages' `fonts.conf` rewritten to
+  `/data/pkg` on the stick only, `FONTCONFIG_FILE` pointing at the first:
+  everything but the `/pkg` view and the `/etc/fonts` default). **After the
+  relink the case must run with no variable**; that is the one thing not
+  tried here (the layer's file is checked by posixtest: contents, stat,
+  `access`, `EROFS`, `ENOENT`).
+- **Findings on the way.** (1) A first hash of the canvas's pixels kept eight
+  bits of them (a pixel is nearly all alpha, its top byte; an xor of it never
+  reaches the low bits), so one Greek capital Eta matched the box by chance:
+  the hash now folds the top byte down and mixes the position. (2) Hebrew is
+  Liberation's (it has the letters, points and marks, and comes first): Noto
+  Sans Hebrew is a fallback nothing reaches. (3) The first launch with
+  `HOME=/data/cr/tmp` wrote fontconfig's cache into `$HOME/.cache/fontconfig`
+  (the case checks its file is there); with `HOME=/` (a program started by
+  the shell with no HOME) the `/data/.cache/fontconfig` fallback in
+  fonts-jamos's `fonts.conf` is the one written. (4) Chromium's bundled
+  fontconfig is 2.18.3 on Fontations (no FreeType in it); the host's `fc-match`
+  (2.17 on the Mac, 2.15 on the PC) gives the same answers on all 121 checks.
+- **Not done.** content_shell's own run (it needs `mount /pkg r` and a relink
+  too, and the same fonts; `shell-wl`/`multi` set no `FONTCONFIG_FILE`, so
+  after the relink they get the system fonts as well, with the page's Inter
+  beside the program as before); a `crfonts` line for
+  `build/prepush-1018.txt` (the main session's); the shell exporting
+  `XDG_CACHE_HOME` (G2 section 10: not needed now).
+
 ### 2. The address space: huge sparse reservations (the top risk)
 
 **What Chromium does** ([CR-RESEARCH section 6](CR-RESEARCH.md#6-v8s-jit)):
@@ -3229,9 +3292,14 @@ delegation) and linux-dmabuf, until the GPU.
 Chromium builds its own fontconfig, FreeType and HarfBuzz; it needs font
 files and a configuration: G2's GP2, the `fonts-jamos` package
 (Liberation, Noto Sans, Serif and Sans Mono, Inter, JetBrains Mono, Noto
-Color Emoji) with `FONTCONFIG_FILE` set by the shell for every program
-([G2 section 4](G2-PLAN.md#4-fonts)). The cache goes under
-`XDG_CACHE_HOME` on `/jam`.
+Color Emoji) and the FONTS track's `fonts-noto-extra` (Noto Sans CJK and
+every other script: [GP2 notes, continued](G2-PLAN.md#gp2-notes-continued-the-fonts-track)),
+found with no environment variable: libc serves `/etc/fonts/fonts.conf`,
+fontconfig's default file, which includes the packages' own
+(`/pkg/share/fonts/fonts.conf`), and the browsers ask for `mount /pkg r`
+([FONTS notes](#fonts-notes-2026-10-19)). The cache goes under
+`$XDG_CACHE_HOME/fontconfig`, else `$HOME/.cache/fontconfig`, else
+`/data/.cache/fontconfig`.
 
 ### 11. Sound
 
@@ -3561,7 +3629,7 @@ ladder past zlib and xz waits.
 | **CR-d. `chrome` browses** | the [Done when](#cr-plan-chromium) above: on the PC from `/jam`, installed by `pkg` | cr-test.sh `chrome` in QEMU (a local HTTPS server on the test host, a page per feature); the PC check | CB6's needs: GC2, GC3, GP2, CU2, M13.6, M12.7 stage 2, M13.7's `pkg` and PO13, CA1 for sound |
 | **CR-e. The JIT** (built 2026-10-19: [CR-e notes](#cr-e-notes)) | renderers run V8 with its compilers and WebAssembly under `right jit`; JetStream and Speedometer scores against `--jitless` in BENCH.md; every other process still `--jitless`; CJR's findings fixed | ktests (CJ1), posixtest (`MAP_JIT`), cr-test.sh `chrome` with a Wasm page | CJ1, CJ2, CJR |
 | **CR-f. Jam OS's sandbox** | each renderer in its own job with a narrowed namespace; a test renderer that tries to open `/jam`, connect out or reach the compositor fails each; a renderer that eats memory hits its job's limit, not the system's | its own plan | CR-d |
-| **Later** | the GPU (G3, G4: ANGLE and Vulkan, then WebGL on it; WebGL in software, SwiftShader, since CR-e), video beyond the open codecs (never H.264 in the open build), CJK fonts, input methods, drag and drop | | |
+| **Later** | the GPU (G3, G4: ANGLE and Vulkan, then WebGL on it; WebGL in software, SwiftShader, since CR-e), video beyond the open codecs (never H.264 in the open build), input methods, drag and drop | | |
 
 ## The interfaces that change (for M14's review)
 
@@ -4897,6 +4965,6 @@ every lock and kept none (`dup.c`), so `F_SETLK` never said `EAGAIN` and
   (CR-f) if at all.
 - **Security updates**: M13.7's PO12 audit with Chromium's CVEs, and a
   rebuild at each Alpine stable bump.
-- **More**: CJK fonts, input methods, drag and drop, the microphone and
+- **More**: input methods, drag and drop, the microphone and
   camera, printing to a file, Chromium's DevTools profiler (with signals
   to a thread).

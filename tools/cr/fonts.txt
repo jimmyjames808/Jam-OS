@@ -1,0 +1,71 @@
+# cr-test.sh's fonts script (docs/CR-PLAN.md, FONTS notes): headless_shell, one
+# process, on tools/cr/fonts.html with the system fonts, which it finds the way
+# every program does (no FONTCONFIG_FILE: libc serves /etc/fonts/fonts.conf,
+# which includes the packages' /pkg/share/fonts/fonts.conf: fonts-jamos and
+# fonts-noto-extra, staged on the stick's /data/pkg), then the same page with
+# a fonts.conf of Inter alone, the control that must show boxes. Each run
+# twice: --dump-dom (the page's own check of every cluster, into a file here)
+# and --screenshot (1000x1400 PNG there); the case copies the files out of the
+# saved stick and tools/cr/fonts-check.py looks at them. Lines are kept short
+# with variables (the shell cuts a line at 240 characters): H the program, T the
+# scratch directory, U the page.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send export TMPDIR=/data/cr/tmp HOME=/data/cr/tmp
+wait {prompt}
+send H=/data/cr/out/jamos/headless_shell; T=/data/cr/tmp; U=file:///data/cr/out/jamos/fonts.html
+wait {prompt}
+# the packages are where init's /pkg view shows them (the log has the lines)
+send ls -l /pkg/share/fonts /pkg/share/fonts/noto-extra/cjk /data/cr/out/jamos/fonts; echo ls0-"x"
+wait 30 ls0-x
+wait {prompt}
+send allow -l; echo al0-"x"
+wait 30 al0-x
+wait {prompt}
+# the case fills in @SYSENV@: nothing the fonts need (the way every program
+# finds the system fonts), or with CR_FONTS_FCFILE=1 FONTCONFIG_FILE pointing at
+# the packages' file, for a headless_shell linked before libc served /etc/fonts
+send @SYSENV@
+wait {prompt}
+
+# the system fonts: the first launch scans them and writes fontconfig's cache
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --dump-dom $U > $T/dom-sys.html; echo rc1-$?
+wait 900 re:rc1-[0-9]
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --window-size=1000,1400 --screenshot=$T/sys.png $U; echo rc2-$?
+wait 600 re:rc2-[0-9]
+wait {prompt}
+send ls -l /data/cr/tmp/.cache/fontconfig; echo ls1-"x"
+wait 30 ls1-x
+wait {prompt}
+
+# a program started by the shell with no HOME of its own has HOME=/ and no
+# XDG_CACHE_HOME: the xdg cache is unwritable there, and fontconfig writes the
+# one /data/.cache/fontconfig that fonts-jamos's fonts.conf names after it
+send export HOME=/
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --dump-dom $U > $T/dom-home.html; echo rc5-$?
+wait 900 re:rc5-[0-9]
+wait {prompt}
+send ls -l /data/.cache/fontconfig; echo ls2-"x"
+wait 30 ls2-x
+wait {prompt}
+send export HOME=/data/cr/tmp
+wait {prompt}
+
+# the control: only Inter, so every other script is a box
+send export FONTCONFIG_FILE=/data/cr/out/jamos/fonts/fonts.conf
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --dump-dom $U > $T/dom-ctl.html; echo rc3-$?
+wait 600 re:rc3-[0-9]
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --window-size=1000,1400 --screenshot=$T/ctl.png $U; echo rc4-$?
+wait 600 re:rc4-[0-9]
+wait {prompt}
+
+send sync; ls -l $T; echo ls-"x"
+wait 60 ls-x
+wait {prompt}
+send reboot -f
+wait 60 reboot: resetting
