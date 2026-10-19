@@ -446,6 +446,7 @@ bool t_extfs_posix(void);
  * view's reach, watches across restarts, a given-up instance's bells; the
  * hostile runs (IR2); the second process's modes are xwatch-*. */
 bool t_extfs_watch_rows(void);
+bool t_extfs_watch_nameless(void);
 bool t_extfs_watch_moves(void);
 bool t_extfs_watch_views(void);
 bool t_extfs_watch_order(void);

@@ -8,6 +8,9 @@
  *                       each kind, a link, unlinks of a file (named
  *                       twice, once, and open), of a directory; what makes
  *                       no event (readdir, stat, readlink, resolve)
+ *   extfs_watch_nameless (DR) setattr of a path that ends in no name ("" on
+ *                       a directory channel, ".", ".."): the parent's watch
+ *                       hears the directory's name, after a rename too
  *   extfs_watch_moves   renames in and across directories with one cookie,
  *                       over a name (its IN_ATTRIB, its IN_DELETE_SELF),
  *                       RENAME_EXCHANGE's two pairs, a directory moved, a
@@ -432,6 +435,60 @@ bool t_extfs_watch_rows(void)
 
     unwatcher(&a);
     return stop("watch-rows");
+}
+
+/* ---- a change of a path that ends in no name ----------------------------------- */
+
+static status_t chattr(handle_t ch, const char *path, uint32_t mode)
+{
+    return fs_setattr_until(ch, dl(), path, L(path), 0, FS_ATTR_MODE, mode, 0, 0, 0, 0);
+}
+
+/* (DR) futimens, fchmod and fchown on a directory's descriptor (fs.setattr
+ * of "" on its directory channel), and a path ending in "." or "..": the
+ * parent's watch hears the directory's name, as Linux's (Chromium's
+ * FilePathWatcherTest.RecursiveWatch), after a rename too. */
+bool t_extfs_watch_nameless(void)
+{
+    struct wat a;
+    handle_t s = HANDLE_INVALID, in = HANDLE_INVALID;
+    uint64_t id = 0, vol = 0;
+    CHECK(start());
+    CHECK_ST(t_mkdir(&r, "/d"), OK);
+    CHECK_ST(t_mkdir(&r, "/e"), OK);
+    CHECK_ST(t_mkdir(&r, "/d/s"), OK);
+    CHECK_ST(t_mkdir(&r, "/d/s/in"), OK);
+    CHECK_ST(fs_opendir_until(r.fs, dl(), "/d/s", 4, 0, &s, &id, &vol), OK);
+    CHECK_ST(fs_opendir_until(r.fs, dl(), "/d/s/in", 7, 0, &in, &id, &vol), OK);
+    CHECK(watcher(r.fs, &a));
+    CHECK((idD = add(&a, "/d", ALL)) && (idE = add(&a, "/e", ALL)) &&
+          (idS = add(&a, "/d/s", ALL)));
+    NOTHING(&a, "the adds");
+
+    CHECK_ST(chattr(s, "", 0750), OK);
+    CHECK_ST(chattr(r.fs, "/d/s/.", 0755), OK);
+    CHECK_ST(chattr(in, "..", 0750), OK);
+    EXPECT(&a, "the directory itself", { idD, IN(ATTRIB) | IN(ISDIR), "s" },
+           { idS, IN(ATTRIB) | IN(ISDIR), "" }, { idD, IN(ATTRIB) | IN(ISDIR), "s" },
+           { idS, IN(ATTRIB) | IN(ISDIR), "" }, { idD, IN(ATTRIB) | IN(ISDIR), "s" },
+           { idS, IN(ATTRIB) | IN(ISDIR), "" });
+
+    /* Renamed into another directory: its new parent, by its new name. */
+    CHECK_ST(t_rename(&r, "/d/s", "/e/t"), OK);
+    CHECK(take_all(&a));
+    CHECK_ST(chattr(s, "", 0755), OK);
+    EXPECT(&a, "renamed", { idE, IN(ATTRIB) | IN(ISDIR), "t" }, { idS, IN(ATTRIB) | IN(ISDIR), "" });
+
+    /* The volume's root has no parent: its own watch alone. */
+    uint32_t idR = add(&a, "/", ALL);
+    CHECK(idR);
+    CHECK_ST(chattr(r.fs, "", 0755), OK);
+    EXPECT(&a, "the root", { idR, IN(ATTRIB) | IN(ISDIR), "" });
+
+    jam_handle_close(in);
+    jam_handle_close(s);
+    unwatcher(&a);
+    return stop("watch-nameless");
 }
 
 /* ---- moves --------------------------------------------------------------------- */

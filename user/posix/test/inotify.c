@@ -786,6 +786,39 @@ static void real_events(const char *m)
     printf("posixtest: inotify: %s: events from its service (%d records)\n", m, k);
 }
 
+/* (DR) futimens, fchmod and fchown on a directory's descriptor (on ext a
+ * directory channel: fs.setattr of ""): the parent's watch hears the
+ * directory's name, as Linux's does (Chromium's TouchFile in
+ * FilePathWatcherTest.RecursiveWatch). */
+static void dir_fd_events(const char *m)
+{
+    char dir[64], sub[80];
+    snprintf(dir, sizeof(dir), "%s/inotify-d", m);
+    snprintf(sub, sizeof(sub), "%s/s", dir);
+    rmdir(sub);
+    rmdir(dir);
+    CHECK(mkdir(dir, 0755) == 0 && mkdir(sub, 0755) == 0);
+    int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    int wd = inotify_add_watch(fd, dir, CR_MASK);
+    int d = open(sub, O_RDONLY | O_DIRECTORY);
+    CHECK(wd > 0 && d >= 0);
+    CHECK(futimens(d, NULL) == 0);
+    CHECK(fchmod(d, 0700) == 0);
+    CHECK(fchown(d, getuid(), getgid()) == 0);
+    CHECK(close(d) == 0);
+    int k = drain(fd);
+    static const uint32_t masks[] = { IN_ATTRIB | IN_ISDIR, IN_ATTRIB | IN_ISDIR,
+                                      IN_ATTRIB | IN_ISDIR };
+    static const char *const names[] = { "s", "s", "s" };
+    if (!in_order(k, wd, masks, names, 3))
+        printf("posixtest: inotify: %s: a directory descriptor's changes: %d records, "
+               "not 3 of \"s\"\n", m, k);
+    CHECK(in_order(k, wd, masks, names, 3));
+    CHECK(rmdir(sub) == 0 && rmdir(dir) == 0);
+    close(fd);
+    printf("posixtest: inotify: %s: a directory descriptor's changes named in its parent\n", m);
+}
+
 static long long now_us(void)
 {
     struct timespec t;
@@ -906,6 +939,7 @@ static void real_mounts(void)
                    (unsigned long)s.f_type);
         } else if (!(s.f_flags & ST_RDONLY) && wd > 0) {
             real_events(mounts[i]);
+            dir_fd_events(mounts[i]);
             racy_cost(mounts[i]);
         } else {
             CHECK(wd > 0);   /* read-only: quiet */
