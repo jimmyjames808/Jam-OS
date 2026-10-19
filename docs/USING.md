@@ -1,16 +1,17 @@
 # Using Jam OS
 
 What Jam OS does today, as someone at the PC sees it: the desktop, the
-shell, files, sound and settings. The network has a page of its own
+shell and its programs, the Chromium browser, updating, files, sound and
+settings. The network (and `ssh`) has a page of its own
 ([NETWORK.md](NETWORK.md)); the design behind all of it is in
 [ARCHITECTURE.md](../ARCHITECTURE.md), and the boot menu's entries and
 the test commands are in [TESTING.md](TESTING.md).
 
 ## Starting up
 
-- UEFI boot from a USB stick (via Limine) on a real PC with 28 CPUs, and
-  in QEMU ([HARDWARE.md](HARDWARE.md) has the PC and how to flash the
-  stick).
+- UEFI boot (via Limine) from a USB stick or from an NVMe drive Jam OS was
+  installed on (`install`, below), on a real PC with 28 CPUs, and in QEMU
+  ([HARDWARE.md](HARDWARE.md) has the PC and how to flash the stick).
 - A boot splash: the logo animation with its sound while Jam OS starts
   (it plays to the end, and what is typed meanwhile reaches the shell).
   The boot menu's "Developer > Jam OS (text log, no splash)" (the boot
@@ -154,9 +155,18 @@ build)" boots the one before it.
 - Each program gets only what it asks for: a list in its own file (the
   services under `/svc` and the mounts it wants, read-only or writable).
   A program copied to `/data` runs once the owner has said yes to its list
-  with `allow`.
-- `pkg` installs packages from the Mac's repository (`pkg.repo` in the
-  settings; see [NETWORK.md](NETWORK.md#settings)): `pkg update`,
+  with `allow` (`allow <file>`, `allow -l` lists the approved ones,
+  `allow -r <name>` takes one back).
+- POSIX programs (built against musl, as ported software is) run like any
+  other. sbase's tools (`sed tr cut tar find xargs dd ed od sort ...`) and
+  `lua` come in the boot image and PATH finds them (where the shell has a
+  command of the same name, `ls` or `grep` say, the shell's own runs). What
+  you build on the Mac with `tools/jamos-cc` runs once it is copied to
+  `/data` (`fetch` it from the Mac) and allowed.
+- `pkg` installs packages from the Mac's repository (on the Mac `make
+  ports` builds and signs it and `python3 tools/ports-server.py` serves it;
+  `pkg.repo` in the settings says where, see
+  [NETWORK.md](NETWORK.md#settings)): `pkg update`,
   `pkg install <name>`, `pkg upgrade`, `pkg remove [-r] <name>`, `pkg list
   [-u]`, `pkg info`, `pkg files`, `pkg audit`, `pkg check`. An install shows
   every package's licence and what each program asks for, and asks once
@@ -172,15 +182,107 @@ build)" boots the one before it.
 - `kernel load` loads a freshly flashed kernel from the stick while Jam OS
   runs, so the next `reboot` is instant.
 
+## Chromium, the web browser
+
+Chromium is Jam OS's main goal, built from its own source. Today it runs
+as `content_shell`, Chromium's plain test browser: a window with Back,
+Forward, Refresh, Stop and an address bar, and the page under it. It is
+several processes (the browser, a GPU process that draws in software, the
+network and storage services, a renderer for the page), V8 compiles
+JavaScript and WebAssembly, HTTPS works, and a page's sound plays through
+the mixer. `chrome`, the real browser with tabs, menus and a profile on
+`/jam`, is being finished: then `pkg install chromium` installs it and
+`chrome` starts it, and this section changes. So far it has run in QEMU
+(`headless_shell` has drawn real sites on the PC itself; `content_shell`
+on the PC is still to be tried).
+
+To run `content_shell` now, put its two files (`content_shell`, about
+350 MB, and `content_shell.pak`, from the PC's Chromium build under
+`~/cr`) in a folder on the Mac, serve it with `python3 -m http.server
+8000` there, and on Jam OS:
+
+```
+mkdir /data/cr
+mkdir /data/cr/tmp
+cd /data/cr
+fetch http://<the Mac's address>:8000/content_shell
+fetch http://<the Mac's address>:8000/content_shell.pak
+allow /data/cr/content_shell
+```
+
+`allow` shows what the program asks for (the network and names, the
+desktop, `/data` and `/pkg`, sound, the JIT) and waits for your yes. Then:
+
+```
+export TMPDIR=/data/cr/tmp HOME=/data/cr/tmp
+/data/cr/content_shell --no-sandbox --no-zygote https://example.com &
+```
+
+- The window opens in the tiling like any other and takes the keys and the
+  mouse; Super+Q closes it. While it has the keys, Ctrl+C is the page's:
+  click the terminal first to stop it from there (or `kill %1`).
+- `--no-sandbox`: Jam OS's own sandbox for Chromium is not built yet, so
+  use it for ordinary sites only, never for banking or logins that matter.
+  `--no-zygote` is how Chromium starts its renderers here.
+- WebGL is off. `--enable-unsafe-swiftshader` turns it on in software
+  (slow); `--js-flags=--jitless` turns the JavaScript compiler off.
+- Pages need fonts to show more than Latin letters: `pkg install
+  fonts-jamos` (Latin, Greek, Cyrillic, emoji, Inter, JetBrains Mono,
+  Liberation; 34 MB) and `pkg install fonts-noto-extra` (Chinese, Japanese
+  and Korean, Arabic, Hebrew, the Indian and Southeast Asian scripts,
+  Georgian, Armenian, Ethiopic and symbols; 45 MB). They go under `/pkg`,
+  so the drive needs an ext `/data` or `/jam`. Without them other scripts
+  show as boxes. The browser finds them by itself.
+- Sound is the mixer's: the volume popover and `vol` set it, and Chromium
+  plays at the same time as Jamjar. The open codecs (VP9, Opus) are in;
+  H.264, AAC and Widevine are not. Sound has been checked in QEMU, not yet
+  by ear on the PC.
+
+## Updating the PC
+
+`update` brings the newest build the Mac has made, checked against the
+owner's key. On the Mac, `make`, then leave `python3 tools/update-server.py`
+running ([NETWORK.md](NETWORK.md#a-new-build-without-moving-the-stick) has
+the key and the details); on the PC, `update`, then `reboot` to start it
+(`reboot -f` goes through the firmware). It writes the disk the PC booted
+from, the stick or the installed NVMe drive, and keeps the old build as
+the boot menu's "Jam OS (previous build)". `update -n` only fetches and
+checks, `update -m` runs the new build from memory and writes nothing.
+
+**The size limit.** The kernel and the boot image may each be up to 64 MiB
+(the boot image is about 29 MiB now). A PC still running a build made before
+2026-10-18 takes only 32 MiB, so update it once now, while the boot image
+is still under 32 MiB, to get the 64 MiB limit
+([NETWORK.md](NETWORK.md#what-update-does-to-the-stick-or-the-drive)).
+A stick made before 2026-10-12 (a 63 MiB boot partition) can't hold three
+builds: `update` runs the new one from memory only; `make usb` makes a
+stick again.
+
+## From another computer: ssh
+
+`ssh jam@<the PC's address>` opens the Jam OS shell over the network, with
+a key (no passwords): the server starts when `/data/etc/authorized_keys`
+has an `ssh-ed25519` line. The shell's `ssh` command shows the host key's
+fingerprint and who may log in; [NETWORK.md](NETWORK.md#ssh-into-jam-os)
+has how to add a key.
+
 ## Files and sticks
 
-USB sticks work through a usb-storage driver and a FAT32 service (FatFs)
-per volume. The stick Jam OS boots from has its boot partition at `/esp`,
-read-only, and a data partition at `/data`; any other stick shows up
-read-only at `/usb0`, `/usb1`, ... and `mount -w` makes it writable. Each
-boot's kernel log is saved to `/data/logs/` and can be read on another
-computer; after a panic the next boot saves the panicked boot's log too,
-and `crashlog` shows it ([ARCHITECTURE.md](../ARCHITECTURE.md#storage)).
+USB sticks work through a usb-storage driver and a filesystem service per
+volume: FAT32 (FatFs) or ext. The stick Jam OS boots from has its boot
+partition at `/esp`, read-only, and a data partition at `/data` (ext on a
+stick made since 2026-10-15, FAT32 before; the Mac can't read an ext one:
+[HARDWARE.md](HARDWARE.md#flash-and-boot-the-stick)); any other stick shows
+up read-only at `/usb0`, `/usb1`, ... and `mount -w` makes a FAT one
+writable. On ext volumes (`/data` of a new stick, `/jam`) the shell's
+`ls -l` shows modes, links and owners, `chmod`, `ln` (`-s` for a symbolic
+link), `stat` and `readlink` work, and `disk check /jam` checks the volume
+read-only. Each
+boot's kernel log is saved to `/data/logs/` and goes to the Mac as it is
+written when the settings have `net.host` (netlog:
+[NETWORK.md](NETWORK.md#the-log-on-the-mac)); after a panic the next boot
+saves the panicked boot's log too, and `crashlog` shows it
+([ARCHITECTURE.md](../ARCHITECTURE.md#storage)).
 
 `/tmp` is always there and empty at every boot: the Jam OS drive's
 `/jam/tmp` when it is in, the drive's own `/data/tmp` when the PC started
@@ -202,7 +304,8 @@ blocks are not 512 bytes are listed and not mounted (the FAT service reads
 512 only).
 
 - `disks` lists every disk, a stick or a drive, by the name the other
-  commands use (`nvme0`, `usb0`): its model, serial number, firmware and
+  commands use (`usb0`; NVMe drives are `nvme0`, `nvme1` in PCI order,
+  whichever disk the PC booted from): its model, serial number, firmware and
   size, its partition table (GPT, MBR, or none), whether it is the Jam OS
   disk, and under each its partitions: type (by name where known, else the
   GUID), size, name and where each is mounted (or "no FAT volume" for one
@@ -299,7 +402,8 @@ yet: [ARCHITECTURE.md](../ARCHITECTURE.md#services-that-outlive-their-process).)
   /data/song.mp3` plays an MP3 (CBR or VBR, ID3 tags skipped, decoded by
   dr_mp3) copied straight from the Mac.
 - A mixer service plays several programs at once; `vol` sets their
-  volumes (and the top bar's volume popover the master volume).
+  volumes (and the top bar's volume popover the master volume). A web
+  page's sound ([Chromium](#chromium-the-web-browser)) is one more of them.
 - `music start` plays a folder of MP3s and WAVs in shuffle in the
   background while the shell goes on.
 - Jamjar is the same player in a window (`jamjar &`, or from the search
