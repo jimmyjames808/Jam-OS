@@ -488,11 +488,12 @@ few of metadata.
 | data in new blocks, no commit | the blocks free in the committed bitmaps (replay discards nothing, nothing was committed) | written again in a new transaction |
 | committed, before `PAGER_OP_WRITTEN` | the transaction replayed; the pages dirty again (AGAIN); the `msync` waiting not answered | written again (the same bytes or newer), then answered: **an acknowledged `msync` is never lost**, since `PAGER_OP_WRITTEN` comes only after the commit |
 | after `PAGER_OP_WRITTEN` | done | `msync` answered |
-| in a `file.sync` | the request in its slot (U4) | run again, its write-backs with it |
+| in a `file.sync` | the request in its slot (U4) | run again, its write-backs with it; an error its open heard of in the first run put back first (WQ, see "WR2 notes"), so the run again reports it too |
 | a fresh start (the state given up) | no slots | keys from the inode: a write-back request whose inode and generation are there is served; one whose file is gone is detached (its data went with the file) |
 | volumes gives up, the disk goes | the pager closed | every VMO detached: dirty pages lost, mappers fail at their next touch |
 
-Test powers (`test.c`): `die=wback:<n>` at each step above.
+Test powers (`test.c`): `die=wback:<n>` at each step above; `die=heard:<n>`
+after a `file.sync`'s open heard of an error, before the answer's commit.
 
 ### 2.7 Errors
 
@@ -578,6 +579,7 @@ Each about one agent-hour; WE2 about one and a half.
 | **WT1. The end-to-end tests** | the scripts below, and Chromium's tests through CB2's harness | `tools/pager-test.sh` (new cases), pagertest (`user/tests/pagertest/`, a new mode that stores records with sequence numbers and checksums), `tools/cr-test.sh`'s `base` filter list (a line) | WE2 and WL1 merged; CB2 merged and `/tmp` on ext (U7b or U11a) for the Chromium case | pager-test.sh `wmsync`: records stored and `msync`ed, `kill extfs-jam`, read back through `read` and a new mapping; again with no `msync` (the successor writes them); again across a reboot (`msync`ed records there). `wcut`: QEMU stopped dead during a store-and-`msync` storm, booted again: every acknowledged record whole, Linux's `e2fsck -fn` clean. `wpress`: a mapping twice the budget stored through (the writer throttled, done, every page right) while another program reads another file at speed; then with extfs held by a test power (`hang=wback`): the writer killed at the deadline with the line, the reader, the shell and `/jam` fine. cr-test.sh `base` with `MemoryMappedFileTest.*`, `FilePersistentMemoryAllocatorTest.*` and `PersistentHistogramAllocatorTest.*` (*unsure* of the exact suite names: CB2's list says); built, see "WT1 notes" (the held `wpress` is utest `extfs_wpress`; the 8 writable-mapping tests of `base` pass and are off the skip list, on the stage's programs, not relinked by the track) | 1 | Sonnet 5.5 |
 | **WR. Independent review and fix** | everything above, findings first (a new docs/WRITEMAP-REVIEW.md), then High and Medium fixed with a test each: can a store be lost (begin's protect against the copy, the request's stamps, AGAIN), can a writer or the kernel wait forever, can a dirty page be evicted, does a view's refusal hold for every way to a writable handle, is an acknowledged `msync` safe across every death; built, see "WR notes" | the files its fixes need | WK1 to WT1 merged | its own; hostile: 8 writers on one file from two processes with fork and a pager killed every 200 ms; full ktest 4 and 8; soak 4 | 1.5 | **Opus** |
 | **WR2. Errors to every mapper** | the review's finding 7 (design question 2): a write-back error reported once to each mapping's `msync` and each open's `fsync`, Linux's errseq (the VMO's and the slot's count, each mapping's and open's sample); built, see "WR2 notes" | `abi/syscalls.def` (`vmo_sync`), `<jam/abi.h>`, `kernel/object/vmo.c`, `kernel/abi/sysc_vm.c`, `<jam/pager.h>`, `user/posix/sys/mem.c` and `maptable.*`, `user/services/extfs/wback.c`, `files.c`, `pager.c`, `extfs.h`, the tests | WR merged | ktest `pager_dirty_errseq`; utest `extfs_wback` (two processes, opens held across); full ktest 4 and 8; the pager cases | 0.5 | **Opus** |
+| **WQ. An `fsync`'s error across extfs's deaths** | WR2's question 2: a `file.sync` run again by adopt.c after extfs died between the open's mark and the reply's commit reported 0; now the mark is put back first (`kept->heard`, `wback_unhear`); built, see "WR2 notes" | `user/services/extfs/wback.c`, `adopt.c`, `request.c` (`op_seq`), `files.c` (the call), `test.c` (`die=heard`), `extfs.h` (XF_STATE_LAYOUT 12), the tests | WR2 merged | utest `extfs_restart_wback` (`die=heard:1` twice); `extfs-svc-test.sh`; the ext and pager write-back cases | 0.25 | **Opus** |
 | **WJ. The join** | ARCHITECTURE (Memory: writable pager VMOs and the hold; Storage: write-back), M12.5-PLAN's and M13-PLAN's lines that say pager pages are always clean, TESTING (the new cases and ktests), ROADMAP, CR-PLAN, HISTORY; this plan deleted when HISTORY covers it | the docs | WR | `make check` | 0.5 | Sonnet 5.5 |
 
 **Order.** WK1 as soon as FK2 is merged (both are in `vmo.c` and
@@ -1272,10 +1274,8 @@ Decisions (mine; the main session's to override):
 
 Left: an error is kept while the file's slot lives (a slot goes at its
 VMO's GONE: no mapping and nothing dirty), as before; Linux keeps it in
-the inode while cached. A `file.sync` run again by adopt.c after extfs
-died between its report and the reply says 0 the second time (the open
-heard of the error in the state); the old take-once had the same window.
-No posixtest: a POSIX program can't make a write-back fail without
+the inode while cached. (A `file.sync` run again after a death between
+its report and its reply said 0: closed by WQ, below.) No posixtest: a POSIX program can't make a write-back fail without
 filling the shared `/data`; libc's part runs in every shared `mmap` and
 `msync` (the `mm-wshared` and pager cases).
 
@@ -1295,6 +1295,73 @@ whostile, `posix-mmap-test.sh` wshared, the shell scripts basic, cmds,
 commands and files, and kdump save. The tests were not run with the
 change taken out: each checks the finding's symptom as written (a second
 mapper's or open's report after the first one's).
+
+**WQ (WR2's question 2): an `fsync`'s error across extfs's deaths.** The
+window above: `wback_file` marked the open as having heard of the error
+(its `wb_seq`, the slot's `error_seen`: plain stores into the state),
+then extfs died before the reply's slot was committed; adopt.c ran the
+request again (svcstate's RERUN: a `file.sync` that answers an error
+commits nothing in the journal), and the run again found the open up to
+date and answered 0. The browser's profile (SQLite databases that
+`fsync`) lives on `/jam`, so this went before CB6.
+
+The fix takes adopt.c's own pattern for a request that runs again: what
+it made is forgotten (`kept->made`, `unmake`), and now what its open heard
+of is put back too. `wback_file` records the mark before making it
+(`kept->heard`: the request's seq, the open's slot and its `wb_seq`
+before and after, the map slot's `error_seen` before; the seq stored
+last, then a compiler fence, so a kill between any two stores leaves
+either no record for this request or a whole one), and adopt.c's
+`unmake` calls `wback_unhear` for a request it runs again: only what the
+mark changed is put back (the open's `wb_seq` if it still is the heard
+number, `error_seen` if the slot still keeps that error), then the record
+is dropped (after, so a death in between puts back the same again). A
+request committed (its answer in the slot) is answered from the slot, the
+mark kept. XF_STATE_LAYOUT 12.
+
+Why this and not the others the brief named: committing the mark only
+with the answer needs it applied in two places (after `svcstate_commit`,
+and by adopt.c for a RESEND) with its own window between the commit and
+the apply; carrying the answer in the slot's record needs the mark made
+again too, or an error reported twice. Putting back on a run again is
+one record and one call in the place that already forgets a run's
+`made`, and the run again computes the same answer from the same state.
+
+The rule now: every `fsync` whose write-back failed reports the error to
+that open, exactly once, across any number of extfs deaths (a death
+before the slot's commit: put back and reported by the run again; after
+it: answered from the slot, the mark kept). A request in progress at two
+crashes (not kills) is still answered `ERR_IO` (adopt.c's rule) with the
+mark put back, so that open hears of the error again at its next `fsync`:
+twice, both failures. `fs.sync` (`wback_all`) has no errseq: it reports
+the errors its own write-backs meet, and one run again after a death
+answers 0 if the failed pages were given up (clean) in the first run:
+the old take-once window, left as it was (libc's `sync` returns nothing;
+its `syncfs` reports what `fs.sync` answers).
+
+`msync` has no such window: the kernel takes the error and moves the
+caller's sample in one `vmo_sync` (`vmo_pager_take_error`, then the copy
+out), and the VMO's count (`pwb_*`) lives in the kernel, not in extfs:
+an extfs that dies after `PAGER_OP_WRITTEN` with the error leaves it
+counted, and one that dies before writes the pages again (dirty again)
+and meets the error again or writes them (then 0 is true). A copy out
+that fails answers `ERR_INVALID_ARGS` with the sample not moved: the
+error comes again at the next `msync`.
+
+Test: utest `extfs_restart_wback`'s two new deaths (`die=heard:1` at two
+instances in a row): a page of hole stored over on a full volume, its
+`fsync` ended twice after the open heard of `ERR_NO_SPACE`; the third
+instance answers `ERR_NO_SPACE`, the next `fsync` of that open 0; a
+second open made before and a mapper's sample taken before hear of it
+once each. With adopt.c's `wback_unhear` call taken out, the case fails
+as the window says: "file_sync_until(e.ch, dl()) is OK, want
+ERR_NO_SPACE" (batch 20060607, the init run).
+
+Runs (the PC): batch 20060956, 16 runs, all PASS: PC `make check`, the
+full init run (`extfs_restart_wback` ok after its two `heard` deaths),
+`extfs-svc-test.sh`, `extfs-test.sh` basic, links, case, big, cut, storm,
+interop and foreign, `pager-test.sh` wmsync, wcut, wpress and whostile,
+and the shell script basic. No kernel change: no ktest.
 
 ## 6. Tests
 
