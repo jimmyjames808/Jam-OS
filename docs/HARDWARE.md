@@ -4,7 +4,8 @@ Jam OS is developed against one machine, and every milestone is checked on
 it. This page is the one place its facts are written down; other docs link
 here. The facts come from Jam OS's own boot log and device listings on that
 PC (the Devices and usb-bus runs of 2026-09-29, the boot logs saved on
-the stick on 2026-10-01, and the network runs of 2026-10-02).
+the stick on 2026-10-01, the network runs of 2026-10-02, and the NVMe
+sessions of 2026-10-11 and 2026-10-18).
 
 ## The machine
 
@@ -14,9 +15,9 @@ the stick on 2026-10-01, and the network runs of 2026-10-02).
 | CPU | Intel Core i7-14700 (not F), Raptor Lake: family 6, model 0xB7, stepping 1, microcode 0x11F. 8 P-cores with Hyper-Threading + 12 E-cores = **28 CPUs** in x2APIC mode (xAPIC mode only reached 20). TSC 2112 MHz (invariant), TSC-deadline timer, PCIDs + INVPCID, SMEP/SMAP/UMIP, protection keys (PKU and PKS), WAITPKG, CET; no user interrupts. XSAVE with xcr0 = 7 (832-byte state) |
 | Topology | cpus 0-15: the P-cores, two threads each (cpu 0 and 1 are core 0, 2 and 3 are core 4, ... 14 and 15 are core 28); cpus 16-27: the E-cores, one thread each (cores 32-43) |
 | Memory | 32 GB (Jam OS manages 32049 MiB) |
-| Display | NVIDIA RTX 4080 SUPER (01:00.0, 10de:2702), monitor on it. UEFI GOP framebuffer 2560x1440, 32 bpp, at physical 0x4000000000 (256 GiB: Resizable BAR on). No iGPU PCI function: the UHD 770 is disabled in firmware |
+| Display | NVIDIA RTX 4080 SUPER (01:00.0, 10de:2702), monitor on it. UEFI GOP framebuffer 2560x1440, 32 bpp, at physical 0x4000000000 (256 GiB: Resizable BAR on). No iGPU PCI function: the UHD 770 is disabled in firmware (the planned render offload to it, [ROADMAP](ROADMAP.md#now), needs it turned on; the monitor stays on the RTX) |
 | PCI | 25 functions on 6 buses (24 before the second NVMe drive was fitted, 2026-10-11) |
-| Serial | a working COM1 UART, but no cable; logs come off the PC as files on the stick (each boot's log in `/data/logs/`), over the network to the Mac (netlog, on the "Jam OS (network)" boot: [The network](#the-network)) and as photos of the screen |
+| Serial | a working COM1 UART, but no cable; logs come off the PC as files (each boot's log in `/data/logs/`: [reading them](#flash-and-boot-the-stick)), over the network to the Mac (netlog, on every boot that has `net.host`: [The network](#the-network)) and as photos of the screen |
 
 **PCIDs.** Alder Lake and Raptor Lake have an erratum (Intel ADL063,
 RPL042): with PCIDs on, INVLPG may leave global TLB entries behind. Intel's
@@ -81,16 +82,18 @@ Seen in the boot logs, all harmless so far:
 
 On the boot stick Jam OS mounts partition 1 (the ESP, 255 MiB; 63 MiB on a stick
 made before 2026-10-12) read-only at
-`/esp` and partition 2 (FAT32, the rest of the stick) at `/data`. A second
+`/esp` and partition 2 (ext, the rest of the stick; FAT32 on a stick made
+with `DATA_FS=fat` or before 2026-10-15) at `/data`. A second
 USB stick, plugged in at any time, is mounted read-only at `/usb0` if it
-holds a FAT volume (in an MBR partition, or over the whole stick with no
-partition table; not GPT): `mount` lists it, `mount -w /usb0` makes it
-writable, `mount -r /usb0` read-only again. It is never formatted. Tried
+holds a FAT or an ext volume (in an MBR partition, or over the whole stick
+with no partition table; not GPT): `mount` lists it, `mount -w /usb0` makes
+a FAT one writable, `mount -r /usb0` read-only again. It is never formatted. Tried
 on the PC on 2026-09-30 with a SanDisk 15.4 GB stick (MBR, one FAT32
 partition): read, made writable, written, read-only again, and macOS's
 check found it clean afterwards. Anything plugged in while Windows or
 macOS runs gets their files (`System Volume Information`, `.Spotlight-V100`,
-`.fseventsd`): `/data` is not private to Jam OS.
+`.fseventsd`): a FAT `/data` is not private to Jam OS (an ext one is not
+mounted by either).
 
 ## Other devices
 
@@ -101,9 +104,18 @@ macOS runs gets their files (`System Volume Information`, `.Spotlight-V100`,
 | 01:00.1 | NVIDIA HD Audio, 10de:22bb | HDMI/DP audio on the RTX: no driver, not planned |
 | 00:14.3 | Intel Wi-Fi (the board lists an AX201), 8086:7a70 (MSI-X 16) | not planned |
 | 00:0e.0 | Intel VMD/RAID, 8086:a77f | its 64-bit BAR has a hard-wired-zero upper half (see [HISTORY.md](HISTORY.md#m6-pci-msi-devmgr-drivers-through-handles)) |
-| 02:00.0 | Crucial NVMe, c0a9:5421 (MSI 8, MSI-X 9) | drv/nvme, **read-only** (M12.7, [plan](M12.7-PLAN.md)): bound on every boot since stage 1's N4; its FAT partitions are `/nvme0`, ..., `disks` lists it, `disk digest` and `disk smart` read it. Windows' drive on the owner's PC: never written ([USING](USING.md#files-and-sticks)). Writing and an installer are stages 2 and 3 |
-| 03:00.0 | MAXIO NVMe, 1e4b:1202 (MSI 32, MSI-X 9) | The owner's second NVMe drive, **fitted 2026-10-11 and blank**: never initialised, no partition table (Windows' prompt to initialise it was cancelled and the drive stays that way). It is Jam OS's own: the target of M12.7's stage 2 (writes, only to a drive marked for Jam OS) and stage 3 (the installer) ([plan](M12.7-PLAN.md)). Until stage 2 is built nothing writes to it: drv/nvme binds it on every boot exactly as the Crucial drive, with no write command in the driver, `disks` lists it as `blank`, and it has no partitions to mount |
+| 02:00.0 | Crucial NVMe, c0a9:5421 (MSI 8, MSI-X 9) | **Windows' drive** (GPT: EFI System, Microsoft reserved, C: in NTFS, Recovery). drv/nvme binds it on every boot (M12.7, [plan](M12.7-PLAN.md)) and **never writes it**: the driver refuses every write to a drive that is not a Jam OS disk, volumes and the shell refuse again, and the drive's own write counter did not move across Jam OS boots (checked 2026-10-11). `disks` lists it as `nvme0`; its FAT partitions mount read-only (`/nvme0`, ...); `disk digest` and `disk smart` read it ([USING](USING.md#files-and-sticks)) |
+| 03:00.0 | MAXIO NVMe, 1e4b:1202 (MSI 32, MSI-X 9) | The owner's second NVMe drive, fitted 2026-10-11 blank and **Jam OS's own since 2026-10-18**: `disk prepare` made it a Jam OS disk (a 512 MiB ESP and an ext data partition, `/jam`) and `install` put Jam OS on it, so the PC boots Jam OS from it with the stick out (it is first in the firmware's boot order; F8 picks Windows or the stick). `disks` lists it as `nvme1` ([plan](M12.7-PLAN.md), [USING](USING.md#files-and-sticks)) |
 | | SATA, SMBus, I2C/SPI functions, 6 bridges | |
+
+**Drive names.** `disks` and the other commands name NVMe drives in PCI
+order (bus, device, function), whichever disk the PC booted from: the
+Crucial at 02:00.0 is `nvme0` and the MAXIO at 03:00.0 `nvme1`. Until
+2026-10-19 the two swapped when the PC booted from the second drive; the
+fix is tested in QEMU and not yet checked on the PC by booting both ways.
+The mount points `/nvmeN` are another thing: they are numbered per FAT
+partition in the order the volumes were found, and `disks` shows each mount
+under its drive.
 
 ## The IOMMU (VT-d)
 
@@ -228,11 +240,15 @@ make usb DEV=/dev/diskN
 disk, and asks you to type YES before it erases it; writing needs your
 password (`sudo dd`). Check the disk number twice anyway. The stick gets
 two MBR partitions: the ESP (type 0xEF, volume `JAMOS`, 255 MiB: Limine,
-the kernel, bootfs), which only `update` writes, and the data partition (type
-0x0C, `JAMOS-DATA`, mounted at `/data`), which `tools/mbr-grow.py` grows to
-the end of the stick and leaves blank; Jam OS formats it on the first boot
-that finds it blank. Everything on `/data` is lost with the rest of the
-stick, so copy the logs off first.
+the kernel, bootfs), which only `update` writes, and the data partition
+(type 0x83, `JAMOS-DATA`, mounted at `/data`), which `tools/mbr-grow.py`
+grows to the end of the stick and `tools/stick-data.sh` makes an ext volume
+of, copying the Mac's `~/.config/jamos/data` folder into it (the files a
+stick needs before its first boot: `etc/authorized_keys`, `etc/settings`).
+`make usb DATA_FS=fat` makes the older kind instead: type 0x0C, FAT32,
+formatted by Jam OS on the first boot that finds it blank, which macOS
+mounts. Everything on `/data` is lost with the rest of the stick, so copy
+the logs off first.
 
 **Updating a stick that already boots Jam OS** (the usual way; nothing is
 erased and `/data` is not touched):
@@ -268,11 +284,21 @@ the build alone; the shell then reboots into the new build, and a second
 `make flash` stays the way for a new update key, a new Limine, or a stick
 whose build has no key.
 
+**The installed NVMe drive** (since 2026-10-18, the PC's everyday boot):
+`install nvme1` in the shell writes Jam OS to the second drive ([USING](USING.md#files-and-sticks)),
+and then the firmware's boot order, set once by hand (Del at power-on; F8
+picks a disk for one boot), decides between that drive, Windows and the
+stick. The stick stays a working Jam OS: picked with F8 it boots itself and
+mounts the drive's data partition as `/jam`. The PC's `update` writes the
+disk it booted from, so it updates the drive's ESP when it booted from the
+drive; `make flash` is for sticks only. `update` takes a boot image up to
+64 MiB ([NETWORK.md](NETWORK.md#what-update-does-to-the-stick-or-the-drive)).
+
 **Sticks made before 2026-10-12** have a 63 MiB ESP (the Makefile's
 `ESP_END_MIB` was 64; it is 256 now). Both `update` and `make flash` keep
 three builds on the ESP while they write one (the stick's, the previous
-one, the new one), and three of today's builds (the kernel 1.7 MB, the
-boot image about 20 MB) don't fit in 63 MiB. On such a stick `update`
+one, the new one), and three of today's builds (the kernel about 2 MB, the
+boot image about 29 MB) don't fit in 63 MiB. On such a stick `update`
 loads the new build and refuses to write it ("can't hold three builds":
 nothing on the stick changes, `reboot` runs the new build from memory,
 the stick keeps booting its own), and `make flash` refuses before it
@@ -295,15 +321,19 @@ it, `kernel load` in the shell reads the new kernel and boot image into
 the stored copy at once, and the next `reboot` starts them without
 reading the stick (a panic then comes back in the new build too).
 
-macOS does mount the data partition by itself (it may show it as
-`NO NAME`): the boot logs are in its `logs/` folder, `boot-0001.txt`,
-`boot-0002.txt`, ..., one per boot, the newest with the highest number;
-each starts with the date and time the kernel started. The settings
-(`etc/settings`: the time zone, whether the PC's real-time clock keeps
-local time, the volumes, the music folder) can be edited there too
-([ARCHITECTURE.md](../ARCHITECTURE.md#time-and-settings)). Files Jam OS
-writes are dated in local time, as FAT keeps them. Eject it before
-pulling it.
+The boot logs are in `/data/logs/`, `boot-0001.txt`, `boot-0002.txt`, ...,
+one per boot, the newest with the highest number; each starts with the date
+and time the kernel started. Netlog sends them to the Mac as they are
+written ([NETWORK.md](NETWORK.md#the-log-on-the-mac)), which is the
+easy way. macOS does not mount an ext `/data` (a FAT one it mounts by
+itself, and may show it as `NO NAME`: eject it before pulling the stick),
+but `build/host/jamext` reads one: as root, on the stick's raw device,
+`jamext --part 2 ls <disk> logs` and `jamext --part 2 get <disk> <path>
+<file>` (`make` builds it). The settings (`etc/settings`: the time zone,
+whether the PC's real-time clock keeps local time, the volumes, the music
+folder) are changed from Jam OS, or put on the stick through the Mac's
+`~/.config/jamos/data` folder ([NETWORK.md](NETWORK.md#settings);
+[ARCHITECTURE.md](../ARCHITECTURE.md#time-and-settings)).
 
 Then boot the PC from the stick in UEFI mode with Secure Boot off, and pick
 an entry from the boot menu ([TESTING.md](TESTING.md#the-boot-menu)). A
