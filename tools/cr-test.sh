@@ -117,7 +117,7 @@
 #           one boot (CR_BENCH_TIMEOUT seconds in all, 14400);
 #           tools/cr/bench-check.py makes the table (<outdir>/bench/check.out,
 #           the lines docs/BENCH.md takes); PASS if every run said a score;
-#           an hour or more: a long run (pc-batch.sh start --detach)
+#           about 6 minutes on the PC (CR_BENCH_TIMEOUT allows far more)
 #
 # The toolchain is fetched first if it isn't there (tools/cr/toolchain.sh:
 # clang, cmake, and for `rust` Rust; gperf, which Chromium's build needs, is

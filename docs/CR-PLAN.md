@@ -3347,7 +3347,8 @@ lands (no WebAssembly then).
   `MAP_JIT`: its code range and its WebAssembly code space). In Chromium
   that allocator is gin's, over PartitionAlloc's, which passes `MAP_JIT`
   on macOS; ports/chromium's patch 0913 passes it on Jam OS too (no Linux
-  path says which reservation holds code). Its decommit of code pages, a
+  path says which reservation holds code), and for memory asked
+  executable from the start (`kReadExecute`, `kReadWriteExecute`). Its decommit of code pages, a
   `MAP_FIXED` remap without `MAP_JIT`, needs no patch: libc keeps that JIT
   memory (above).
 - **Only renderers** (CR-e, built: FORK-PLAN Q4's (A)): the browser holds
@@ -3358,6 +3359,17 @@ lands (no WebAssembly then).
   `ContentMainRunnerImpl::Initialize`), and gin run V8 `--jitless` unless
   the process is a renderer still holding it. So `ps` marks the renderers
   alone `[jit]`.
+- **And SwiftShader's GPU process** (CR-e, built, the main session's
+  revision of the rule above): WebGL in software is SwiftShader (patch
+  0915: linked in as ANGLE's Vulkan), whose Reactor compiles each shader
+  and draw state to code in the GPU process, in `MAP_JIT` memory. A GPU
+  process started with `--use-angle=swiftshader` or `swiftshader-webgl`
+  (what the browser gives it for `--enable-unsafe-swiftshader`, Chromium's
+  own opt-in to software WebGL) keeps the power; every other GPU process
+  gives it up as before, and V8 stays `--jitless` there. `ps` then marks
+  the GPU process too. Shaders are a web page's code compiled in a process
+  with the power, as V8's are in a renderer: one more reason for CR-f's
+  sandbox.
 - **Stricter modes later** through the same power: a per-thread switch
   with Intel's protection keys (the PC has PKU; the kernel would enable
   PKRU in XCR0 and give `pkey_alloc`/`pkey_mprotect`), or dual mapping
@@ -3547,9 +3559,9 @@ ladder past zlib and xz waits.
 | **CR-b. `base_unittests`** | built for Jam OS and run with `--single-process-tests` in QEMU: a named list of suites passes (at least `base` threading, files, strings, time, memory, PartitionAlloc), and every failure is either fixed in a layer or a named finding with its layer | cr-test.sh `base` (the list in the recipe's test file) | CB1, CL1, CL3, CP1 |
 | **CR-c. `content_shell` draws pages** | (c1) `headless_shell --single-process --no-sandbox --jitless` writes a screenshot of a local page from `/data` and of an HTTPS page, both matching; (c2) `content_shell --single-process` on Wayland shows a page in a Jam OS window, keys and mouse and wheel work, a `<select>` list opens; (c3) multi-process (`--no-zygote --no-sandbox`): browser, GPU, network and renderer processes, a renderer killed gives "Aw, Snap!" and a reload works | cr-test.sh `headless`, `shell-wl`, `multi`; on the PC by hand from `/data` | c1: CB3's needs; c2: G2's GS1, GC1b, GT (GC3 for the list); c3: CU1, CS1, CL2, PX, CN1 |
 | **CR-d. `chrome` browses** | the [Done when](#cr-plan-chromium) above: on the PC from `/jam`, installed by `pkg` | cr-test.sh `chrome` in QEMU (a local HTTPS server on the test host, a page per feature); the PC check | CB6's needs: GC2, GC3, GP2, CU2, M13.6, M12.7 stage 2, M13.7's `pkg` and PO13, CA1 for sound |
-| **CR-e. The JIT** | renderers run V8 with its compilers and WebAssembly under `right jit`; JetStream and Speedometer scores against `--jitless` in BENCH.md; every other process still `--jitless`; CJR's findings fixed | ktests (CJ1), posixtest (`MAP_JIT`), cr-test.sh `chrome` with a Wasm page | CJ1, CJ2, CJR |
+| **CR-e. The JIT** (built 2026-10-19: [CR-e notes](#cr-e-notes)) | renderers run V8 with its compilers and WebAssembly under `right jit`; JetStream and Speedometer scores against `--jitless` in BENCH.md; every other process still `--jitless`; CJR's findings fixed | ktests (CJ1), posixtest (`MAP_JIT`), cr-test.sh `chrome` with a Wasm page | CJ1, CJ2, CJR |
 | **CR-f. Jam OS's sandbox** | each renderer in its own job with a narrowed namespace; a test renderer that tries to open `/jam`, connect out or reach the compositor fails each; a renderer that eats memory hits its job's limit, not the system's | its own plan | CR-d |
-| **Later** | the GPU (G3, G4: ANGLE and Vulkan, then WebGL), video beyond the open codecs (never H.264 in the open build), CJK fonts, input methods, drag and drop | | |
+| **Later** | the GPU (G3, G4: ANGLE and Vulkan, then WebGL on it; WebGL in software, SwiftShader, since CR-e), video beyond the open codecs (never H.264 in the open build), CJK fonts, input methods, drag and drop | | |
 
 ## The interfaces that change (for M14's review)
 
@@ -3721,7 +3733,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **PO13. The package area on `/jam`** (built: [M13.7's PO13 notes](M13.7-PLAN.md#po13-notes)) | M13.7's prefix on `/jam` (after M13.6), the guard on it, big packages (a 250 MB program: staged files on `/jam`, init's hashing in steps) | M13.7's files named in its plan's PO5 and PO6 notes (the prefix constant, the guard's line for extfs) | M13.7's PO5 and PO6; M13.6's U4 and U8 | tools/pkg-test.sh (PO8, to come) with a big package on an ext test disk | Sonnet 5.5 |
 | **CA1. Sound** | section 11: libjam's audio output API and Chromium's back end patch | `<audio.h>` (a header of its own), user/lib/audio.c and audio_flow.c, ports/chromium's audio patch | CB4 (a browser to test it with); the API part at once (**done 2026-10-15**, see "CA1 notes") | utest: a stream's frames reach the mixer (`tools/mixer-test.sh`'s way); cr-test.sh `chrome` playing a WebM's sound into the mixer's capture | Sonnet 5.5 |
 | **CJ1. JIT memory in the kernel** | section 12's kernel part: `RIGHT_ROOT_JIT`, `vmo_make_jit`, W+X only on a JIT VMO's mapping within its handle's rights, the flag in `process_get_info` | `kernel/object/vmo.c` (the kind), `kernel/abi/vmo_sys.c` (the call), `kernel/mm/aspace.c` (`perms_ok` and protect), `abi/syscalls.def`, `kernel/include/jam/abi.h`, new ktests | CK2 merged (`aspace.c`); CK1 merged (`vmo.c`) | ktests: W+X refused on every other VMO; a JIT VMO without the power refused; an execute-only duplicate can't write; a write-only one can't run; a JIT VMO can't be sealed, verified or paged; full ktest 4 and 8; soak 2 | **Opus** |
-| **CJ2. JIT for programs** | section 12's rest: `right jit` (wants, checkwants, allow's and pkg's words, init's slice), `ps`'s mark, libc's `MAP_JIT` (this half done 2026-10-14, see "CJ2 notes"); **still to do, after CB5**: V8's patch, the power to renderers only (with an unpatched launcher: [FORK-PLAN](FORK-PLAN.md#q4-the-jit-power-for-renderers-only-with-chromiums-own-launcher)'s Q4), `--jitless` for the rest | `user/include/wants.h`, the wants parser in libos, `tools/checkwants.py`, `user/services/shell/sh_allow.c`'s prompt, init's grant, `user/posix/sys/mem.c` (`MAP_JIT`), ports/chromium's V8 lines (and Q4's lines in content's child start, if so answered) | CJ1; CB5 | posixtest: `MAP_JIT` with and without the power; a JIT program writes code and runs it; cr-test.sh `chrome` with a Wasm page (CR-e) | **Opus** |
+| **CJ2. JIT for programs** (built 2026-10-19: its Chromium half with CR-e, [CR-e notes](#cr-e-notes)) | section 12's rest: `right jit` (wants, checkwants, allow's and pkg's words, init's slice), `ps`'s mark, libc's `MAP_JIT` (this half done 2026-10-14, see "CJ2 notes"); **still to do, after CB5**: V8's patch, the power to renderers only (with an unpatched launcher: [FORK-PLAN](FORK-PLAN.md#q4-the-jit-power-for-renderers-only-with-chromiums-own-launcher)'s Q4), `--jitless` for the rest | `user/include/wants.h`, the wants parser in libos, `tools/checkwants.py`, `user/services/shell/sh_allow.c`'s prompt, init's grant, `user/posix/sys/mem.c` (`MAP_JIT`), ports/chromium's V8 lines (and Q4's lines in content's child start, if so answered) | CJ1; CB5 | posixtest: `MAP_JIT` with and without the power; a JIT program writes code and runs it; cr-test.sh `chrome` with a Wasm page (CR-e) | **Opus** |
 | **CR1. Kernel review** | CK1, CK2, CK3, CP1's kernel line, CJ1 if merged: findings first (docs/CR-REVIEW-KERNEL.md, new), then High and Medium fixed with a test each; hostile tests (a TiB of reservations from a job with 16 MiB, 60,000 mappings in a storm of protects from 8 threads while another unmaps); **done 2026-10-15** ([CR-REVIEW-KERNEL.md](CR-REVIEW-KERNEL.md): 0 High, 3 Medium, 3 Low, 4 notes; two Mediums and every Low fixed, one Medium a design question) | the files its fixes need | CK1 to CK3 merged | its own; full ktest 4 and 8; soak 4 | **Opus** |
 | **CR2. POSIX and IPC review** | CL1, CL2, CL3, CU1, CU2, CS1: the descriptor passing (what crosses, what leaks, what a hostile peer can make the receiver do), the self-image (can it run anything the owner didn't approve?), `/proc`'s reopen; findings in [CR-REVIEW-POSIX](CR-REVIEW-POSIX.md) | the files its fixes need | CL1, CL2, CU1, CS1 merged | its own; posixtest; a fuzz loop between two processes | **Opus** |
 | **CJR. JIT review** | CJ1 and CJ2 against the owner's rule: can any program without the power get W+X, can a JIT VMO become approved code, can a handle hand-on widen rights; findings first, fixes with tests; **done 2026-10-16** for CJ1 and CJ2's first half ([CR-REVIEW-JIT.md](CR-REVIEW-JIT.md): 0 High, 0 Medium, 3 Low, 4 notes; finding 1 fixed, two design questions); **CJF** (2026-10-16) fixed findings 2 and 3 and took design question 1's (b), JIT VMOs never pinned | the files its fixes need | CJ1, CJ2 merged | its own | **Opus** |
@@ -3980,7 +3992,65 @@ a handle of its own; section 12 has the design as built.
   when V8's efficiency mode is forced off.
 - **base_unittests**: FileLockingTest (7) passes since RL and came off the
   skip list; FilePathWatcher* and ProcessMetrics* pass too (177 of 177 on
-  ext, batch 19204004).
+  ext, batch 19204004). base_unittests' list says `right jit` (it holds
+  the power, as a renderer does), and with 0913's `MAP_JIT` for memory
+  asked executable from the start, PartitionAllocPageAllocatorTest's three
+  JIT cases (`AllocInaccessibleWillJitLater`, `AllocReadWriteExecute`,
+  `ReadExecutePages`) pass and came off the skip list: the suite 15 of 15
+  and its 3 self-skips (CFI, MTE), batch 19213223.
+- **Benchmarks** (track SWS, batch 19205938, [BENCH](BENCH.md#jetstream-22-and-speedometer-31-parts)):
+  JetStream 2.2's 14 JavaScript tests score 918.9 with the JIT and 127.4
+  `--jitless` (7.2x: 22x on richards, 1.04x on json-parse-inspector, which
+  is mostly the JSON parser); its 5 WebAssembly tests 225.4 (none
+  `--jitless`); six of Speedometer 3.1's suites, 5 times, 18.3 and 12.9
+  (1.4x: a page's DOM, style, layout and drawing don't run in V8). The
+  whole run, five content_shells in one boot, is about 6 minutes.
+- **WebGL in software** (track SWS, 2026-10-19): SwiftShader, the
+  software Vulkan Chromium uses on Linux with `--use-angle=swiftshader`,
+  under ANGLE's Vulkan back end. Linux opens it as a Vulkan driver (ICD,
+  `libvk_swiftshader.so`) through Khronos's loader; Jam OS links programs
+  static and has no `dlopen`, so patch 0915 makes SwiftShader the
+  program's Vulkan: args.gn turns on ANGLE's Vulkan and SwiftShader with
+  no shared libvulkan and no custom loader (ANGLE calls `vk*` directly, as
+  on macOS), and `angle_vulkan_loader_dir` names a group of Jam OS's
+  (`//build/toolchain/jamos/vulkan`) that is SwiftShader's Vulkan source
+  set plus the three `VK_KHR_display` calls ANGLE's display for a bare
+  screen links and SwiftShader built for Chromium leaves out (answered as
+  the loader answers for a driver without the extension: no displays).
+  The rest of 0915: ANGLE's translator links SwiftShader's SPIRV-Tools,
+  not Chromium's (both would be in the program, the same symbols of two
+  versions; ANGLE only links the validator, which a release build never
+  calls); no `data_deps` on the shared library and its ICD file (ANGLE's
+  and `ui/gl`'s); Wayland's headers for SwiftShader's Vulkan target (a
+  Linux build finds them in the sysroot); and Reactor, SwiftShader's
+  compiler, maps its code `MAP_JIT` (macOS's path: Linux maps a memfd,
+  which Jam OS never makes executable). The GN change is 1,094 ninja steps
+  for content_shell (most of SwiftShader was built already in the kept
+  tree), a few minutes at `-j20`. The GPU process keeps the JIT power when
+  it runs SwiftShader (section 12, patch 0914), which it does for
+  `--enable-unsafe-swiftshader` (with `--disable-gpu`: software
+  compositing, WebGL by SwiftShader, `--use-angle=swiftshader-webgl` on the
+  GPU process's command line). `--disable-gpu` alone stays as it was: no
+  WebGL, the GPU process holds no power (Chromium 155's automatic fallback
+  to SwiftShader is off by default).
+- **Tests**: cr-test.sh `webgl` (tools/cr/webgl.html): content_shell,
+  every process type its own, draws a band with a shader (left half red,
+  right half green, by `gl_FragCoord`) on a cleared ground; the page
+  reads three pixels back and the screenshot has them
+  where the canvas is; WebGL's renderer is "ANGLE (Google, Vulkan 1.3.0
+  (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)", WebGL
+  2 too; `ps` marks one child more `[jit]` than without the flag (the GPU
+  process, launched first, with the two renderers); without it no WebGL
+  context. Batch 19213457.
+- **Open, noted and not chased**: the long single call's on-stack
+  replacement stays at Maglev's speed (110 ms against 23 ms with
+  `--no-concurrent-osr`): time it on Linux with the same build;
+  `document.hasFocus()` is false in a fresh content_shell window (Wayland
+  activation: CB6, G2); SwiftShader in the GPU process is Chromium's
+  "unsafe" software WebGL (shaders from any page compiled to code there),
+  which Jam OS gives its power only on the opt-in, until CR-f's sandbox;
+  SwiftShader's Wayland surfaces are built but untried (ANGLE draws
+  WebGL offscreen and Chromium composites it).
 
 ## CE1 notes
 
