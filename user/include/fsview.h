@@ -59,6 +59,37 @@ bool     fs_view_in_keys(const char *clean);
  * hidden by FS_VIEW_HIDE_ETC; FS_VIEW_HIDE_AUTH without FS_VIEW_HIDE_ETC
  * hides the rest of etc as well, so no other name can reach it. */
 bool     fs_view_hides(uint32_t flags, const char *clean, bool stat);
+
+/* Where a place lies, for the questions above, without its text
+ * (docs/DIRHANDLE-PLAN.md 3.2): its depth below the volume's root and the
+ * class of its first two names, the only ones the questions look at. A
+ * service that walks a path a name at a time (extfs) pushes each
+ * directory it goes into and pops at "..", and asks of the region, exact
+ * at any depth, however long the path from the volume's root. The names
+ * compare as fs_view_in_etc compares them. */
+struct fs_region {
+    uint32_t depth;   /* names below the volume's root (0: the root itself) */
+    uint32_t cls;     /* FS_REGION_*: the first two names' class */
+};
+#define FS_REGION_ROOT     0u   /* the volume's root (depth 0) */
+#define FS_REGION_ETC      1u   /* the top-level `etc` itself (depth 1) */
+#define FS_REGION_ETC_REST 2u   /* in etc, under any second name but these two */
+#define FS_REGION_ETC_SSH  3u   /* `etc/ssh` and everything in it */
+#define FS_REGION_ETC_AUTH 4u   /* `etc/authorized_keys` (depth 2), or under it */
+#define FS_REGION_PKG      5u   /* the top-level `pkg` and everything in it */
+#define FS_REGION_OTHER    6u   /* anywhere else */
+
+/* The region of the cleaned path (len bytes, fs_view_in_etc's form). */
+struct fs_region fs_region_of(const char *clean, size_t len);
+/* The region of the name (len bytes, no '/') in the directory at r. */
+struct fs_region fs_region_child(struct fs_region r, const char *name, size_t len);
+/* The region of the directory r lies in (r not the volume's root). */
+struct fs_region fs_region_parent(struct fs_region r);
+/* fs_view_in_etc, fs_view_in_pkg and fs_view_hides, asked of a region. */
+bool     fs_region_in_etc(struct fs_region r);
+bool     fs_region_in_pkg(struct fs_region r);
+bool     fs_region_hides(uint32_t flags, struct fs_region r, bool stat);
+
 /* Whether a view with `flags` may make the request of n bytes at req:
  * OK, or ERR_ACCESS_DENIED. A request this can't read (too short, not an
  * fs method, a path it can't take apart) is OK here: the protocol's own

@@ -11,15 +11,18 @@
  * the caller's namespace), so a link on a shared volume can't make one
  * program's open reach another's mounts.
  *
- * Where a path lies is kept as it is walked: `phys`, the names from the
- * volume's root to it (a view's root's place first, then each name; ".."
- * takes the last one off). The view's flags (<fsview.h>) are judged on
- * that place, not on the string asked for: a link into `etc` is refused
- * as `etc` itself is (the views' shared code, fs_view_dispatch, checks
- * the string first, and stays the first line). A directory the view hides
- * wholly (`etc/ssh` from a view that hides the keys; all of `etc` from one
- * that hides it all) can't even be walked through, so a path that goes in
- * and comes out with ".." learns nothing of what is inside.
+ * Where a path lies is kept as it is walked: its region (<fsview.h>: the
+ * depth below the volume's root and its first two names' class; a view's
+ * root's first, then each name pushed; ".." pops one), and `phys`, the
+ * same place as text, which only fs.resolve's answer reads
+ * (docs/DIRHANDLE-PLAN.md 3.2). The view's flags are judged on the
+ * region, where the path resolves, not on the string asked for: a link
+ * into `etc` is refused as `etc` itself is (the views' shared code,
+ * fs_view_dispatch, checks the string first, and stays the first line).
+ * A directory the view hides wholly (`etc/ssh` from a view that hides the
+ * keys; all of `etc` from one that hides it all) can't even be walked
+ * through, so a path that goes in and comes out with ".." learns nothing
+ * of what is inside.
  *
  * The permission bits (the plan's Q4, answered B): checked as Unix checks
  * an ordinary user's, for the one user. A file of uid FS_ONE_USER is judged
@@ -56,8 +59,9 @@ static bool is_link(const struct ext_inode *in)
     return (in->d.mode & EXT_S_IFMT) == EXT_S_IFLNK;
 }
 
-/* Append "/name" (or "name" at the volume's root) to w->phys. */
-static status_t phys_push(struct xf_walk *w, const char *name, uint32_t len)
+/* w goes on to the name (len bytes) in the place it has reached: its
+ * region, and "/name" (or "name" at the volume's root) on w->phys. */
+static status_t place_push(struct xf_walk *w, const char *name, uint32_t len)
 {
     uint32_t sep = w->phys_len ? 1 : 0;
     if (w->phys_len + sep + len > FS_PATH_LEN)
@@ -67,43 +71,37 @@ static status_t phys_push(struct xf_walk *w, const char *name, uint32_t len)
     memcpy(w->phys + w->phys_len, name, len);
     w->phys_len += len;
     w->phys[w->phys_len] = '\0';
+    w->region = fs_region_child(w->region, name, len);
     return OK;
 }
 
-static void phys_pop(struct xf_walk *w)
+/* w goes back to the directory its place lies in (".."). */
+static void place_pop(struct xf_walk *w)
 {
     while (w->phys_len && w->phys[w->phys_len - 1] != '/')
         w->phys_len--;
     if (w->phys_len)
         w->phys_len--;
     w->phys[w->phys_len] = '\0';
+    w->region = fs_region_parent(w->region);
 }
 
 /* A wholly hidden directory (the hiding flags' "stat" rule: etc itself is
  * hidden only when all of it is). */
 static bool hidden_dir(const struct xf_ctx *c, const struct xf_walk *w)
 {
-    return (c->flags & FS_VIEW_NO_ETC) && fs_view_hides(c->flags, w->phys, true);
+    return fs_region_hides(c->flags, w->region, true);
 }
 
 /* Does the view hide the name comp (clen bytes) in the directory w has
- * reached (w->phys)? For what a walk goes through or follows: a view that
- * hides part of etc (the SSH server's) lets the walk into etc, and a
- * hidden name there must give nothing away, not whether it is there, nor
- * what it is (ERR_NOT_DIR), nor a link's target (fs.resolve's answer). */
+ * reached? For what a walk goes through or follows: a view that hides
+ * part of etc (the SSH server's) lets the walk into etc, and a hidden name
+ * there must give nothing away, not whether it is there, nor what it is
+ * (ERR_NOT_DIR), nor a link's target (fs.resolve's answer). */
 static bool name_hidden(const struct xf_ctx *c, const struct xf_walk *w, const char *comp,
                         uint32_t clen)
 {
-    static char place[FS_PATH_LEN + 1];
-    if (!(c->flags & FS_VIEW_NO_ETC) || w->phys_len + 1 + clen > FS_PATH_LEN)
-        return (c->flags & FS_VIEW_NO_ETC) != 0;   /* too long to judge: hidden */
-    uint32_t n = w->phys_len;
-    memcpy(place, w->phys, n);
-    if (n)
-        place[n++] = '/';
-    memcpy(place + n, comp, clen);
-    place[n + clen] = '\0';
-    return fs_view_hides(c->flags, place, false);
+    return fs_region_hides(c->flags, fs_region_child(w->region, comp, clen), false);
 }
 
 /* ERR_LINK_OUT: where the path goes on is head (hlen bytes; NULL: none)
@@ -144,6 +142,7 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
     memcpy(w->phys, c->root, c->root_len);
     w->phys_len = c->root_len;
     w->phys[w->phys_len] = '\0';
+    w->region = fs_region_of(c->root, c->root_len);
 
     struct ext_inode cur;
     status_t st = ext_iget(fs, c->root_ino, 0, &cur);
@@ -196,7 +195,7 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
             if (!depth)
                 return link_out(w, FS_RESOLVE_ABOVE, used, NULL, 0, r, rlen);
             depth--;
-            phys_pop(w);
+            place_pop(w);
             st = ext_iget(fs, stack[depth], 0, &cur);
             if (st != OK)
                 return st == ERR_NOT_FOUND ? ERR_IO : st;   /* a directory we came through */
@@ -222,7 +221,7 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
             if (!last)
                 return name_hidden(c, w, comp, clen) ? ERR_ACCESS_DENIED : ERR_NOT_FOUND;
             w->found = false;
-            return phys_push(w, comp, clen);
+            return place_push(w, comp, clen);
         }
         if (st != OK)
             return st;
@@ -264,7 +263,7 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
         if (is_dir(&w->in)) {
             if (depth + 1 >= DEPTH_MAX)
                 return ERR_NAME_TOO_LONG;
-            st = phys_push(w, comp, clen);
+            st = place_push(w, comp, clen);
             if (st != OK)
                 return st;
             if (hidden_dir(c, w))
@@ -275,7 +274,7 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
         }
         if (!last || trailing)
             return name_hidden(c, w, comp, clen) ? ERR_ACCESS_DENIED : ERR_NOT_DIR;
-        return phys_push(w, comp, clen);
+        return place_push(w, comp, clen);
     }
 }
 
@@ -291,15 +290,15 @@ void walk_inside(const struct xf_ctx *c, const struct xf_walk *w, char *out, uin
 
 bool walk_hidden(const struct xf_ctx *c, const struct xf_walk *w, bool stat)
 {
-    return (c->flags & FS_VIEW_NO_ETC) && fs_view_hides(c->flags, w->phys, stat);
+    return fs_region_hides(c->flags, w->region, stat);
 }
 
 bool walk_may_change(const struct xf_ctx *c, const struct xf_walk *w)
 {
     if (c->flags & FS_VIEW_READ_ONLY)
         return false;
-    return !((c->flags & FS_VIEW_GUARD_ETC) && fs_view_in_etc(w->phys)) &&
-           !((c->flags & FS_VIEW_GUARD_PKG) && fs_view_in_pkg(w->phys));
+    return !((c->flags & FS_VIEW_GUARD_ETC) && fs_region_in_etc(w->region)) &&
+           !((c->flags & FS_VIEW_GUARD_PKG) && fs_region_in_pkg(w->region));
 }
 
 /* ---- attributes ---------------------------------------------------------------------- */

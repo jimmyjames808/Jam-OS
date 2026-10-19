@@ -388,7 +388,9 @@ struct xf_walk {
     struct ext_inode dir;
     struct ext_name name;
     char     namebuf[EXT_NAME_MAX + 1];
-    char     phys[FS_PATH_LEN + 1];   /* where it lies, from the volume's root (no leading '/') */
+    struct fs_region region;  /* where it lies, for the view's checks (<fsview.h>) */
+    char     phys[FS_PATH_LEN + 1];   /* the same as text, from the volume's root (no
+                                       * leading '/'): fs.resolve's answer only */
     uint32_t phys_len;
     /* ERR_LINK_OUT: where it went on (fs.resolve's answers) */
     uint8_t  kind;

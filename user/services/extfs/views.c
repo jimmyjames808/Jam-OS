@@ -10,9 +10,11 @@
  * flags. A subview's paths are relative to its root, which the shared
  * code's checks of `etc` (the volume's top-level directory) can't know
  * about: they are given only the read-only bit (views_lexical), and
- * walk.c judges `etc` with the root's place in front. A new channel made
- * from a view never has less than its flags: fs.view's add ORs in the
- * parent's.
+ * walk.c judges `etc` on the region (<fsview.h>) its walk keeps, which
+ * starts at the root's: worked out from the root's text (`root`, the
+ * subview's place when it was made, which fs.resolve's answers skip). A
+ * new channel made from a view never has less than its flags: fs.view's
+ * add ORs in the parent's.
  *
  * Each slot's flags, generation and root are in the state; its channel
  * here and with the keeper. Dropping a view is one store (its `used`). */
@@ -120,11 +122,11 @@ status_t views_sub(const struct xf_ctx *parent, const struct xf_walk *w, uint32_
      * for that place (fs_view_check's subview rule, judged where it
      * resolves). */
     uint32_t pf = parent->flags;
-    if (fs_view_in_etc(w->phys) &&
+    if (fs_region_in_etc(w->region) &&
         ((pf & FS_VIEW_HIDE_KEYS) ||
          ((pf & FS_VIEW_GUARD_ETC) && !((pf | flags) & FS_VIEW_READ_ONLY))))
         return ERR_ACCESS_DENIED;
-    if (fs_view_in_pkg(w->phys) && (pf & FS_VIEW_GUARD_PKG) &&
+    if (fs_region_in_pkg(w->region) && (pf & FS_VIEW_GUARD_PKG) &&
         !((pf | flags) & FS_VIEW_READ_ONLY))
         return ERR_ACCESS_DENIED;   /* the same for pkg */
     handle_t mine, theirs;
