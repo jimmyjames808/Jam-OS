@@ -775,6 +775,7 @@ static const struct {
     { "svc_connect", t_svc_connect },
     { "svc_child_gets_its_grants", t_svc_child_gets_its_grants },
     { "svc_child_gets_views", t_svc_child_gets_views },
+    { "svc_own_openers", t_svc_own_openers },
     { "view_etc_names", t_view_etc_names },
     { "fat_views", t_fat_views },
     { "dirent_types", t_dirent_types },

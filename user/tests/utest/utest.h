@@ -384,6 +384,9 @@ bool t_svc_child_gets_its_grants(void);
 bool t_svc_child_gets_views(void);
 int  ns_svc_child(const char *name);   /* "utest ns-svc <name>|-" */
 int  ns_view_child(const char *how);   /* "utest ns-view r|w" */
+/* svcown.c: an opener of each program's own for net, dns and audio. */
+bool t_svc_own_openers(void);
+int  svc_own_child(int argc, char **argv);   /* "utest own-starter|own-hog|own-next" */
 bool t_view_etc_names(void);
 bool t_ramdisk_in_use(void);
 bool t_fat_views(void);

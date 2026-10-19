@@ -535,6 +535,7 @@ int child_main(int argc, char **argv)
     if (!strncmp(m, "jit-", 4))   return jit_child(argc, argv);
     if (!strncmp(m, "fork-", 5))  return fork_child_mode(argc, argv);
     if (!strncmp(m, "wl-", 3))    return comp_child(argc, argv);
+    if (!strncmp(m, "own-", 4))   return svc_own_child(argc, argv);
     if (!strncmp(m, "ns-", 3) || !strncmp(m, "fs", 2) || !strcmp(m, "fat-shell"))
         return ns_child(argc, argv);
     printf("utest: unknown mode \"%s\"\n", m);
