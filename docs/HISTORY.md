@@ -392,6 +392,99 @@ cuts cover it, so only the real drive honouring its flush is unproven. The
 three review questions (flushes per request, links named `etc`, inode counts
 in `statfs`) are the owner's.
 
+## M13: POSIX on musl
+
+*Planned 2026-10-09, built 2026-10-09 to 2026-10-12, reviewed and fixed
+2026-10-11 to 2026-10-14.* Unmodified POSIX programs build and run on
+Jam OS: musl 1.2.6 over a call layer in libc that turns Linux's system calls
+into handles, channels and the services' protocols. The first port was an SSH
+server, and `ssh` from the Mac opened a shell on the PC. The plan stays in
+the tree as [M13-PLAN.md](M13-PLAN.md) because the call layer's code and the
+other plans cite its design sections and per-track notes.
+
+What was built:
+- **The kernel's part** (K1, K2, F1a): small process and thread ids (a full
+  lap before reuse), `thread_set_tid_word`, `thread_interrupt` and
+  `ERR_INTERRUPTED` on the four interruptible waits, `cpu_ns`,
+  `sys_public_info`; the time page (`clock_gettime` in about 17 ns from user
+  space) and `VMAR_REPLACE` (an unmap and a map in one step, for
+  `MAP_FIXED`); copy-on-write child VMOs (`vmo_create_child`). The call
+  path got no slower.
+- **musl and the toolchain** (A1, A2): musl 1.2.6 vendored with a checked
+  list of overrides (`user/posix/musl/OVERRIDES`), the sysroot, `jamos-cc`
+  (one compiler wrapper, one sysroot, on the Mac), `posixtest` (the layer's
+  own test program, in the init run), libjam (libos without its libc parts)
+  and the POSIX hand-over message (`posixfds.h`, `fdmsg.c`: fuzzed) that
+  gives a child its descriptors.
+- **Descriptors, files, pipes, processes** (B1, B2, B3, B5, B6): a descriptor
+  table over open file descriptions, the file, path, directory and `*at`
+  calls, `pipe2`, `dup`, `fcntl`, `/dev` and `/etc`, memfd, eventfd,
+  `socketpair`, the one user (uid 1000, home `/data`); `posix_spawn` with
+  file actions and attributes, the child table, `wait4`, process groups and
+  sessions, `execve` as spawn-wait-exit (no `fork`: that came later as
+  [FORK-PLAN](FORK-PLAN.md)); `poll`, `select` and `epoll` over the wait
+  sets, each kind with its ready and arm hooks; AF_INET sockets and
+  `getaddrinfo` through `/svc/dns`.
+- **Signals** (B4): libc's own signal thread, delivery at the call boundary
+  with `thread_interrupt`, `EINTR` and `SA_RESTART`, timers, `pthread_cancel`,
+  SIGCHLD, SIGPIPE, SIGWINCH, exit status 128 + N, the `signal` protocol.
+  Faults to a handler and signals to a busy thread came later
+  ([SG](SIGNALS-PLAN.md)).
+- **Terminals and sessions** (T1, T2, X1, S1, S2): the console split into a
+  front end and back ends (a connection back end: output as bytes on a master
+  channel, input through `termkeys.h`, size by `conn_ctl`); the `tty` protocol
+  and a line discipline (`user/lib/ldisc.c`, `keybytes.c`) with Ctrl+C under
+  `ISIG`; `/svc/session` in init (at most 8 sessions, a console and shell
+  each, `posix_openpt`/`openpty`); the shell gives programs descriptors 0 to
+  2, redirections, an 8 MiB stack and the environment, runs pipelines at
+  once, and sends Ctrl+C as SIGINT.
+- **Ports** (P1, P2, X2): sbase (70 tools in three multi-call programs) and
+  Lua 5.4.9 in `/boot/usr/bin`; libc-test (113 passing and 25 listed with
+  reasons at first, 114 later); tinyssh 20261001 as `bin/sshd` (one program
+  whose mode is `argv[0]`, key login only, a host key made at the first boot,
+  `authorized_keys` in `/data/etc`, port 22 while it holds a key, `ssh = off`
+  stops it).
+- **Jam commands as programs** (the owner's decision, 2026-10-11): the shell's
+  own commands also exist as programs in the boot image (`user/sysbox/`, the
+  same source files compiled with `-DSH_BOX`), so a POSIX shell, a script or
+  an `ssh` session can run them.
+- **Mapped files** (F1b, after M12.5): read-only and shared mappings of the
+  pager VMO, `MAP_PRIVATE` as a copy-on-write child, `msync`, and
+  `posix_spawn` of programs on `/data` through the pager's loader.
+
+The owner's answers (2026-10-09, "your recommendation for everything unless
+unsure", all as recommended): unmodified musl with the build's overrides and
+a Linux call layer; the line discipline in the terminal service with a `tty`
+protocol; signals in libc at the call boundary plus `thread_interrupt` (a
+kernel upcall was added later, under it, in SG); `posix_spawn` only, no
+`fork` (later reopened: [FORK-PLAN](FORK-PLAN.md)); a file's offset per
+process in libc; with `ISIG` off a program gets the byte, and Ctrl+Alt+C
+always reaches the shell on the desktop; one user `jam`, uid and gid 1000;
+sshd on port 22 whenever `authorized_keys` holds a key; sbase in
+`/boot/usr/bin` after the shell's builtins; the `jamos-cc` wrapper.
+
+The reviews (each by an agent that wrote none of it, `docs/M13-REVIEW-*.md`):
+- **Kernel** (K1, K2): 0 High, 1 Medium, 7 Low; the Medium and two Lows
+  fixed.
+- **POSIX layer** (R1): 0 High, 7 Medium, 14 Low, 4 notes. The Mediums fixed
+  with a test each (smaller programs, writable files handed to children, and
+  the rest); the hand-over parser, handles on every path, the signal model
+  and readiness were found sound.
+- **Terminal, sessions, SSH and shell** (R2, 2026-10-13): 1 High, 4 Medium,
+  7 Low. The High: **sshd's host key was readable by any program with `mount
+  /data r`** (a view guarded `etc` against changes only). The key is now
+  hidden from `/data` views and `kill sshd` was checked to end its sessions.
+  The Mediums: a POSIX program's output came after the shell's prompt, typed
+  keys went to a pipeline's last stage instead of its first, the console
+  served requests without the unread bound, and a program silently lost
+  arguments past 18.
+
+Open: the join row of the plan is only partly done: no PORTING.md
+(a guide to porting a program) was written, and the release `0.2.0` that the plan
+tied to M13 has not been cut (the version is still `0.1.0`). M13.5, the
+POSIX shell (mksh), is after Chromium. The milestone's PC sign-off ("All
+tests and `soak 10`") is the main session's pre-push pass.
+
 ## M12.1: the code check
 
 *2026-10-09 to 2026-10-11.* A check of what M12 and G1 changed, by fresh
