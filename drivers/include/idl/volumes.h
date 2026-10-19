@@ -1218,7 +1218,7 @@ static inline status_t volumes_reply_list_channel(struct idl_txn idl_txn, status
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (VOLUMES_REP_MAX bytes) and the handles it carries
  * into rhs (VOLUMES_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it.
  * The idl_nh handles at idl_hs (the call's arguments) are taken in every
@@ -1231,7 +1231,8 @@ static inline uint32_t volumes_dispatch_h(handle_t ch, const struct volumes_ops 
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    if (n < sizeof(uint32_t)) {
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid) {
+        /* no txid, or txid 0 (an event's form: this protocol has none): never answered */
         idl_close_all(idl_hs, idl_nh);
         return 0;
     }
@@ -1903,7 +1904,7 @@ static inline status_t volesp_reply_close_writable(struct idl_txn idl_txn, statu
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (VOLESP_REP_MAX bytes) and the handles it carries
  * into rhs (VOLESP_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
 static inline uint32_t volesp_dispatch_on(handle_t ch, const struct volesp_ops *ops, void *ctx,
@@ -1913,8 +1914,8 @@ static inline uint32_t volesp_dispatch_on(handle_t ch, const struct volesp_ops *
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    if (n < sizeof(uint32_t))
-        return 0;
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)
+        return 0;   /* no txid, or txid 0 (an event's form: this protocol has none) */
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
     if (n < sizeof(struct idl_req_hdr))
@@ -2011,7 +2012,7 @@ static inline status_t volesp_take_slot(handle_t ch, const struct idl_slot *slot
  * in slot->r and the handles that reply carries put into rhs
  * (VOLESP_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t volesp_run_slot(handle_t ch, const struct idl_slot *slot,
@@ -2740,7 +2741,7 @@ static inline status_t mounts_take_slot(handle_t ch, const struct idl_slot *slot
  * in slot->r and the handles that reply carries put into rhs
  * (MOUNTS_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t mounts_run_slot(handle_t ch, const struct idl_slot *slot,
@@ -3901,7 +3902,7 @@ static inline status_t voldisks_reply_open_partition(struct idl_txn idl_txn, sta
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (VOLDISKS_REP_MAX bytes) and the handles it carries
  * into rhs (VOLDISKS_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
 static inline uint32_t voldisks_dispatch_on(handle_t ch, const struct voldisks_ops *ops, void *ctx,
@@ -3911,8 +3912,8 @@ static inline uint32_t voldisks_dispatch_on(handle_t ch, const struct voldisks_o
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    if (n < sizeof(uint32_t))
-        return 0;
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)
+        return 0;   /* no txid, or txid 0 (an event's form: this protocol has none) */
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
     if (n < sizeof(struct idl_req_hdr))
@@ -4163,7 +4164,7 @@ static inline status_t voldisks_take_slot(handle_t ch, const struct idl_slot *sl
  * in slot->r and the handles that reply carries put into rhs
  * (VOLDISKS_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t voldisks_run_slot(handle_t ch, const struct idl_slot *slot,
@@ -5015,7 +5016,7 @@ static inline status_t volinstall_reply_format_data(struct idl_txn idl_txn, stat
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (VOLINSTALL_REP_MAX bytes) and the handles it carries
  * into rhs (VOLINSTALL_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
 static inline uint32_t volinstall_dispatch_on(handle_t ch, const struct volinstall_ops *ops, void *ctx,
@@ -5025,8 +5026,8 @@ static inline uint32_t volinstall_dispatch_on(handle_t ch, const struct volinsta
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    if (n < sizeof(uint32_t))
-        return 0;
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)
+        return 0;   /* no txid, or txid 0 (an event's form: this protocol has none) */
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
     if (n < sizeof(struct idl_req_hdr))
@@ -5239,7 +5240,7 @@ static inline status_t volinstall_take_slot(handle_t ch, const struct idl_slot *
  * in slot->r and the handles that reply carries put into rhs
  * (VOLINSTALL_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t volinstall_run_slot(handle_t ch, const struct idl_slot *slot,

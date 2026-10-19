@@ -224,7 +224,10 @@ New Low and notes (left):
 - **L14.** A take sent as an event (txid 0) is served: its records are
   copied into an answer with txid 0 that no call waits for. Only the
   client's own records; the generated server's rule for a call's ordinal
-  without a txid (every protocol's, not this one's).
+  without a txid (every protocol's, not this one's). **Fixed (SQ):**
+  every generated dispatch drops a call with txid 0 (no reply, its handles
+  closed), as it drops one with no txid at all; utest `extfs_watch_abuse`,
+  `idl_serve_reply_wait`, genidl's selftest.
 - **L15.** libc refuses at its limit before it asks the service, so a
   process at 1,024 watches can't change an existing watch's mask
   (`ENOSPC`; Linux lets it). Since libc's count is the process's (IR2),

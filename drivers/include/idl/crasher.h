@@ -322,7 +322,7 @@ static inline status_t crasher_take_slot(handle_t ch, const struct idl_slot *slo
  * in slot->r and the handles that reply carries put into rhs
  * (CRASHER_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t crasher_run_slot(handle_t ch, const struct idl_slot *slot,

@@ -792,7 +792,7 @@ static inline status_t audioctl_reply_desk_channel(struct idl_txn idl_txn, statu
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (AUDIOCTL_REP_MAX bytes) and the handles it carries
  * into rhs (AUDIOCTL_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
+ * length: 0 means no reply (the request has no txid or txid 0, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
 static inline uint32_t audioctl_dispatch_on(handle_t ch, const struct audioctl_ops *ops, void *ctx,
@@ -803,8 +803,8 @@ static inline uint32_t audioctl_dispatch_on(handle_t ch, const struct audioctl_o
     *rhn = 0;
     (void)rhs;
     (void)ch;
-    if (n < sizeof(uint32_t))
-        return 0;
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)
+        return 0;   /* no txid, or txid 0 (an event's form: this protocol has none) */
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
     if (n < sizeof(struct idl_req_hdr))
@@ -984,7 +984,7 @@ static inline status_t audioctl_take_slot(handle_t ch, const struct idl_slot *sl
  * in slot->r and the handles that reply carries put into rhs
  * (AUDIOCTL_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
+ * reply's length: 0 means no reply (no txid or txid 0, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
  * or closes them if it never sends it. */
 static inline uint32_t audioctl_run_slot(handle_t ch, const struct idl_slot *slot,

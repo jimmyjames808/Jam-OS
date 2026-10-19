@@ -1698,7 +1698,7 @@ static bool request_abuse(unsigned c, handle_t ch, const char **what)
         (void)jam_channel_write(ch, &t, sizeof(t), &h, 1);
         return true;
     case 4:
-        *what = "a take as an event (no txid)";
+        *what = "a take with txid 0 (an event's form)";
         t.txid = 0;
         (void)jam_channel_write(ch, &t, sizeof(t), NULL, 0);
         return true;
@@ -1774,7 +1774,13 @@ bool t_extfs_watch_abuse(void)
         }
         int o = outcome(y.ch, &st);
         printf("utest: %s: after the bell, %s: %s\n", utest_cur, what, said(o, st));
-        CHECK(o != 1 || st != OK || c == 4);   /* a take with no txid is served: its own loss */
+        CHECK(o != 1 || st != OK);
+        if (c == 4) {   /* a call with txid 0 (INOTIFY-REVIEW L14): dropped, not served into the void */
+            uint8_t more = 0;
+            uint32_t n = 0;
+            CHECK_EQ(o, 2);   /* no answer, and the channel stays */
+            CHECK_ST(fswatch_take_until(y.ch, dl(), FSWATCH_TAKE_BYTES, &more, out, &n), OK);
+        }
         unwatcher(&y);
         CHECK_ST(t_stat(&r, "/g", NULL, NULL, NULL), OK);
     }

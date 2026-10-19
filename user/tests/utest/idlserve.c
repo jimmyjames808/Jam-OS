@@ -4,7 +4,8 @@
  * <proto>_serve answers each request in the system call that takes the
  * next one (channel_reply_wait): the replies, handle results among them,
  * still reach their callers; a request the protocol can't take (one that
- * carries handles, one too big for any method, one with no txid) is
+ * carries handles, one too big for any method, one with no txid or with
+ * txid 0) is
  * answered or dropped as before and the loop goes on; a reply to a client
  * that has gone has its handles closed, and the loop ends when the client
  * end is closed. <proto>_<method>_within gives a call a timeout from when
@@ -100,9 +101,21 @@ static bool refused_requests(handle_t c)
     CHECK_ST(rs, ERR_INVALID_ARGS);
     /* No txid: dropped without a reply; the next call is answered. */
     CHECK_ST(jam_channel_write(c, &q, 2, NULL, 0), OK);
+    /* Txid 0 is an event's form, and this protocol has no events: a ping sent
+     * so is dropped too, its handle closed, and nothing comes back (it used to
+     * be served and answered with txid 0, into the void: INOTIFY-REVIEW L14). */
+    CHECK_EQ(q.txid, 0);
+    CHECK_ST(jam_channel_write(c, &q, sizeof(q), NULL, 0), OK);
+    CHECK_ST(jam_channel_create(&x, &y), OK);
+    CHECK_ST(jam_channel_write(c, &q, sizeof(q), &x, 1), OK);
+    CHECK_ST(jam_object_wait_one(y, SIG_PEER_CLOSED, now() + CALL_WAIT, &seen), OK);
+    CHECK_ST(jam_handle_close(y), OK);
     uint64_t v = 0;
-    CHECK_ST(null_ping_within(c, CALL_WAIT, 9, &v), OK);
+    CHECK_ST(null_ping_within(c, CALL_WAIT, 9, &v), OK);   /* served in order after them */
     CHECK_EQ(v, 9);
+    _Alignas(8) uint8_t rep[NULL_REP_MAX];
+    struct idl_msg m;
+    CHECK_ST(idl_reply_read(c, rep, sizeof(rep), &m), ERR_SHOULD_WAIT);   /* no stray reply */
     return true;
 }
 
