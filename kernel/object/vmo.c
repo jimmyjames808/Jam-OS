@@ -26,12 +26,14 @@
  * by a mutex ("vmo resize") above everything else but a region lock; a
  * copy-on-write child's creation holds it throughout. A fault (region
  * lock held), a writer or a resize (resize held) may wait for a creation
- * or a clone to lower `protecting` (cow_wait; a kill ends that wait, so
- * a process is never held up by another's freeze); neither takes a region
- * lock other than the clone's own source's, nor "vmo resize" while it
- * keeps anyone waiting but the creation's own. A freeze itself waits only
+ * or a clone to lower `protecting` (frozen_wait_locked; a kill ends that
+ * wait, so a process is never held up by another's freeze); neither takes
+ * a region lock other than the clone's own source's, nor "vmo resize"
+ * while it keeps anyone waiting but the creation's own. A freeze waits
  * for the vmo_write copies under way (freeze_drain_locked), which hold no
- * lock. Two VMO locks nest only in
+ * lock, and only the freeze turn's holder waits for writers with freezes
+ * held ("Freezes and writers" below). The turn's mutex ranks above a
+ * region lock and "vmo resize". Two VMO locks nest only in
  * those: the parent's, then the new child's (spin_lock_nested), which
  * nobody else can reach yet.
  *
@@ -227,23 +229,49 @@
  *     present page is shared and the parent's writable user entries for the
  *     leaf lose their write bit; one shootdown at the end. Until it is done
  *     the parent's `protecting` is raised, and a write that would separate
- *     one of the parent's shared pages waits for the creation (cow_wait):
+ *     one of the parent's shared pages waits for the creation
+ *     (frozen_wait_locked):
  *     otherwise a thread still writing through a stale writable entry could
  *     change the page after the copy was taken, and its write would be lost.
  *   - While `protecting` is raised the parent's bytes are frozen for
  *     everyone but writes through entries not yet shot down: every write
  *     fault, vmo_write (get_page's GET_PRIVATE, and so every pin and kernel
  *     mapping), decommit and size change waits for it to fall to 0
- *     (cow_wait, on the VMO's own queue: protect_end wakes it), and a
- *     fault installs nothing writable meanwhile, so a later write faults and
- *     waits too. A vmo_write copies its bytes after it got its page and let
- *     the lock go (GET_WRITE); the copies under way are counted
- *     (`inflight`), and a freeze waits for them right after raising
+ *     (frozen_wait_locked, on the VMO's own queue: protect_end wakes it),
+ *     and a fault installs nothing writable meanwhile, so a later write
+ *     faults and waits too. A vmo_write copies its bytes after it got its
+ *     page and let the lock go (GET_WRITE); the copies under way are
+ *     counted (`inflight`), and a freeze waits for them right after raising
  *     `protecting` (freeze_drain_locked), so none lands in a page shared
  *     afterwards: the child's bytes never change once its copy returned.
  *     So a change a clone (below) or creation doesn't see is one
  *     that waited, and everything ordered after it waited as well: a clone
  *     of many VMOs is never torn.
+ *   - Freezes and writers (track FZ; FORK-REVIEW-KERNEL's design question
+ *     1): a writer waits only for the freezes already held when it began
+ *     to wait, however many freezers come after it. While it waits it is
+ *     counted (`frozen_waiters`), and it goes on in the lock hold that sees
+ *     the freeze over, keeping the page it made before (a copy of a page
+ *     shared before the freeze, or a new page for an absent one, is still
+ *     right: a shared page has no writable entry anywhere). While the
+ *     count is above 0 no freeze of the VMO begins (freeze_begin): it
+ *     backs off. A clone undoes its try as on an error (one shootdown,
+ *     every freeze it began ended, its charges back), lets its source's
+ *     lock go and waits, holding nothing, for those writers to go on
+ *     (vmo_freeze_backoff), then starts again from the beginning; a
+ *     creation lets "vmo resize" go and does the same. A freezer that
+ *     backed off FREEZE_TRIES times, or that met someone else's turn,
+ *     waits for the freeze turn (one mutex for all VMOs, which hands itself
+ *     to its longest waiter): while a thread has the turn no other freeze
+ *     begins anywhere, and its own begins wait for the VMO's writers
+ *     instead of backing off. No deadlock: only the turn's holder ever
+ *     waits with a freeze held, and what it waits for (writers asleep on
+ *     freezes begun before it had the turn, and their freezers, which never
+ *     wait with a freeze held but for `inflight`) never waits for it. Those
+ *     freezes end and no new one begins, so the turn's try never backs off:
+ *     a clone or creation is done after at most FREEZE_TRIES back-offs and
+ *     the turns queued before its own. A completed clone still began every
+ *     freeze before its one shootdown, so its instant is kept.
  *   - A separation under the lock: the copy (made with the lock dropped,
  *     from a page held by a reference) goes in if the slot still holds the
  *     page it copied, the old page's entries are cleared in every user
@@ -377,8 +405,14 @@ struct vmo {
      * finished (lock): a freeze waits for them (the file header's
      * "protecting"). */
     uint32_t         inflight;
+    /* Writers waiting for this VMO's freezes to end (frozen_wait_locked;
+     * lock): no freeze begins while there are any (the file header's
+     * "Freezes and writers"). `drains` counts the times it fell to 0, for
+     * a freezer that backed off to wait for (lock). */
+    uint32_t         frozen_waiters;
+    uint32_t         drains;
     /* Everyone waiting on this VMO's freezes: writers for `protecting` to
-     * fall to 0, freezes for `inflight` to. */
+     * fall to 0, freezes for `inflight` to, freezers for the writers. */
     struct waitqueue protect_wq;
     /* A verified pager VMO's table (<jam/vmo_verify.h>), owned: set once,
      * under the lock, by vmo_seal_verified (a release store; lockless
@@ -483,18 +517,26 @@ void page_share_drop(struct page *p)
  * and the benchmark; relaxed). */
 uint64_t vmo_cow_copies, vmo_cow_waits;
 
-/* A creation or a clone is sharing v's pages: wait for it to end (the
- * file header's "protecting"). No lock held. ERR_CANCELED if the thread
+/* With the lock held (*f its flags) and v frozen (a creation or a clone
+ * is sharing its pages): wait for that to end, counted in
+ * `frozen_waiters` meanwhile so that no freeze of v begins (the file
+ * header's "Freezes and writers"). Returns with the lock held and v not
+ * frozen, and the caller goes on in this hold; ERR_CANCELED if the thread
  * is killed (or its process replaced) meanwhile: someone else's freeze
  * never holds up a kill. */
-static status_t cow_wait(struct vmo *v)
+static status_t frozen_wait_locked(struct vmo *v, uint64_t *f)
 {
     __atomic_add_fetch(&vmo_cow_waits, 1, __ATOMIC_RELAXED);
+    v->frozen_waiters++;
     status_t st = OK;
-    uint64_t f = vlock(v);
     while (v->protecting && st == OK)
-        st = waitqueue_wait_cancellable(&v->protect_wq, &v->base.lock, &f, DEADLINE_NEVER);
-    vunlock(v, f);
+        st = waitqueue_wait_cancellable(&v->protect_wq, &v->base.lock, f, DEADLINE_NEVER);
+    if (--v->frozen_waiters == 0) {
+        v->drains++;
+        /* The freezers waiting for us (none of v's writers sleeps now);
+         * under the lock, as a wait queues itself. */
+        waitqueue_wake_all(&v->protect_wq);
+    }
     return st;
 }
 
@@ -506,6 +548,77 @@ static void freeze_drain_locked(struct vmo *v, uint64_t *f)
 {
     while (v->inflight)
         waitqueue_wait(&v->protect_wq, &v->base.lock, f);
+}
+
+/* A freezer that backed off this many times waits for the turn (the file
+ * header's "Freezes and writers"). */
+#define FREEZE_TRIES 3
+
+uint64_t vmo_freeze_backoffs, vmo_freeze_turns;
+
+/* The freeze turn: its holder (turn_owner, atomic; set and cleared with
+ * the mutex held) is the only thread that may begin a freeze while it has
+ * it. A freezer reads turn_owner under the VMO's lock it begins, so one
+ * that takes that lock after the holder first did sees it. */
+static struct mutex freeze_turn = {
+    SPINLOCK_INIT("vmo freeze turn"), NULL,
+    { SPINLOCK_INIT("mutex waiters"), LIST_INIT(freeze_turn.wq.waiters) }, 0
+};
+static struct thread *turn_owner;
+
+/* Begin a freeze of v: raise `protecting`, then wait for the copies under
+ * way. ERR_SHOULD_WAIT, nothing raised, while a writer waits for v's
+ * freezes to end or another thread has the turn (the caller lets go of
+ * every freeze and lock it holds and calls vmo_freeze_backoff); with the
+ * turn, wait for v's writers instead (ERR_CANCELED at a kill). */
+static status_t freeze_begin(struct vmo *v)
+{
+    status_t st = OK;
+    uint64_t f = vlock(v);
+    struct thread *t = __atomic_load_n(&turn_owner, __ATOMIC_RELAXED);
+    if (t != current_thread()) {
+        if (t || v->frozen_waiters)
+            st = ERR_SHOULD_WAIT;
+    } else {
+        while (v->frozen_waiters && st == OK)
+            st = waitqueue_wait_cancellable(&v->protect_wq, &v->base.lock, &f, DEADLINE_NEVER);
+    }
+    if (st == OK) {
+        v->protecting++;
+        freeze_drain_locked(v, &f);
+    }
+    vunlock(v, f);
+    return st;
+}
+
+status_t vmo_freeze_backoff(struct vmo *v, unsigned tries, bool *turn)
+{
+    ASSERT(!*turn);   /* the turn's holder never backs off */
+    __atomic_add_fetch(&vmo_freeze_backoffs, 1, __ATOMIC_RELAXED);
+    if (tries < FREEZE_TRIES && !__atomic_load_n(&turn_owner, __ATOMIC_RELAXED)) {
+        /* The writers that made it back off go first: until v's count of
+         * them has fallen to 0 since (or is 0). */
+        status_t st = OK;
+        uint64_t f = vlock(v);
+        uint32_t gen = v->drains;
+        while (v->frozen_waiters && v->drains == gen && st == OK)
+            st = waitqueue_wait_cancellable(&v->protect_wq, &v->base.lock, &f, DEADLINE_NEVER);
+        vunlock(v, f);
+        return st;
+    }
+    status_t st = mutex_lock_cancellable(&freeze_turn);
+    if (st == OK) {
+        __atomic_store_n(&turn_owner, current_thread(), __ATOMIC_RELAXED);
+        __atomic_add_fetch(&vmo_freeze_turns, 1, __ATOMIC_RELAXED);
+        *turn = true;
+    }
+    return st;
+}
+
+void vmo_freeze_turn_end(void)
+{
+    __atomic_store_n(&turn_owner, NULL, __ATOMIC_RELAXED);
+    mutex_unlock(&freeze_turn);
 }
 
 /* A GET_WRITE page's copy is done: let a freeze that waits for it go on. */
@@ -878,18 +991,21 @@ static status_t get_page(struct vmo *v, uint64_t idx, enum get_mode mode, struct
     bool priv = mode == GET_PRIVATE || mode == GET_WRITE;
     for (;;) {
         uint64_t f = vlock(v);
+        /* For a write: frozen meanwhile. The wait ends in this hold, and
+         * what fr holds is still right (the file header's "Freezes and
+         * writers"). */
+        if (priv && v->protecting) {
+            status_t st = frozen_wait_locked(v, &f);
+            if (st != OK) {
+                vunlock(v, f);
+                fresh_drop(&fr);
+                return st;
+            }
+        }
         if (idx >= v->size >> PAGE_SHIFT) {
             vunlock(v, f);
             fresh_drop(&fr);
             return ERR_OUT_OF_RANGE;
-        }
-        if (priv && v->protecting) {   /* for a write: frozen meanwhile */
-            vunlock(v, f);
-            fresh_drop(&fr);
-            status_t st = cow_wait(v);
-            if (st != OK)
-                return st;
-            continue;
         }
         /* Each OK below comes in this hold, with v not frozen: a
          * GET_WRITE counts itself in `inflight` before the lock goes. */
@@ -1642,10 +1758,9 @@ status_t vmo_set_size(struct vmo *v, uint64_t size)
         return st;
     }
     uint64_t f = vlock(v);
-    /* Frozen while a clone shares its pages (a creation holds resize);
-     * a kill ends the wait (cow_wait's rule). */
-    while (v->protecting && st == OK)
-        st = waitqueue_wait_cancellable(&v->protect_wq, &v->base.lock, &f, DEADLINE_NEVER);
+    /* Frozen while a clone shares its pages (a creation holds resize). */
+    if (v->protecting)
+        st = frozen_wait_locked(v, &f);
     uint64_t first = size >> PAGE_SHIFT, end = v->size >> PAGE_SHIFT;
     if (st == OK && first < end && ranges_overlap_locked(v, first, end))
         st = ERR_BAD_STATE;
@@ -1712,9 +1827,11 @@ static status_t decommit_pages(struct vmo *v, uint64_t offset, uint64_t len, boo
         if (v->protecting) {   /* a decommit changes the bytes: frozen meanwhile */
             vunlock(v, f);
             tlb_gather_finish(&g);   /* what it took so far goes first */
-            if ((st = cow_wait(v)) != OK)
+            f = vlock(v);
+            if (v->protecting && (st = frozen_wait_locked(v, &f)) != OK) {
+                vunlock(v, f);
                 break;
-            continue;
+            }   /* and goes on in this hold */
         }
         uint64_t stop = v->size >> PAGE_SHIFT;   /* a racing shrink took the rest */
         if (stop > end)
@@ -1938,6 +2055,16 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
     struct fresh fr = { 0 };
     for (;;) {
         uint64_t f = vlock(v);
+        /* Frozen while a creation or a clone shares its pages: as get_page
+         * (only a paged VMO is ever frozen). */
+        if (write && v->protecting) {
+            status_t st = frozen_wait_locked(v, &f);
+            if (st != OK) {
+                vunlock(v, f);
+                fresh_drop(&fr);
+                return st;   /* ERR_CANCELED: the fault path ends the thread */
+            }
+        }
         if (idx >= v->size >> PAGE_SHIFT) {
             vunlock(v, f);
             fresh_drop(&fr);
@@ -1947,14 +2074,6 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
             aspace_set_pte_locked(as, va, v->phys + (idx << PAGE_SHIFT), perms, v->cache);
             vunlock(v, f);
             return OK;
-        }
-        if (write && v->protecting) {   /* frozen while a creation or a clone shares its pages */
-            vunlock(v, f);
-            fresh_drop(&fr);
-            status_t st = cow_wait(v);
-            if (st != OK)
-                return st;   /* ERR_CANCELED: the fault path ends the thread */
-            continue;
         }
         /* Nothing is mapped writable while frozen, so a later write faults
          * and waits above. */
@@ -2120,25 +2239,22 @@ static status_t share_range(struct vmo *p, struct vmo *c, uint64_t offp, uint64_
     return st;
 }
 
-/* p's "vmo resize" held (its size can't change): share its pages [offp,
+/* p's "vmo resize" held (its size can't change) and p frozen by the
+ * caller (freeze_begin; a separation in p waits): share its pages [offp,
  * offp + c's size) into c (share_range); one shootdown at the end.
- * Meanwhile p's `protecting` makes a separation in p wait. ERR_BAD_STATE
- * if a pin or a kernel mapping covers a page there. */
+ * ERR_BAD_STATE if a pin or a kernel mapping covers a page there. */
 static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
 {
     uint64_t f = vlock(p);
     uint64_t end = offp + (c->size >> PAGE_SHIFT);   /* (no overflow: both at most 2^35) */
     if (end > p->size >> PAGE_SHIFT)
         end = p->size >> PAGE_SHIFT;   /* past it the child's pages are zero */
-    p->protecting++;
-    freeze_drain_locked(p, &f);
     vunlock(p, f);
     struct tlb_gather g;
     tlb_gather_init(&g);
     status_t st = share_range(p, c, offp, offp, end, &g);
     DBG_HOOK(DBG_VMO_CHILD_SHOOT, p);
     tlb_gather_finish(&g);
-    protect_end(p);
     return st;
 }
 
@@ -2201,6 +2317,42 @@ static status_t copy_pages(struct vmo *p, struct vmo *c, uint64_t offp, uint64_t
     return OK;
 }
 
+/* vmo_create_child's work for a p neither kept nor a pager VMO: c, new
+ * and `pages` long, gets p's pages from offp on, shared, under p's "vmo
+ * resize" (no size change meanwhile) and p's freeze, a pager child's
+ * window first. A freeze that backs off starts again with nothing held
+ * (the file header's "Freezes and writers"). */
+static status_t child_share(struct vmo *p, struct vmo *c, uint64_t offp, uint64_t pages)
+{
+    status_t st;
+    bool turn = false;
+    for (unsigned tries = 1;; tries++) {
+        mutex_lock(&p->resize);
+        /* A JIT VMO shares nothing (the file header): checked under "vmo
+         * resize", which vmo_make_jit holds while it marks one. */
+        st = vmo_is_jit(p) ? ERR_NOT_SUPPORTED : freeze_begin(p);
+        if (st == OK) {
+            if (p->src) {   /* a pager child's child: its pager VMO, the window's rest */
+                uint64_t f = vlock(p);
+                uint64_t win = p->win > offp ? p->win - offp : 0;
+                vunlock(p, f);
+                st = window_set(c, p->src, p->src_first + offp, win < pages ? win : pages);
+            }
+            if (st == OK)
+                st = share_pages(p, c, offp);
+            protect_end(p);
+        }
+        mutex_unlock(&p->resize);
+        if (st != ERR_SHOULD_WAIT)
+            break;
+        if ((st = vmo_freeze_backoff(p, tries, &turn)) != OK)
+            break;
+    }
+    if (turn)
+        vmo_freeze_turn_end();
+    return st;
+}
+
 status_t vmo_create_child(struct job *job, struct vmo *p, uint32_t flags, uint64_t offset,
                           uint64_t size, struct vmo **out)
 {
@@ -2228,20 +2380,7 @@ status_t vmo_create_child(struct job *job, struct vmo *p, uint32_t flags, uint64
     } else if (vmo_is_kept(p)) {
         st = copy_pages(p, c, offp, 0, pages);
     } else {
-        mutex_lock(&p->resize);
-        /* A JIT VMO shares nothing (the file header): checked under "vmo
-         * resize", which vmo_make_jit holds while it marks one. */
-        if (vmo_is_jit(p))
-            st = ERR_NOT_SUPPORTED;
-        if (st == OK && p->src) {   /* a pager child's child: its pager VMO, the window's rest */
-            uint64_t f = vlock(p);
-            uint64_t win = p->win > offp ? p->win - offp : 0;
-            vunlock(p, f);
-            st = window_set(c, p->src, p->src_first + offp, win < pages ? win : pages);
-        }
-        if (st == OK)
-            st = share_pages(p, c, offp);
-        mutex_unlock(&p->resize);
+        st = child_share(p, c, offp, pages);
     }
     if (st != OK) {
         kobject_unref(&c->base);   /* destroy gives back every page, reference and charge */
@@ -2258,13 +2397,17 @@ status_t vmo_clone_begin(struct job *job, struct vmo *v, struct vmo **out)
     /* aspace.c copies only what its clone_ok allows: never these. */
     if (v->kind != VMO_PAGED || v->pv || vmo_is_jit(v))
         return ERR_NOT_SUPPORTED;
+    DBG_HOOK(DBG_VMO_CLONE_BEGIN, v);
+    /* From here on v's bytes and size wait for vmo_clone_end; or
+     * ERR_SHOULD_WAIT: a writer of v goes first. */
+    status_t st = freeze_begin(v);
+    if (st != OK)
+        return st;
     uint64_t f = vlock(v);
-    v->protecting++;   /* from here on v's bytes and size wait for vmo_clone_end */
-    freeze_drain_locked(v, &f);
     uint64_t size = v->size, win = v->win;
     vunlock(v, f);
     struct vmo *c;
-    status_t st = vmo_create_for(job, size, 0, &c);
+    st = vmo_create_for(job, size, 0, &c);
     if (st == OK && v->src) {   /* a pager child's: its pager VMO, the same window */
         uint64_t pages = size >> PAGE_SHIFT;
         st = window_set(c, v->src, v->src_first, win < pages ? win : pages);

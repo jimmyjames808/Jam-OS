@@ -155,8 +155,20 @@ void     vmo_resident(struct vmo *v, uint64_t first, uint64_t n, bool cache, uin
  * or JIT VMO: ERR_NOT_SUPPORTED): v's `protecting` is raised, so every
  * change to its bytes or size waits for vmo_clone_end, and *out is a new
  * VMO as large as v (a pager child's gets the same window), charged to
- * job (ERR_NO_MEMORY, and nothing raised, if it refuses). */
+ * job (ERR_NO_MEMORY, and nothing raised, if it refuses).
+ * ERR_SHOULD_WAIT, nothing raised: a writer of v waits for its freezes to
+ * end, or another thread has the freeze turn; the clone lets go of every
+ * freeze and lock it holds and calls vmo_freeze_backoff (vmo.c's "Freezes
+ * and writers"). With the turn it waits for v's writers instead
+ * (ERR_CANCELED at a kill). */
 status_t vmo_clone_begin(struct job *job, struct vmo *v, struct vmo **out);
+/* After a freeze of v backed off for the `tries`th time, with nothing
+ * held: wait for v's writers to go on, or (from FREEZE_TRIES on, or if
+ * another thread has it) take the freeze turn (*turn: give it back with
+ * vmo_freeze_turn_end once the try with it is over), then try again.
+ * ERR_CANCELED if the thread is killed meanwhile. */
+status_t vmo_freeze_backoff(struct vmo *v, unsigned tries, bool *turn);
+void     vmo_freeze_turn_end(void);
 /* Give c, v's copy, v's pages [first, end) (up to c's size): shared
  * copy-on-write with v's writable entries for them write-protected into g,
  * which the caller shoots down before vmo_clone_end; a kept VMO's are

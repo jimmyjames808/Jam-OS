@@ -152,6 +152,9 @@ status_t vmo_create_child(struct job *job, struct vmo *p, uint32_t flags, uint64
  * and separations that waited for a creation's shootdown (relaxed; tests
  * and the benchmark). */
 extern uint64_t vmo_cow_copies, vmo_cow_waits;
+/* Freezes that backed off for a writer or another's turn, and freeze
+ * turns taken (vmo.c's "Freezes and writers"; relaxed, for tests). */
+extern uint64_t vmo_freeze_backoffs, vmo_freeze_turns;
 /* Grow or shrink (rounded up to pages). Shrinking frees the pages past the
  * new end, unmapping them from address spaces first; ERR_BAD_STATE if any
  * of them is pinned or kernel-mapped, or v is kept (VMO_KEEP_PAGES). Paged
