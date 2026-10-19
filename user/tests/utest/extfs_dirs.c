@@ -1278,20 +1278,22 @@ static const char *dk_round(handle_t top)
  * round, while the supervisor kills extfs every 200 ms: every call
  * answered (OK, or ERR_IO for one in progress at two deaths, made again),
  * every channel carried across every restart (never ERR_PEER_CLOSED),
- * each directory removed while held answering as a removed one; the disk
- * clean after (extfs-svc-test's e2fsck). */
+ * each directory removed while held answering as a removed one, and
+ * every one dropped at the end (the free bytes of before). */
 bool t_extfs_restart_deep(void)
 {
     handle_t top;
     unsigned count = 0, rounds = 0;
+    uint64_t total = 0, ref = 0, fr = 0;
     memset(name, 'k', NM);
     name[NM] = '\0';
     dk_io = 0;
-    CHECK(ramdisk_create(&dd, 8u * MIB_SECTORS));   /* small: its disk is saved */
+    CHECK(ramdisk_create(&dd, EXT_DISK_SECTORS));
     CHECK(extfs_sup_start(&dd, NULL, 0));
     struct fatrun *f = extfs_sup_run();
     CHECK_ST(t_mkdir(f, "/dk"), OK);
     CHECK_ST(od(f->fs, "/dk", FS_READ, &top, NULL), OK);
+    CHECK_ST(t_free(f, &total, &ref), OK);
     extfs_sup_storm(DK_EVERY_MS * NS_PER_MS);
     const char *bad = NULL;
     uint64_t t0 = now();
@@ -1311,9 +1313,19 @@ bool t_extfs_restart_deep(void)
     struct fatrun t = on(top);
     CHECK(dir_count(&t, "", NULL, &count, NULL));
     CHECK_EQ(count, 0u);
+    /* Every removed directory dropped: the free bytes of before the
+     * rounds (the last channels' closes may still be on their way). Its
+     * disk isn't saved for e2fsck: the rounds write its 4 MiB journal over
+     * and over, more than extfs-svc-test's /data has room for. */
+    uint64_t end = now() + FAT_CALL_NS;
+    while (t_free(f, &total, &fr) == OK && fr < ref && now() < end)
+        jam_sleep_until(now() + 10 * NS_PER_MS);
+    if (fr != ref)
+        printf("utest: %s: %lu bytes free, %lu before the rounds\n", utest_cur,
+               (unsigned long)fr, (unsigned long)ref);
+    CHECK(fr == ref);
     jam_handle_close(top);
     CHECK_ST(t_unlink_flags(f, "/dk", FS_UNLINK_DIR), OK);
     CHECK(extfs_sup_stop());
-    CHECK(extfs_save(&dd, "restart-deep"));
     return ramdisk_destroy(&dd);
 }
