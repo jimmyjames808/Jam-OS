@@ -16,20 +16,22 @@
  *   protocol       no sound: formats refused, the stream methods refused
  *                  on /svc/audio, drain on a stopped stream, volumes
  *                  clamped, an unknown id
- *   openers        no sound: two openers of /svc/audio, and of
- *                  /svc/audioctl, each get a channel of their own, and
- *                  what one asks is answered on its channel alone
- *   stream_cap     no sound: an opener's fifth stream refused, other
- *                  openers' up to 16 in all, the 17th refused; one closed
- *                  frees a stream for another opener, not for one at its
- *                  cap
+ *   openers        no sound: the program's list names /svc/audio and
+ *                  /svc/audioctl, so it has one opener of each (<os.h>
+ *                  "grants"): svc_open hands back the same channel, and
+ *                  svc.connect on it makes none; what one asks is
+ *                  answered on its channel alone
+ *   stream_cap     no sound: the program's opener's ninth stream refused,
+ *                  on it and on what svc_open hands back; one closed
+ *                  frees its place
  *   desk           no sound: the desktop's authority (desk_channel: what
  *                  the compositor's channel has): desk answers the master
  *                  volume, the output's name (QEMU's codec) and what
  *                  plays (a stream of silence titled with
  *                  stream_set_title), set_master works and the full
  *                  channel sees it; everything else is refused, a
- *                  desk_channel of it too
+ *                  desk_channel of it too; MIXER_DESK_CLIENTS of them at
+ *                  once, the next refused
  *   device         no sound: audioctl.device's query channel to the hda
  *                  driver answers info and the gain but refuses
  *                  open_output and query (so nobody but the mixer can take
@@ -59,6 +61,7 @@
 #include <idl/audioctl.h>
 #include <idl/hda.h>
 #include <idl/initctl.h>
+#include <idl/svc.h>
 #include <mixer.h>
 #include <os.h>
 #include <wants.h>
@@ -83,6 +86,12 @@ static handle_t initctl;
  * with the mixer that made it). */
 static handle_t svc(void) { return svc_get(SVC_AUDIO); }
 static handle_t ctl(void) { return svc_get(SVC_AUDIOCTL); }
+
+static uint64_t koid_of(handle_t h)
+{
+    struct handle_info hi;
+    return jam_handle_info(h, &hi) == OK ? hi.koid : 0;
+}
 
 /* ---- the tone child ------------------------------------------------------------- */
 
@@ -318,53 +327,47 @@ static bool t_protocol(void)
     return true;
 }
 
-enum { CAP = MIXER_STREAMS_PER_CLIENT, OPENERS = MIXER_MAX_STREAMS / CAP + 1 };
+enum { CAP = MIXER_STREAMS_PER_CLIENT };
 
-/* The cap's checks on OPENERS openers, each filled up as far as it went:
- * the first ones to their cap (16 in all), the last none; an opener at its
- * cap is refused even with a stream free, another opener isn't. */
-static bool cap_checks(const handle_t *o, struct mixer_stream (*s)[CAP], unsigned *held)
+/* The cap's checks on the program's opener o, filled up as far as it went:
+ * to its cap, the next refused there and on svc_get's (the same opener);
+ * one closed, its place is taken again. */
+static bool cap_checks(handle_t o, struct mixer_stream *s, unsigned *held)
 {
-    for (unsigned i = 0; i + 1 < OPENERS; i++)
-        CHECK_EQ(held[i], CAP);   /* (some other program may hold one: then fewer) */
-    CHECK_EQ(held[OPENERS - 1], 0u);
+    CHECK_EQ(*held, CAP);   /* (other programs' streams count to their openers) */
+    CHECK_EQ(koid_of(o), koid_of(svc()));
     struct mixer_stream x;
-    CHECK_ST(mixer_open(o[0], "cap", soon(), &x), ERR_NO_RESOURCES);
-    mixer_close(&s[1][--held[1]]);   /* one free in all; opener 0 is still at its cap */
-    CHECK_ST(mixer_open(o[0], "cap", soon(), &x), ERR_NO_RESOURCES);
+    CHECK_ST(mixer_open(o, "cap", soon(), &x), ERR_NO_RESOURCES);
+    CHECK_ST(mixer_open(svc(), "cap", soon(), &x), ERR_NO_RESOURCES);
+    mixer_close(&s[--*held]);
     status_t st;
     uint64_t until = soon();   /* the mixer sees the close in its own time */
-    while ((st = mixer_open(o[OPENERS - 1], "cap", soon(), &s[OPENERS - 1][0])) ==
-               ERR_NO_RESOURCES && now() < until)
+    while ((st = mixer_open(o, "cap", soon(), &s[*held])) == ERR_NO_RESOURCES && now() < until)
         pause_ms(20);
     CHECK_ST(st, OK);
-    held[OPENERS - 1] = 1;
+    ++*held;
     return true;
 }
 
-/* One opener of /svc/audio holds MIXER_STREAMS_PER_CLIENT streams at most;
- * each opener has a budget of its own, up to MIXER_MAX_STREAMS in all. */
+/* An opener of /svc/audio holds MIXER_STREAMS_PER_CLIENT streams at most,
+ * and the program has one (its list names /svc/audio: <os.h> "grants"),
+ * so another svc_open gives it no more room. */
 static bool t_stream_cap(void)
 {
-    handle_t o[OPENERS] = { 0 };
-    struct mixer_stream s[OPENERS][CAP];
-    unsigned held[OPENERS] = { 0 };
-    bool ok = true;
-    for (unsigned i = 0; ok && i < OPENERS; i++) {
-        ok = svc_open(SVC_AUDIO, &o[i]) == OK;
-        while (ok && held[i] < CAP && mixer_open(o[i], "cap", soon(), &s[i][held[i]]) == OK)
-            held[i]++;
-    }
+    handle_t o = HANDLE_INVALID;
+    struct mixer_stream s[CAP];
+    unsigned held = 0;
+    bool ok = svc_open(SVC_AUDIO, &o) == OK;
+    while (ok && held < CAP && mixer_open(o, "cap", soon(), &s[held]) == OK)
+        held++;
     if (ok)
-        ok = cap_checks(o, s, held);
+        ok = cap_checks(o, s, &held);
     else
         printf("mixtest: %s: /svc/audio didn't open\n", cur);
-    for (unsigned i = 0; i < OPENERS; i++) {
-        while (held[i])
-            mixer_close(&s[i][--held[i]]);
-        if (o[i])
-            jam_handle_close(o[i]);
-    }
+    while (held)
+        mixer_close(&s[--held]);
+    if (o)
+        jam_handle_close(o);
     return ok;
 }
 
@@ -387,8 +390,25 @@ static bool answered_on(handle_t ch, handle_t other, uint32_t ordinal, status_t 
     return true;
 }
 
-/* Two openers of /svc/audio, and of /svc/audioctl, get channels of their
- * own (svc.connect): what one asks is answered on its channel alone. */
+/* The checks on a and b (svc_open's twice of /svc/audio) and c and d (of
+ * /svc/audioctl). */
+static bool opener_checks(handle_t a, handle_t b, handle_t c, handle_t d)
+{
+    CHECK_EQ(koid_of(a), koid_of(b));
+    CHECK_EQ(koid_of(c), koid_of(d));
+    CHECK(koid_of(a) != koid_of(c));
+    handle_t x = HANDLE_INVALID;
+    CHECK(svc_connect_within(a, SOON, &x) != OK);   /* the mixer answers it on the shared */
+    CHECK(svc_connect_within(c, SOON, &x) != OK);   /* channels alone */
+    CHECK(!x);
+    return answered_on(a, c, AUDIO_STREAM_START, ERR_NOT_SUPPORTED) &&
+           answered_on(c, a, AUDIOCTL_STREAMS, OK);
+}
+
+/* A program given /svc/audio and /svc/audioctl by name has one opener of
+ * each, which makes no more (<os.h> "grants"): svc_open hands it back, and
+ * svc.connect on it is refused. What one asks is answered on its channel
+ * alone. */
 static bool t_openers(void)
 {
     handle_t a, b, c, d;
@@ -396,9 +416,7 @@ static bool t_openers(void)
     CHECK_ST(svc_open(SVC_AUDIO, &b), OK);
     CHECK_ST(svc_open(SVC_AUDIOCTL, &c), OK);
     CHECK_ST(svc_open(SVC_AUDIOCTL, &d), OK);
-    bool ok = answered_on(a, b, AUDIO_STREAM_START, ERR_NOT_SUPPORTED) &&
-              answered_on(b, a, AUDIO_STREAM_START, ERR_NOT_SUPPORTED) &&
-              answered_on(c, d, AUDIOCTL_STREAMS, OK) && answered_on(d, c, AUDIOCTL_STREAMS, OK);
+    bool ok = opener_checks(a, b, c, d);
     jam_handle_close(a);
     jam_handle_close(b);
     jam_handle_close(c);
@@ -624,7 +642,20 @@ static bool t_desk(void)
     CHECK_EQ(master, -200);
     mixer_close(&s);
     CHECK_ST(audioctl_set_master_until(d, soon(), 0, &cb), OK);
+    /* MIXER_DESK_CLIENTS of them in all (d is one), so that no program
+     * takes the openers' table with them. */
+    handle_t more[MIXER_DESK_CLIENTS];
+    unsigned k = 0;
+    status_t st = OK;
+    while (k < MIXER_DESK_CLIENTS && (st = audioctl_desk_channel_until(ctl(), soon(),
+                                                                      &more[k])) == OK)
+        k++;
+    unsigned got = k;
+    while (k)
+        jam_handle_close(more[--k]);
     jam_handle_close(d);
+    CHECK_EQ(got, MIXER_DESK_CLIENTS - 1);
+    CHECK_ST(st, ERR_NO_RESOURCES);
     return true;
 }
 

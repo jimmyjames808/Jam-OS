@@ -40,13 +40,16 @@
 #define MIXER_RING_HDR   4096u         /* the header page; the frames follow */
 #define MIXER_MAX_STREAMS 16u
 /* Streams one opener of /svc/audio may hold at once (each opener has a
- * channel of its own; libos's svc_get keeps one per program). Four is more
- * than any program uses (play, beep, the music player and the splash
- * each hold one; a game's music and its effects would be two or three),
- * and four programs at their cap still leave nobody short of the 16. A
- * program that opens /svc/audio again gets another four: the cap stops a
- * runaway loop over the library, not a program set on taking them all. */
-#define MIXER_STREAMS_PER_CLIENT 4u
+ * channel of its own). A program given /svc/audio by name has one opener,
+ * which hands out no more, and its children given its namespace share it
+ * (<os.h> "grants"), so this is a program's cap: half of the 16, so that
+ * a browser's audio service (a stream for each page that plays, all in
+ * one process) has eight and every other program together the other
+ * eight. play, beep, the music player and the splash each hold one. */
+#define MIXER_STREAMS_PER_CLIENT 8u
+/* Openers made by audioctl.desk_channel at once, every program's together
+ * (the desktop's own channel is not one of them). */
+#define MIXER_DESK_CLIENTS 4u
 #define MIXER_RING_MAGIC 0x474e524du   /* "MRNG" */
 
 #define MIXER_SIG_SPACE  (1u << 24)    /* SIG_USER_ALL bits of the event */

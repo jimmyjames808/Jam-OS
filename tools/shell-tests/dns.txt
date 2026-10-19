@@ -5,7 +5,11 @@
 # net.address in the settings. The DHCP client gets the lease and `net`
 # shows it; `host` resolves; `ping <name>` resolves and pings; Ctrl+C
 # stops a `host` waiting on the slow name; dnstest checks the slow-peer
-# rule (other lookups and pings answered promptly while slow.jam waits);
+# rule (other lookups and pings answered promptly while slow.jam waits)
+# and that it has one opener of /svc/dns and of /svc/net, and a lookup
+# past the resolver's limits waits for room; `dnstest busy`
+# in the background floods its opener while `dnstest names`, another
+# program, has 5 names answered promptly;
 # then netstack is killed: the DHCP client asks for its address again
 # (INIT-REBOOT) and the resolver, started again, answers.
 wait 120 Jam OS shell
@@ -38,7 +42,18 @@ type \x03
 wait host: slow.jam: stopped
 wait {prompt}
 send run dnstest
-wait 60 dnstest: 5 passed, 0 failed
+wait 60 dnstest: 6 passed, 0 failed
+wait {prompt}
+send run dnstest busy &
+wait 10 [1]
+seen 30 dnstest: busy: flooding
+send run dnstest names
+wait 30 dnstest: names: 5 names answered while another program floods
+wait {prompt}
+seen 40 dnstest: busy: done
+send echo dn-""1
+wait 10 [1] done: dnstest (exit 0)
+seen 10 dn-1
 wait {prompt}
 send kill netstack
 wait 10 init: bin/netstack was killed

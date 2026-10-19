@@ -69,6 +69,14 @@
 #include <os.h>
 #include <sockring.h>
 
+/* The per-opener caps below are a program's: a program given /svc/net or
+ * /svc/net-listen by name has one opener of each, which makes no more, and
+ * its children given its namespace share it (<os.h> "grants"). One program
+ * takes at most two thirds of what ordinary programs share. They fit
+ * Chromium 155's pools: 256 sockets in the normal pool and 256 in the
+ * WebSocket one (net's socket_soft_cap_per_pool), so 512 connections, 6 to
+ * a host, 128 through a proxy chain; at the default rings 512 connections
+ * hold 42 MiB of the opener's 64 MiB (SANDBOX-PLAN's SB2 notes). */
 #define NET_DGRAM_MAX          1472u   /* bytes of a datagram: one frame, never fragmented */
 #define NET_OPENERS            32u     /* channels from the shared channels' connect at once */
 #define NET_PROG_OPENERS       24u     /* ... of them /svc/net's (ordinary programs') */

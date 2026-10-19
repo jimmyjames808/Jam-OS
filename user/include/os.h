@@ -603,9 +603,14 @@ status_t ns_svc_remove(const char *name);
  * A view is made with a call to the mount's service at the time of the
  * send (each waits at most NS_VIEW_WAIT). A service that counts what a
  * program holds by the channel it calls on (/svc/unix: the broker's
- * listeners) is given by name as a channel of the program's own, asked
- * of ours with svc.connect at the send, which hands out no more: the
- * program can't open another to get past its limits. "*" gives ours. */
+ * listeners; /svc/net and /svc/net-listen: netstack's sockets;
+ * /svc/dns: the resolver's names in flight; /svc/audio and
+ * /svc/audioctl: the mixer's streams) is given by name as a channel of
+ * the program's own, asked of ours with svc.connect at the send, which
+ * hands out no more: the program can't open another to get past its
+ * limits, or take the service's table of openers (svc_open hands back
+ * the one it has; its children given its namespace share it). "*" gives
+ * ours. */
 #define NS_VIEW_WAIT (2 * NS_PER_S)
 
 /* For fs services: a path inside a mount (fs.idl's str: len bytes, no NUL)

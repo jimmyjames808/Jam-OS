@@ -148,17 +148,20 @@ int  audio_open(struct audio_out *a, unsigned rate, unsigned channels);
 int  audio_open_as(struct audio_out *a, unsigned rate, unsigned channels, const char *name);
 /* The same, for samples of the format `fmt` (ERR_NOT_SUPPORTED for one
  * that is not in the enum). The two above take AUDIO_S16. The mixer takes
- * at most 4 streams from an opener (and 16 in all; these open on the one
- * svc_get keeps, one per process: a forked child has its own):
- * audio_close gives the slot back. */
+ * at most MIXER_STREAMS_PER_CLIENT (8) streams from an opener and 16 in
+ * all; these open on the one svc_get keeps. A program given /svc/audio by
+ * name has one opener (<os.h> "grants"), its children given its namespace
+ * too: eight streams for the program. audio_close gives the slot back. */
 int  audio_open_fmt(struct audio_out *a, unsigned rate, unsigned channels,
                     enum audio_format fmt, const char *name);
-/* The same on an opener of the caller's own, svc (svc_open(SVC_AUDIO)):
- * its streams count to it, not to the one svc_get keeps, so a program that
- * needs more than four at once (a browser's audio service: a stream per
- * page that plays) opens another opener when audio_open_fmt says
- * ERR_NO_RESOURCES. The caller closes svc after the streams on it are
- * closed; ERR_PEER_CLOSED: the mixer was given up on, open it again. */
+/* The same on the opener svc (svc_open(SVC_AUDIO)). For a program given
+ * /svc/audio by name, svc_open hands back its one opener, so this gives no
+ * streams past its eight: when audio_open_fmt says ERR_NO_RESOURCES, so
+ * does this (Chromium's back end, patch 0916, asks it once the first
+ * opener is full). A program holding the shared channel ("*": init's, the
+ * shells') gets a new opener with eight of its own. The caller closes svc
+ * after the streams on it are closed; ERR_PEER_CLOSED: the mixer was given
+ * up on, open it again. */
 int  audio_open_on(struct audio_out *a, handle_t svc, unsigned rate, unsigned channels,
                    enum audio_format fmt, const char *name);
 /* Write nframes interleaved frames, blocking while the stream's ring is

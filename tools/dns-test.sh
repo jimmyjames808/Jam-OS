@@ -7,7 +7,11 @@
 #               so it is renewed during the run), `net`, `host`, `ping
 #               <name>`, Ctrl+C on the slow name, `run dnstest` (while
 #               slow.jam waits 10 s, 20 other names and 3 pings are each
-#               answered in under 200 ms), then netstack killed: the same
+#               answered in under 200 ms; one opener of /svc/dns and of
+#               /svc/net; a seventh asker of slow.jam waits for room),
+#               `run dnstest busy &` flooding while `run
+#               dnstest names` has 5 names answered in under 1 s each,
+#               then netstack killed: the same
 #               address again by INIT-REBOOT, the restarted resolver
 #               answers. Checked afterwards: one lease line per lease
 #               (2: the boot's and after the kill), renewals ACKed (the

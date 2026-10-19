@@ -14,7 +14,7 @@ process and every utility process holds what the browser's list grants:
 lists each thing and who needs it). Until that changes, the owner's rule
 holds: ordinary sites only, not banking or logins that matter. The owner
 (2026-10-20) moved CR-f before the iGPU work. This plan is the design;
-nothing is built yet.
+of it only SB2 is built ([its notes](#sb2-notes)).
 
 **In one paragraph.** Chromium keeps believing it runs without a sandbox,
 and Jam OS narrows each child where the exec in place already cuts
@@ -514,7 +514,7 @@ WebGL page with SwiftShader).
 | Track | What | Files | Gate | Tests | Size | Model |
 |---|---|---|---|---|---|---|
 | **SB1. Fonts (CR3 M3)**, ahead of CR-f | fontconfig's caches built at install into the package area, no writable shared `cachedir`, the owner's settings only where a settings grant writes, `FONTCONFIG_FILE`/`FONTCONFIG_PATH` dropped for AT_SECURE children | bin/pkg's install step, `ports/fonts-jamos/override/fonts.conf`, `user/posix/sys/etc.c`, `user/posix/crt/start.c` | none | cr-test fonts with a planted `/data/.config/fontconfig/fonts.conf` mapping sans-serif to the cut Inter (fails without); posixtest AT_SECURE env | 1.5 | Opus |
-| **SB2. Openers of one's own (CR3 M1)** | `own_channel` for net, dns and audio; netstack's and the resolver's per-opener caps; the mixer's per-opener cap 8; `audio_open_on` handing back the program's opener | `user/lib/ns.c`, `user/lib/audio.c`, `user/include/net.h`, `user/include/dns.h`, `user/include/mixer.h`, the services' opener counts | none | utest: one program opens openers until refused, a second still gets one of each (fails without); crsound | 1.5 | Opus |
+| **SB2. Openers of one's own (CR3 M1)**: built, see [SB2 notes](#sb2-notes) | `own_channel` for net, dns and audio; netstack's and the resolver's per-opener caps; the mixer's per-opener cap 8; `audio_open_on` handing back the program's opener | `user/lib/ns.c`, `user/lib/audio.c`, `user/include/net.h`, `user/include/dns.h`, `user/include/mixer.h`, the services' opener counts | none | utest: one program opens openers until refused, a second still gets one of each (fails without); crsound | 1.5 | Opus |
 | **SB3. Socket files need write (CR3 M2)** | `connect` opens the socket file `O_RDWR` without truncation | `user/posix/sys/unixsock.c` | CB6 merged (its singleton's place) | posixtest unix: a read-only view can't connect (fails without); a rewritten socket file is refused | 0.5 | Sonnet 5.5 |
 | **SB4. The children's table** | note type 2, its grammar (rows, conditions, grants words, `mount self r`, `limits`), `JAM_CHILDREN`, libos's reader, checkwants and its selftest, `allow` showing it, the port's link step embedding `wants/<program>.children`; the list's `limit pages`/`messages` words applied by `dp_job_create` | `user/include/wants.h`, `user/lib/wants.c`, `tools/checkwants.py`, `<dataprog.h>` and its source, the shell's `allow`, tools/cr's link wrapper | none | checkwants selftest (tables it must take and refuse); utest: a table read back; `allow` shows it | 1.5 | Opus |
 | **SB5. Narrowing at the exec** | section 3: the row match (base's rules), the grants as `.ns`, `SR_JOB` read only, no boot image or own image, `SR_JIT` only for jit rows, 1 and 2 to the log, `/` as text; the limits notice and the parent's answer; libc's memory figures from the job's limit | `user/posix/sys/spawn.c`, `spawnfd.c`, `sigthread.c`, `proc.c`, `procinfo.c`, `abi/idl/signal.idl` (own commit first: ABI stamp), `user/lib/spawn.c` | SB4 | posixtest exec: each row's image holds exactly its set; a second ask and an ask after the exec ignored; `MemTotal` is the limit; utest; init run, basic, cmds, commands, files, kdump save (crosses areas) | 2.5 | Opus |
@@ -569,6 +569,81 @@ table's grammar and checks 400, tests 1,500.
    process type or renames a sub-type falls to the default row: the
    release bump's checklist (CR-PLAN's security updates) gains "check the
    children's table against `--type`s in the log".
+
+### SB2 notes
+
+Built 2026-10-20, ahead of CR-f (CR3's M1, section 8's call).
+
+- **Openers of one's own.** libos's grants (`own_channel`, `user/lib/ns.c`)
+  give `/svc/net`, `/svc/net-listen`, `/svc/dns`, `/svc/audio` and
+  `/svc/audioctl` by name as an opener of the program's own, made with
+  `svc.connect` on the starter's shared channel, as `/svc/unix` since
+  CR2F: `svc_open` and `svc_get` hand back that one opener, a forked or
+  spawned child given the namespace whole shares it, and `"*"` still gives
+  the shared channel (init, the shells). `/svc/net-listen` and
+  `/svc/audioctl` are in because their openers are the same tables
+  (netstack's 24, the mixer's 24) and a list from `/data` may name them.
+  `/svc/net-low` is not: no program from `/data` may have it, and serve,
+  given it by init, listens again on a new opener of it after netstack
+  restarts.
+- **An opener makes no more.** netstack's and the resolver's opener
+  channels already answered only their own protocol (`svc.connect` there is
+  another protocol's ordinal, `ERR_NOT_SUPPORTED`). The mixer answered
+  `svc.connect` on every channel: now on the shared `audio` and
+  `audioctl` channels alone. `audioctl.desk_channel`, which any audioctl
+  channel may ask, makes at most `MIXER_DESK_CLIENTS` (4) openers in all,
+  so it can't fill the table either.
+- **The numbers.** netstack's per-opener caps are now a program's and stay
+  as CN1 set them: 256 sockets, 512 TCP connections, 4 listeners, 64 MiB
+  of rings and 8 waits, of the ordinary programs' 384, 768, 12, 96 MiB and
+  48, so one program takes at most two thirds. Chromium 155's (read from
+  its source): a soft cap of 256 sockets in each of the normal and the
+  WebSocket pools (`socket_soft_cap_per_pool`), so 512 connections, 6 to a
+  host (255 for WebSockets), 128 through a proxy chain; 512 connections at
+  the default rings are 42 MiB. They fit exactly, so the caps stay. The
+  resolver: 8 lookups in flight a program (`DNS_PER_OPENER`, of the 12
+  names programs may have in flight together), 12 programs' openers.
+  Chromium resolves with `getaddrinfo` on up to 64 worker threads
+  (`kDefaultMaxSystemTasks`); a lookup past the 8 used to fail at once
+  (`EAI_AGAIN`, the page's name not resolved), and now waits in libjam's
+  `dns_lookup` for one to end (10 ms, doubling to 160 ms, until its
+  deadline), so the 64 queue and other programs keep their 4 (Chromium
+  has it at its next link). The mixer:
+  8 streams an opener (`MIXER_STREAMS_PER_CLIENT`, was 4), 16 in all, 24
+  openers.
+- **Chromium's sound.** `audio_open_on` is limited, not removed (no change
+  to `audio.c`): for a program given `/svc/audio` by name `svc_open` hands
+  back its one opener, so patch 0916's extra openers add nothing. The
+  staged binary (old libjam: `kOpeners` 3, from 16 / 4 - 1) opens 8 streams
+  on `svc_get`'s opener; a ninth gets `ERR_NO_RESOURCES` there and on each
+  extra opener (the same one), `JamOutput::Open` says `kNoStreams` and
+  `AudioOutputStreamJamOS::Open` fails. Chromium's `AudioOutputResampler`
+  then falls back to a fake (silent) output if no stream of those
+  parameters has opened before, and otherwise fails the stream (the page's
+  audio errors), as CA1 saw for a fifth. Built against the new `<mixer.h>`
+  the back end has `kOpeners` 1 (16 / 8 - 1), the same opener again. Its
+  audio service has 8, the whole browser's: only that process opens
+  streams. Chromium's own cap (`AudioManagerBase`'s 16) is above it.
+- **Late answers.** fetch's and bin/pkg's resolves used a fresh opener each
+  with txid 1; with the program's one opener a late answer could be taken
+  for the next resolve's, so each takes the next txid of a counter of the
+  program's.
+- **Left.** A program with an opener of its own has no network, names or
+  (for `/svc/unix`) sockets after netstack, the resolver or the broker
+  restarts, until it is started again: their openers die with them, and
+  `svc_open` hands back the dead one (the mixer keeps its openers across a
+  restart, so sound is unaffected). A `svc exec` program can still start
+  approved programs, each with openers of its own, until the tables fill
+  (as CR2F's left item). Netstack's rings stay its own pages (SBN).
+- **Tests.** utest `svc_own_openers` (a program opens each service 9
+  times, a second still gets one of each; before the grants change the
+  first took every table and the second was refused, `ERR_NO_RESOURCES`);
+  mixtest `openers` (one opener of each, `svc.connect` on it refused),
+  `stream_cap` (8, the next refused there and on another open), `desk`
+  (4 desk channels); utest `audio_out_slots` (8, the ninth refused through
+  `audio_open_on` too); dnstest `openers` and `room` (a seventh asker of a
+  name waits for room), and `dnstest busy` / `dnstest names`, the busy
+  asker as a second program ([TESTING](TESTING.md#dhcp-and-dns-end-to-end)).
 
 ## 11. Questions for the owner
 

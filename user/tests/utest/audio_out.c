@@ -135,34 +135,44 @@ bool t_audio_out_args(void)
 
 /* ---- the streams ------------------------------------------------------------------ */
 
-/* Four streams of the program's opener, and a fifth refused there but
- * taken on an opener of our own; a closed one gives its place back. */
+static uint64_t koid_of(handle_t h)
+{
+    struct handle_info hi;
+    return jam_handle_info(h, &hi) == OK ? hi.koid : 0;
+}
+
+/* The program's MIXER_STREAMS_PER_CLIENT streams on its one opener, the
+ * next refused; svc_open hands back that same opener (utest's list names
+ * /svc/audio: an opener of its own, <os.h> "grants"), so audio_open_on on
+ * it is refused too; a closed one gives its place back. */
 bool t_audio_out_slots(void)
 {
-    struct audio_out s[5];
+    enum { CAP = MIXER_STREAMS_PER_CLIENT };
+    struct audio_out s[CAP + 1];
     int st = audio_open_fmt(&s[0], 48000, 2, AUDIO_S16, "ut-slot");
     if (st == ERR_NOT_FOUND)
         return skipped();
     CHECK_ST(st, OK);
-    for (unsigned i = 1; i < 4; i++)
+    for (unsigned i = 1; i < CAP; i++)
         CHECK_ST(audio_open_fmt(&s[i], i % 2 ? 44100 : 48000, 1 + i % 2, AUDIO_F32, "ut-slot"), OK);
-    CHECK_EQ(audio_open_fmt(&s[4], 48000, 2, AUDIO_S16, "ut-slot"), ERR_NO_RESOURCES);
-    /* A fifth on an opener of our own (audio_open_on), which counts its own. */
+    CHECK_EQ(audio_open_fmt(&s[CAP], 48000, 2, AUDIO_S16, "ut-slot"), ERR_NO_RESOURCES);
+    /* No more on another open of /svc/audio (Chromium's back end asks so). */
     handle_t own = HANDLE_INVALID;
     CHECK_ST(svc_open(SVC_AUDIO, &own), OK);
-    CHECK_ST(audio_open_on(&s[4], own, 48000, 2, AUDIO_F32, "ut-slot"), OK);
-    audio_close(&s[4]);
+    CHECK_EQ(koid_of(own), koid_of(svc_get(SVC_AUDIO)));
+    CHECK_EQ(audio_open_on(&s[CAP], own, 48000, 2, AUDIO_F32, "ut-slot"), ERR_NO_RESOURCES);
     jam_handle_close(own);
-    CHECK_EQ(audio_open_on(&s[4], HANDLE_INVALID, 48000, 2, AUDIO_S16, "ut-slot"), ERR_NOT_FOUND);
+    CHECK_EQ(audio_open_on(&s[CAP], HANDLE_INVALID, 48000, 2, AUDIO_S16, "ut-slot"),
+             ERR_NOT_FOUND);
     audio_close(&s[2]);
     CHECK_ST(audio_open_fmt(&s[2], 48000, 2, AUDIO_F32, "ut-slot"), OK);
-    CHECK_EQ(audio_open_fmt(&s[4], 48000, 2, AUDIO_S16, "ut-slot"), ERR_NO_RESOURCES);
-    for (unsigned i = 0; i < 4; i++)
+    CHECK_EQ(audio_open_fmt(&s[CAP], 48000, 2, AUDIO_S16, "ut-slot"), ERR_NO_RESOURCES);
+    for (unsigned i = 0; i < CAP; i++)
         audio_close(&s[i]);
-    /* All four free again. */
-    for (unsigned i = 0; i < 4; i++)
+    /* All free again. */
+    for (unsigned i = 0; i < CAP; i++)
         CHECK_ST(audio_open_fmt(&s[i], 48000, 2, AUDIO_S16, "ut-slot"), OK);
-    for (unsigned i = 0; i < 4; i++)
+    for (unsigned i = 0; i < CAP; i++)
         audio_close(&s[i]);
     return true;
 }
