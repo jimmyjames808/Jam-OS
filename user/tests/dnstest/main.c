@@ -284,10 +284,12 @@ static bool t_room(handle_t th)
     signals_t seen;
     CHECK_ST(jam_object_wait_one(th, SIG_TERMINATED, now() + LATE_WAIT + 5 * NS_PER_S, &seen),
              OK);
-    uint64_t took = __atomic_load_n(&late.ended, __ATOMIC_ACQUIRE) - late.started;
+    uint64_t ended = __atomic_load_n(&late.ended, __ATOMIC_ACQUIRE), took = ended - late.started;
     CHECK_ST(late.st, ERR_TIMED_OUT);
     if (took < SLOW_MIN)
         FAIL("the seventh asker of slow.jam ended after %lu ms", (unsigned long)(took / NS_PER_MS));
+    /* Its own query, not the six's: it got in once they had ended. */
+    CHECK(ended >= slow.ended + 2 * NS_PER_S);
     printf("dnstest: room: the seventh asker of slow.jam waited for room, %s after %lu ms\n",
            status_str(late.st), (unsigned long)(took / NS_PER_MS));
     return true;
