@@ -4,8 +4,9 @@
 # the PC's CPU budget), and one table at the end (docs/TESTING.md, "Running
 # tests on the PC").
 #
-#   tools/pc-batch.sh start [--detach] [--rerun-failed] <runlist>
+#   tools/pc-batch.sh start [--detach] [--rerun-failed] [--force] <runlist>
 #                                     start it; prints the batch id at once
+#                                     (exit 2 while a batch of this checkout runs)
 #   tools/pc-batch.sh wait [<id>]     back when the batch is done (the table) or after
 #                                     PC_BATCH_WAIT (270) seconds (one progress line, exit 124)
 #   tools/pc-batch.sh status [<id>]   the table now (a detached batch: after a look at the PC)
@@ -30,8 +31,15 @@
 # The command is shell words (quotes work). VAR=value words before it (with
 # or without `env`) are the run's environment, here (the CPUs it costs, a
 # KTESTS=0 build) and on the PC whatever remote-test forwards or not.
-# Every run uses the copy the batch made (JAMOS_REMOTE_NOSYNC=1), so don't
-# start a second batch from this checkout with other code while one runs.
+# Every run uses the copy the batch made (JAMOS_REMOTE_NOSYNC=1), the one copy
+# of this checkout on the PC. A second batch would copy newer code over it
+# under the first batch's remaining runs, so `start` refuses (exit 2, naming
+# the running batch) while a batch started from this checkout still runs,
+# here or detached on the PC, unless it is given --force (the old batch's
+# remaining runs then test the new code). Wait for the first, or cancel it.
+# A batch from another checkout is no hindrance (each has a copy of its own);
+# a single remote-test.sh run from this checkout while a batch runs is not
+# stopped, and changes the copy as well: don't.
 #
 # Exit status (wait, report, run): 0 every run passed (or passed when run
 # again), 1 one failed, 124 not finished yet, 2 a usage error.
@@ -57,8 +65,8 @@
 # later, is fine). A run in flight when the PC rebooted is LOST; `start
 # --detach --resume <id>` runs what didn't finish. `wait` exits 3 when the PC
 # never answered during the call (the batch goes on there). One detached
-# batch at a time for each checkout: it tests the checkout's copy on the PC,
-# which another run from the checkout would change under it.
+# batch at a time for each checkout (above): it tests the checkout's copy on
+# the PC, which another run from the checkout would change under it.
 set -u
 top=$(git rev-parse --show-toplevel 2> /dev/null) || top=$(pwd)
 cd "$top" || exit 2
@@ -555,17 +563,33 @@ resume() {   # resume <id>: a detached batch's runs that didn't finish, on the P
     echo "batch $bid: on the PC again; next: $me wait $bid"
 }
 
+# running_batches <new id> <1: ask the PC too>: the ids of this checkout's other
+# batches still running: a driver alive here, or (a detached batch, its driver
+# gone after the hand-off) the batch's own driver alive on the PC.
+running_batches() {
+    local o ids=
+    for o in $(ls "$base"); do
+        [ "$o" != "$1" ] && [ ! -f "$base/$o/done" ] && kill -0 "$(cat "$base/$o/driver.pid" 2> /dev/null)" 2> /dev/null && ids="$ids $o"
+    done
+    if [ "$2" = 1 ]; then
+        ids="$ids $(printf 'for o in ~/work/.batch/%s/*/; do [ -f "$o/started" ] && [ ! -f "$o/done" ] && ! flock -n "$o/lock" true && basename "$o"; done; exit 0\n' \
+            "$(basename "$top")" | "$sshr" "${ssh_opts[@]}" "$JAMOS_REMOTE" "wsl -e bash -s" 2> /dev/null)"
+    fi
+    echo $ids
+}
+
 start() {
-    local rerun=0 detach=0 list line name rest n id busy
+    local rerun=0 detach=0 force=0 list line name rest n id busy o ask
     while :; do
         case ${1:-} in
         --rerun-failed) rerun=1; shift ;;
         --detach) detach=1; shift ;;
+        --force) force=1; shift ;;
         --resume) [ $detach = 1 ] && [ $# = 2 ] || die "usage: $me start --detach --resume <id>"; resume "$2"; return ;;
         *) break ;;
         esac
     done
-    [ $# = 1 ] || die "usage: $me start [--detach] [--rerun-failed] <runlist>"
+    [ $# = 1 ] || die "usage: $me start [--detach] [--rerun-failed] [--force] <runlist>"
     list=$1
     [ -f "$list" ] || die "no runlist $list"
     mkdir -p "$base"
@@ -589,21 +613,31 @@ start() {
     [ -s "$d/names" ] || { rm -rf "$d"; die "$list: no runs in it"; }
     cp "$list" "$d/runlist"
     [ $rerun = 1 ] && : > "$d/rerun-failed"
+    # Every batch of a checkout tests one copy of it on the PC: another batch
+    # started now would copy this checkout's newer code over that copy while
+    # the first batch's remaining runs still use it. So it is refused while one
+    # of this checkout's batches runs (--force: started anyway). A detached
+    # batch is on the PC for long after its driver here is gone: the PC is asked
+    # when this one is detached, or an earlier detached batch isn't collected yet.
+    ask=$detach
+    for o in $(ls "$base"); do
+        [ "$o" != "$id" ] && [ -f "$base/$o/handed" ] && [ ! -f "$base/$o/collected" ] && ask=1
+    done
+    busy=$(running_batches "$id" $ask)
+    if [ -n "$busy" ]; then
+        if [ $force = 1 ]; then
+            echo "pc-batch: --force: batch $busy of this checkout still runs; its remaining runs test this copy" >&2
+        else
+            rm -rf "$d"
+            die "batch $busy of this checkout still runs, and both would use one copy of it on the PC (the new copy changes the code under the old batch's remaining runs): wait for it ($me wait ${busy%% *}) or cancel it ($me cancel ${busy%% *}) first, or start with --force"
+        fi
+    fi
     if [ $detach = 1 ]; then
         echo "$JAMOS_REMOTE" > "$d/pc-host"
         echo "work/.batch/$(basename "$top")/$id" > "$d/pc-dir"
-        # A detached batch of this checkout still running there tests the
-        # checkout's copy on the PC, which this one would change under it.
-        busy=$(printf 'for o in ~/work/.batch/%s/*/; do [ -f "$o/started" ] && [ ! -f "$o/done" ] && ! flock -n "$o/lock" true && basename "$o"; done; exit 0\n' \
-            "$(basename "$top")" | pc_sh 2> /dev/null)
-        [ -z "$busy" ] || { rm -rf "$d"; die "batch $(echo $busy) of this checkout still runs on the PC (on this checkout's copy there): wait for it or cancel it first"; }
         : > "$d/detached"
     fi
     now > "$d/start"
-    for o in $(ls "$base"); do
-        [ "$o" != "$id" ] && [ ! -f "$base/$o/done" ] && kill -0 "$(cat "$base/$o/driver.pid" 2> /dev/null)" 2> /dev/null &&
-            echo "pc-batch: note: batch $o from this checkout is still running (both use one copy on the PC)" >&2
-    done
     # The driver in a session of its own, so it outlives the caller's shell
     # (and cancel stops all of it); it writes driver.pid.
     nohup python3 -c '
