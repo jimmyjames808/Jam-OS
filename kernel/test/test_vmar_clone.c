@@ -55,6 +55,27 @@
  *       for a clone and a half, while a writer stores A then B: each
  *       clone whole and untorn or refused with nothing left, the job
  *       back to the page and nothing frozen afterwards.
+ *   vmar_clone_writer_first
+ *       a vmo_write, a store's fault, a decommit and a resize waiting for
+ *       a frozen VMO: a second freeze of it backs off instead of keeping
+ *       them waiting, so each goes on when the first ends; a child's
+ *       creation waits for such a writer and holds its bytes (track FZ,
+ *       FORK-REVIEW-KERNEL's design question 1).
+ *   vmar_clone_writer_bounded
+ *       three threads fork address spaces mapping one VMO in loops, each
+ *       clone holding it frozen 1 to 2 ms, while a vmo_write and a store
+ *       keep writing it: every write is done within a bound, and each
+ *       child's bytes stay as the clone returned them.
+ *   vmar_clone_backs_off
+ *       a clone holding one VMO frozen meets a writer waiting on the next
+ *       (frozen by another freezer): it lets the first go, so its writer
+ *       goes on, waits, and starts again once the second's writer went;
+ *       no deadlock, and the child holds both writes, then nothing more.
+ *   vmar_clone_turn_waits
+ *       a clone that met someone else's freeze turn waits for it, then
+ *       with the turn holds its first VMO frozen while it waits for the
+ *       second's writer; another freezer that wants the first backs off,
+ *       and everything goes on.
  *
  * Faults go through the real page-fault path: the test thread enters an
  * address space and copies to and from its user addresses, as a system
@@ -75,6 +96,7 @@
 #include <jam/time.h>
 #include <jam/usercopy.h>
 #include <jam/vmo.h>
+#include <jam/x86.h>
 
 #define PG     PAGE_SIZE
 #define R      ASPACE_READ
@@ -1037,4 +1059,499 @@ KTEST(vmar_clone_hostile_storm)
     kt_job_is_empty(s->j);
     job_unref(s->j);
     kfree(s);
+}
+
+/* ---- writers first (track FZ) ------------------------------------------------ */
+
+/* Up to the patience: until vmo_cow_waits passes `from` (a writer counted
+ * itself waiting for a freeze), and a moment more for it to sleep. */
+static bool wait_seen(uint64_t from)
+{
+    uint64_t end = uptime_ns() + kt_patience_ms(1000) * NS_PER_MS;
+    while (__atomic_load_n(&vmo_cow_waits, __ATOMIC_RELAXED) == from && uptime_ns() < end)
+        thread_sleep_ms(1);
+    thread_sleep_ms(2);
+    return __atomic_load_n(&vmo_cow_waits, __ATOMIC_RELAXED) != from;
+}
+
+/* Up to ms (with the patience): until *flag is set. */
+static bool set_within(const int *flag, uint64_t ms)
+{
+    uint64_t end = uptime_ns() + kt_patience_ms(ms) * NS_PER_MS;
+    while (!__atomic_load_n(flag, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+        thread_sleep_ms(1);
+    return __atomic_load_n(flag, __ATOMIC_ACQUIRE);
+}
+
+/* fc_waiter's writer of x->v, started and seen waiting for a freeze. */
+static struct thread *start_waiter(struct fc_ctx *x)
+{
+    uint64_t waits = __atomic_load_n(&vmo_cow_waits, __ATOMIC_RELAXED);
+    struct thread *t = thread_create("kt-fz-writer", fc_waiter, x, PRIO_DEFAULT);
+    if (!wait_seen(waits))
+        ktest_fail("a writer of a frozen VMO didn't wait");
+    return t;
+}
+
+struct cc_ctx {
+    struct vmo *p, *c;
+    int         done;   /* atomic */
+    status_t    st;
+};
+
+static void cc_creator(void *arg)
+{
+    struct cc_ctx *x = arg;
+    x->st = vmo_create_child(NULL, x->p, VMO_CHILD_SNAPSHOT, 0, PG, &x->c);
+    __atomic_store_n(&x->done, 1, __ATOMIC_RELEASE);
+}
+
+/* A writer waiting for a freeze is never kept waiting by a freeze that
+ * begins after it: a second freeze backs off, so the writer goes on when
+ * the first ends. Without FZ the second began and the writer waited on. */
+KTEST(vmar_clone_writer_first)
+{
+    static const char *const what[] = { "vmo_write", "a store's fault", "decommit", "resize" };
+    for (int k = 0; k < 4; k++) {
+        struct fc_ctx x = { .v = mk(1), .as = new_as(NULL), .what = k };
+        stamp(x.v, 0, 1);
+        map_at(x.as, x.v, 0, 1, BASE, RW | CAN_RW);   /* no entry yet: a store faults */
+        struct vmo *c1, *c2 = NULL;
+        KT_EQ(vmo_clone_begin(NULL, x.v, &c1), OK);   /* frozen until vmo_clone_end */
+        struct thread *t = start_waiter(&x);
+        status_t st = vmo_clone_begin(NULL, x.v, &c2);
+        vmo_clone_end(x.v);   /* the first freeze ends */
+        bool went = set_within(&x.done, 500);
+        if (st == OK) {   /* frozen still, by the second */
+            vmo_clone_end(x.v);
+            put(c2);
+        }
+        thread_join(t);
+        kprintf("vmar_clone_writer_first: %s waiting, a second freeze %s, the writer %s at "
+                "the first's end\n",
+                what[k], st == OK ? "began" : "backed off", went ? "went on" : "waited on");
+        KT_EQ(st, ERR_SHOULD_WAIT);
+        KT_ASSERT(went);
+        KT_EQ(x.st, OK);
+        put(c1);
+        aspace_unref(x.as);
+        put(x.v);
+    }
+    /* A child's creation doesn't pass a waiting writer either: it waits,
+     * and its child holds the write. */
+    struct fc_ctx x = { .v = mk(1) };
+    stamp(x.v, 0, 1);
+    struct vmo *c1;
+    KT_EQ(vmo_clone_begin(NULL, x.v, &c1), OK);
+    struct thread *t = start_waiter(&x);
+    struct cc_ctx cc = { .p = x.v };
+    struct thread *ct = thread_create("kt-fz-child", cc_creator, &cc, PRIO_DEFAULT);
+    thread_sleep_ms(10);
+    bool early = __atomic_load_n(&cc.done, __ATOMIC_ACQUIRE);
+    vmo_clone_end(x.v);
+    thread_join(t);
+    thread_join(ct);
+    uint64_t got = cc.st == OK ? word(cc.c, 0) : 0;
+    kprintf("vmar_clone_writer_first: a child's creation %s the waiting writer, its child "
+            "holds %lu\n", early ? "went ahead of" : "waited for", got);
+    KT_ASSERT(!early);
+    KT_EQ(cc.st, OK);
+    KT_EQ(got, 7);
+    put(cc.c);
+    put(c1);
+    put(x.v);
+}
+
+/* Writers on one VMO while three threads fork address spaces mapping it
+ * as a copy (one each: a clone holds its source's lock) in loops, each
+ * clone holding it frozen 1 to 2 ms (DBG_VMAR_CLONE_WALKED), so their
+ * freezes overlap nearly all the time: every write is done within a
+ * bound (without FZ a writer waited for as long as the forks went on),
+ * and each child keeps the bytes it was cloned with. */
+enum { WB_CLONERS = 3, WB_RUN_MS = 1000, WB_BOUND_MS = 250 };
+
+struct wb_ctx;
+struct wb_cl {
+    struct wb_ctx *s;
+    struct aspace *src;
+};
+
+struct wb_ctx {
+    struct job    *j;
+    struct aspace *b;
+    struct vmo    *v;
+    struct wb_cl   cl[WB_CLONERS];
+    bool           stop;        /* atomic */
+    uint64_t       clones;      /* atomic */
+    uint64_t       writes[2];   /* each writer's count */
+    uint64_t       worst[2];    /* each writer's longest write, ns */
+};
+
+static struct wb_ctx *wb;
+
+static void wb_hook(void *arg)
+{
+    struct wb_ctx *s = __atomic_load_n(&wb, __ATOMIC_ACQUIRE);
+    if (!s || (arg != s->cl[0].src && arg != s->cl[1].src && arg != s->cl[2].src))
+        return;
+    uint64_t now = uptime_ns();
+    uint64_t end = now + 1000000 + now % 1000000;
+    while (uptime_ns() < end)
+        cpu_relax();
+}
+
+static void wb_cloner(void *arg)
+{
+    struct wb_cl *cl = arg;
+    struct wb_ctx *s = cl->s;
+    struct aspace *was = NULL;
+    struct vmo *c = NULL;
+    uint64_t a = 0, b = 0;
+    while (!__atomic_load_n(&s->stop, __ATOMIC_ACQUIRE)) {
+        struct aspace *dst = new_as(s->j);
+        struct vmo *n = NULL;
+        KT_EQ(clone1(cl->src, dst, s->v, &n), OK);
+        /* The writers went on in the parent through this clone: none of
+         * it reached the last child. */
+        if (c && (word(c, 0) != a || word(c, 1) != b))
+            ktest_fail("vmar_clone_writer_bounded: a parent's write reached a child");
+        if (c) {
+            put(c);
+            aspace_unref(was);
+        }
+        c = n;
+        was = dst;
+        a = word(c, 0);
+        b = word(c, 1);
+        __atomic_add_fetch(&s->clones, 1, __ATOMIC_RELAXED);
+    }
+    if (c) {
+        put(c);
+        aspace_unref(was);
+    }
+}
+
+static void wb_note(struct wb_ctx *s, int k, uint64_t t0)
+{
+    uint64_t d = uptime_ns() - t0;
+    if (d > s->worst[k])
+        s->worst[k] = d;
+    s->writes[k]++;
+}
+
+static void wb_vmo_writer(void *arg)
+{
+    struct wb_ctx *s = arg;
+    for (uint64_t n = 1; !__atomic_load_n(&s->stop, __ATOMIC_ACQUIRE); n++) {
+        uint64_t t0 = uptime_ns();
+        KT_EQ(vmo_write(s->v, 0, &n, 8), OK);
+        wb_note(s, 0, t0);
+    }
+}
+
+static void wb_store_writer(void *arg)
+{
+    struct wb_ctx *s = arg;
+    enter(s->b, NULL);
+    for (uint64_t n = 1; !__atomic_load_n(&s->stop, __ATOMIC_ACQUIRE); n++) {
+        uint64_t t0 = uptime_ns();
+        if (copy_to_user(BASE + PG, &n, 8) != OK)
+            ktest_fail("vmar_clone_writer_bounded: a store failed");
+        wb_note(s, 1, t0);
+    }
+    enter(NULL, s->b);
+}
+
+KTEST(vmar_clone_writer_bounded)
+{
+    if (cpu_count < 2) {
+        kprintf("vmar_clone_writer_bounded: needs 2 CPUs, skipped\n");
+        return;
+    }
+    struct wb_ctx *s = kzalloc(sizeof(*s));
+    KT_ASSERT(s);
+    s->j = kt_fresh_job();
+    KT_EQ(vmo_create_for(s->j, 2 * PG, 0, &s->v), OK);
+    s->b = new_as(s->j);
+    map_at(s->b, s->v, 0, 2, BASE, RW | CAN_RW);   /* another process's, writing it */
+    KT_EQ(uput(s->b, BASE, 0), OK);
+    KT_EQ(uput(s->b, BASE + PG, 0), OK);
+    unsigned nc = cpu_count > WB_CLONERS ? WB_CLONERS : cpu_count - 1;
+    for (unsigned k = 0; k < nc; k++) {
+        s->cl[k] = (struct wb_cl){ .s = s, .src = new_as(s->j) };
+        map_at(s->cl[k].src, s->v, 0, 2, BASE, RW | CAN_RW);   /* a copy: frozen by each clone */
+    }
+    uint64_t backoffs = __atomic_load_n(&vmo_freeze_backoffs, __ATOMIC_RELAXED);
+    uint64_t turns = __atomic_load_n(&vmo_freeze_turns, __ATOMIC_RELAXED);
+    __atomic_store_n(&wb, s, __ATOMIC_RELEASE);
+    __atomic_store_n(&dbg_hooks[DBG_VMAR_CLONE_WALKED], wb_hook, __ATOMIC_RELEASE);
+    struct thread *t[WB_CLONERS];
+    for (unsigned k = 0; k < nc; k++) {
+        cpumask_t m;
+        cpumask_one(&m, 1 + k);
+        t[k] = thread_create_on("kt-wb-cloner", wb_cloner, &s->cl[k], PRIO_DEFAULT, &m);
+    }
+    struct thread *w0 = thread_create("kt-wb-write", wb_vmo_writer, s, PRIO_DEFAULT);
+    struct thread *w1 = thread_create("kt-wb-store", wb_store_writer, s, PRIO_DEFAULT);
+    thread_sleep_ms(WB_RUN_MS);
+    __atomic_store_n(&s->stop, true, __ATOMIC_RELEASE);
+    for (unsigned k = 0; k < nc; k++)
+        thread_join(t[k]);
+    thread_join(w0);
+    thread_join(w1);
+    __atomic_store_n(&dbg_hooks[DBG_VMAR_CLONE_WALKED], NULL, __ATOMIC_RELEASE);
+    __atomic_store_n(&wb, NULL, __ATOMIC_RELEASE);
+    kprintf("vmar_clone_writer_bounded: %lu clones, %lu writes (longest %lu us), %lu stores "
+            "(longest %lu us), %lu back-offs, %lu turns\n",
+            s->clones, s->writes[0], s->worst[0] / 1000, s->writes[1], s->worst[1] / 1000,
+            __atomic_load_n(&vmo_freeze_backoffs, __ATOMIC_RELAXED) - backoffs,
+            __atomic_load_n(&vmo_freeze_turns, __ATOMIC_RELAXED) - turns);
+    KT_ASSERT(s->clones > 0);
+    KT_ASSERT(s->writes[0] > 0 && s->writes[1] > 0);
+    KT_IDLE_ASSERT(s->worst[0] < WB_BOUND_MS * NS_PER_MS);
+    KT_IDLE_ASSERT(s->worst[1] < WB_BOUND_MS * NS_PER_MS);
+    stamp(s->v, 0, 0x5eed);   /* nothing stays frozen */
+    KT_EQ(uword(s->b, BASE), 0x5eed);
+    for (unsigned k = 0; k < nc; k++)
+        aspace_unref(s->cl[k].src);
+    aspace_unref(s->b);
+    put(s->v);
+    kt_job_is_empty(s->j);
+    job_unref(s->j);
+    kfree(s);
+}
+
+/* A clone of two VMOs mapped as copies (each word 1), which a hook
+ * (DBG_VMO_CLONE_BEGIN) can pause before it begins the second VMO of its
+ * walk, the first frozen. */
+struct bo_ctx {
+    struct aspace          *src, *dst;
+    struct vmo             *v[2];    /* mapped at BASE and BASE + 16 pages */
+    struct aspace_clone_req r[2];
+    struct thread          *cloner;  /* atomic */
+    struct vmo             *first;   /* the first VMO it began: its walk's order */
+    int                     begins;  /* atomic: its vmo_clone_begin calls */
+    int                     hold;    /* atomic: pause it before the other VMO */
+    int                     held;    /* atomic: paused there */
+    int                     done;    /* atomic */
+    status_t                st;
+};
+
+static struct bo_ctx *bo;
+
+static void bo_hook(void *arg)
+{
+    struct bo_ctx *x = __atomic_load_n(&bo, __ATOMIC_ACQUIRE);
+    if (!x || current_thread() != __atomic_load_n(&x->cloner, __ATOMIC_ACQUIRE))
+        return;
+    if (!x->first)
+        x->first = arg;
+    __atomic_add_fetch(&x->begins, 1, __ATOMIC_RELEASE);
+    if (arg == x->first || !__atomic_load_n(&x->hold, __ATOMIC_ACQUIRE))
+        return;
+    __atomic_store_n(&x->held, 1, __ATOMIC_RELEASE);
+    while (__atomic_load_n(&x->hold, __ATOMIC_ACQUIRE))
+        thread_sleep_ms(1);
+}
+
+static void bo_cloner(void *arg)
+{
+    struct bo_ctx *x = arg;
+    __atomic_store_n(&x->cloner, current_thread(), __ATOMIC_RELEASE);
+    x->st = aspace_clone(x->src, x->dst, x->r, 2);
+    __atomic_store_n(&x->done, 1, __ATOMIC_RELEASE);
+}
+
+static struct bo_ctx *bo_new(void)
+{
+    struct bo_ctx *x = kzalloc(sizeof(*x));
+    KT_ASSERT(x);
+    x->src = new_as(NULL);
+    x->dst = new_as(NULL);
+    for (int i = 0; i < 2; i++) {
+        x->v[i] = mk(1);
+        stamp(x->v[i], 0, 1);
+        map_at(x->src, x->v[i], 0, 1, BASE + i * 16 * PG, RW | CAN_RW);
+        x->r[i].v = x->v[i];
+    }
+    return x;
+}
+
+/* Where v is mapped, and its child (aspace_clone sorted r). */
+static uint64_t bo_at(struct bo_ctx *x, struct vmo *v)
+{
+    return v == x->v[0] ? BASE : BASE + 16 * PG;
+}
+
+static struct vmo *bo_child(struct bo_ctx *x, struct vmo *v)
+{
+    return x->r[0].v == v ? x->r[0].child : x->r[1].child;
+}
+
+static void bo_start(struct bo_ctx *x, struct thread **t)
+{
+    __atomic_store_n(&bo, x, __ATOMIC_RELEASE);
+    __atomic_store_n(&dbg_hooks[DBG_VMO_CLONE_BEGIN], bo_hook, __ATOMIC_RELEASE);
+    *t = thread_create("kt-bo-cloner", bo_cloner, x, PRIO_DEFAULT);
+}
+
+static void bo_stop(void)
+{
+    __atomic_store_n(&dbg_hooks[DBG_VMO_CLONE_BEGIN], NULL, __ATOMIC_RELEASE);
+    __atomic_store_n(&bo, NULL, __ATOMIC_RELEASE);
+}
+
+static void bo_free(struct bo_ctx *x)
+{
+    for (int i = 0; i < 2; i++) {
+        if (x->r[i].child)
+            put(x->r[i].child);
+        put(x->v[i]);
+    }
+    aspace_unref(x->src);
+    aspace_unref(x->dst);
+    kfree(x);
+}
+
+/* Up to the patience: until x's cloner has called vmo_clone_begin n times. */
+static bool bo_begun(struct bo_ctx *x, int n)
+{
+    uint64_t end = uptime_ns() + kt_patience_ms(1000) * NS_PER_MS;
+    while (__atomic_load_n(&x->begins, __ATOMIC_ACQUIRE) < n && uptime_ns() < end)
+        thread_sleep_ms(1);
+    return __atomic_load_n(&x->begins, __ATOMIC_ACQUIRE) >= n;
+}
+
+/* The clone holds va frozen (a writer waits for it) and meets vb, whose
+ * writer waits for another freezer's freeze: it lets va go, so va's
+ * writer goes on, and waits. The other freezer then takes va (nobody
+ * waits there now) and is done; vb's writer goes on, and the clone starts
+ * again and completes, holding both writes. Without FZ the clone froze vb
+ * too and completed at once, holding neither. */
+KTEST(vmar_clone_backs_off)
+{
+    struct bo_ctx *x = bo_new();
+    uint64_t backoffs = __atomic_load_n(&vmo_freeze_backoffs, __ATOMIC_RELAXED);
+    __atomic_store_n(&x->hold, 1, __ATOMIC_RELEASE);
+    struct thread *ct;
+    bo_start(x, &ct);
+    if (!set_within(&x->held, 1000))
+        ktest_fail("vmar_clone_backs_off: the clone never reached its second VMO");
+    struct vmo *va = x->first, *vb = va == x->v[0] ? x->v[1] : x->v[0];
+    struct fc_ctx wa = { .v = va }, wb = { .v = vb };
+    struct thread *ta = start_waiter(&wa);
+    struct vmo *cf, *cf2 = NULL;
+    KT_EQ(vmo_clone_begin(NULL, vb, &cf), OK);
+    struct thread *tb = start_waiter(&wb);
+    __atomic_store_n(&x->hold, 0, __ATOMIC_RELEASE);
+    bool a_went = set_within(&wa.done, 500);
+    bool waits = !__atomic_load_n(&x->done, __ATOMIC_ACQUIRE);
+    status_t sa = vmo_clone_begin(NULL, va, &cf2);
+    if (sa == OK)
+        vmo_clone_end(va);
+    vmo_clone_end(vb);
+    bool b_went = set_within(&wb.done, 500);
+    bool done = set_within(&x->done, 1000);
+    bo_stop();
+    kprintf("vmar_clone_backs_off: va's writer %s, the clone %s, vb's writer %s, the clone "
+            "%s (%lu back-offs)\n",
+            a_went ? "went on" : "waited on", waits ? "waited" : "went on",
+            b_went ? "went on" : "waited on", done ? "completed" : "never completed",
+            __atomic_load_n(&vmo_freeze_backoffs, __ATOMIC_RELAXED) - backoffs);
+    KT_ASSERT(a_went);
+    KT_ASSERT(waits);
+    KT_EQ(sa, OK);
+    KT_ASSERT(b_went);
+    KT_ASSERT(done);
+    thread_join(ta);
+    thread_join(tb);
+    thread_join(ct);
+    put(cf);
+    if (cf2)
+        put(cf2);
+    KT_EQ(wa.st, OK);
+    KT_EQ(wb.st, OK);
+    KT_EQ(x->st, OK);
+    KT_EQ(aspace_check(x->dst), 2);
+    struct vmo *ca = bo_child(x, va), *cb = bo_child(x, vb);
+    KT_EQ(word(ca, 0), 7);   /* the try that completed began after both writes */
+    KT_EQ(word(cb, 0), 7);
+    /* And holds nothing later: the parent's writes stay out of the child,
+     * the child's out of the parent. */
+    uint64_t at = bo_at(x, va);
+    KT_EQ(uput(x->src, at, 8), OK);
+    stamp(vb, 0, 8);
+    KT_EQ(uword(x->dst, at), 7);
+    KT_EQ(uword(x->dst, bo_at(x, vb)), 7);
+    KT_EQ(uput(x->dst, at, 9), OK);
+    KT_EQ(uword(x->src, at), 8);
+    KT_EQ(uword(x->dst, at), 9);
+    bo_free(x);
+}
+
+/* The clone meets this thread's freeze turn at its first begin and waits
+ * for the turn. With the turn it holds va frozen (a writer waits for it)
+ * while it waits for vb's writer, which waits for this thread's freeze of
+ * vb. This thread's next freeze, of va, backs off (the turn is the
+ * clone's), it lets vb go, and everything goes on: no deadlock. */
+KTEST(vmar_clone_turn_waits)
+{
+    struct bo_ctx *x = bo_new();
+    uint64_t turns = __atomic_load_n(&vmo_freeze_turns, __ATOMIC_RELAXED);
+    bool turn = false;
+    KT_EQ(vmo_freeze_backoff(x->v[0], 1000, &turn), OK);   /* past any try: the turn */
+    KT_ASSERT(turn);
+    struct thread *ct;
+    bo_start(x, &ct);
+    if (!bo_begun(x, 1))
+        ktest_fail("vmar_clone_turn_waits: the clone never began");
+    thread_sleep_ms(20);
+    if (__atomic_load_n(&x->done, __ATOMIC_ACQUIRE)) {
+        vmo_freeze_turn_end();
+        bo_stop();
+        ktest_fail("vmar_clone_turn_waits: the clone went on past another thread's turn");
+    }
+    struct vmo *va = x->first, *vb = va == x->v[0] ? x->v[1] : x->v[0];
+    struct vmo *cf, *cf2 = NULL;
+    KT_EQ(vmo_clone_begin(NULL, vb, &cf), OK);   /* with the turn: no writer, so it begins */
+    struct fc_ctx wa = { .v = va }, wb = { .v = vb };
+    struct thread *tb = start_waiter(&wb);
+    vmo_freeze_turn_end();
+    bool second = bo_begun(x, 3);   /* va again, then vb: waiting for vb's writer */
+    thread_sleep_ms(10);
+    struct thread *ta = start_waiter(&wa);
+    status_t sa = vmo_clone_begin(NULL, va, &cf2);
+    if (sa == OK)
+        vmo_clone_end(va);
+    bool waits = !__atomic_load_n(&x->done, __ATOMIC_ACQUIRE);
+    vmo_clone_end(vb);
+    bool b_went = set_within(&wb.done, 500);
+    bool done = set_within(&x->done, 1000);
+    bool a_went = set_within(&wa.done, 500);
+    bo_stop();
+    kprintf("vmar_clone_turn_waits: the clone began again with the turn %s, another freeze of "
+            "va %s, vb's writer %s, the clone %s, va's writer %s (%lu turns)\n",
+            second ? "and waited at vb" : "never", sa == OK ? "began" : "backed off",
+            b_went ? "went on" : "waited on", done ? "completed" : "never completed",
+            a_went ? "went on" : "waited on",
+            __atomic_load_n(&vmo_freeze_turns, __ATOMIC_RELAXED) - turns);
+    KT_ASSERT(second);
+    KT_EQ(sa, ERR_SHOULD_WAIT);
+    KT_ASSERT(waits);
+    KT_ASSERT(b_went);
+    KT_ASSERT(done);
+    KT_ASSERT(a_went);
+    KT_ASSERT(__atomic_load_n(&vmo_freeze_turns, __ATOMIC_RELAXED) - turns >= 2);
+    thread_join(ta);
+    thread_join(tb);
+    thread_join(ct);
+    put(cf);
+    if (cf2)
+        put(cf2);
+    KT_EQ(x->st, OK);
+    KT_EQ(aspace_check(x->dst), 2);
+    KT_EQ(word(bo_child(x, vb), 0), 7);   /* vb's writer went first */
+    KT_EQ(word(bo_child(x, va), 0), 1);   /* va's writer waited for the clone */
+    KT_EQ(word(va, 0), 7);
+    bo_free(x);
 }

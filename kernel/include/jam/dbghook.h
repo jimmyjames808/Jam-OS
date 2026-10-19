@@ -50,6 +50,11 @@ enum {
                               (arg: the process) */
     DBG_PAGER_VMO_DYING,   /* vmo.c vmo_destroy, a pager VMO's pages freed, before its link
                               hears of it (pager_vmo_gone); no lock held (arg: the VMO) */
+    DBG_VMO_CLONE_BEGIN,   /* vmo.c vmo_clone_begin, before its freeze begins; the clone's
+                              source region lock held, no spinlock (arg: the VMO) */
+    DBG_VMAR_CLONE_WALKED, /* aspace.c aspace_clone, the walk done (every copied VMO frozen),
+                              before the shootdown; the source region lock held, no
+                              spinlock (arg: the source address space) */
     DBG_N
 };
 

@@ -237,7 +237,12 @@
  * was when its VMO was frozen, or later through a write a thread still
  * had a stale writable entry for (a write the parent sees too, in the same
  * page); and anything a write that waited came after was not in the child
- * either: no copy is torn (vmo.c's header has the argument).
+ * either: no copy is torn (vmo.c's header has the argument). A VMO whose
+ * writers are waiting for someone else's freeze isn't frozen again: the
+ * clone backs off, undoing its try as on an error, lets the source's lock
+ * go, waits for those writers and starts again; after FREEZE_TRIES it
+ * waits for the freeze turn, which never backs off (vmo.c's "Freezes and
+ * writers"). The try that completes is a whole clone as above.
  * The new mappings ("twins") are made in a tree of their own while the
  * source's lock is held, each on its VMO's reverse map at once, and the
  * tree is moved into the destination under the destination's lock after
@@ -2024,27 +2029,21 @@ static status_t clone_install(struct aspace *dst, struct aspace *stg, uint64_t t
     return st;
 }
 
-status_t aspace_clone(struct aspace *src, struct aspace *dst, struct aspace_clone_req *r,
-                      uint32_t n)
+/* One try of aspace_clone, with r[] holding no child. ERR_SHOULD_WAIT: a
+ * copied VMO's freeze backed off (vmo_clone_begin) and everything was
+ * undone as on an error; *wait is that VMO (a reference of the
+ * caller's). */
+static status_t clone_try(struct aspace *src, struct aspace *dst, struct aspace_clone_req *r,
+                          uint32_t n, struct vmo **wait)
 {
-    if (src == dst)
-        return ERR_BAD_STATE;
-    for (uint32_t i = 0; i < n; i++)
-        r[i].child = NULL;
-    mutex_lock(&dst->lock);
-    bool empty = dst->nmaps == 0;
-    mutex_unlock(&dst->lock);
-    if (!empty)
-        return ERR_BAD_STATE;
     /* The twins are made in a tree of their own, installed in dst at the
-     * end: the two region locks are never held at once. */
+     * end: the two region locks are never held at once. A new one each
+     * try (staging_free leaves its trees as they were). */
     struct aspace *stg = kzalloc(sizeof(*stg));
     if (!stg)
         return ERR_NO_MEMORY;
     avl_init(&stg->maps, gap_update);
     avl_init(&stg->vmaps, vmax_update);
-    reqs_sort(r, n);
-
     mutex_lock(&src->lock);
     uint32_t made = 0;
     uint64_t tables = 0;
@@ -2061,10 +2060,15 @@ status_t aspace_clone(struct aspace *src, struct aspace *dst, struct aspace_clon
     if (st == OK) {
         st = clone_walk(src, dst, stg, r, n, &g, &stop, &begun);
         walked = true;
+        DBG_HOOK(DBG_VMAR_CLONE_WALKED, src);
     }
     tlb_gather_finish(&g);   /* every copied VMO's write-protects, in one shootdown */
     if (walked)
         clone_end_all(src, stop, begun);
+    if (st == ERR_SHOULD_WAIT && stop) {
+        *wait = stop->vmo;   /* it may be unmapped once the lock goes */
+        kobject_ref(vmo_kobject(*wait));
+    }
     mutex_unlock(&src->lock);
 
     if (st == OK)
@@ -2080,6 +2084,40 @@ status_t aspace_clone(struct aspace *src, struct aspace *dst, struct aspace_clon
             job_uncharge(dst->job, JOB_LIMIT_PAGES, tables + map_pages_for(made));
     }
     kfree(stg);
+    return st;
+}
+
+status_t aspace_clone(struct aspace *src, struct aspace *dst, struct aspace_clone_req *r,
+                      uint32_t n)
+{
+    if (src == dst)
+        return ERR_BAD_STATE;
+    for (uint32_t i = 0; i < n; i++)
+        r[i].child = NULL;
+    mutex_lock(&dst->lock);
+    bool empty = dst->nmaps == 0;
+    mutex_unlock(&dst->lock);
+    if (!empty)
+        return ERR_BAD_STATE;
+    reqs_sort(r, n);
+    /* A freeze that would keep a writer of its VMO waiting backs off: the
+     * clone starts again once the writers went on, and after a few times
+     * with the freeze turn, which never backs off (vmo.c's "Freezes and
+     * writers"). */
+    status_t st;
+    bool turn = false;
+    for (unsigned tries = 1;; tries++) {
+        struct vmo *wait = NULL;
+        st = clone_try(src, dst, r, n, &wait);
+        if (!wait)
+            break;
+        st = vmo_freeze_backoff(wait, tries, &turn);
+        kobject_unref(vmo_kobject(wait));
+        if (st != OK)
+            break;
+    }
+    if (turn)
+        vmo_freeze_turn_end();
     return st;
 }
 
