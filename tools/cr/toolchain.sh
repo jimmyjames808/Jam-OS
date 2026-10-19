@@ -27,9 +27,14 @@
 #           ~/.cache/jamos/toolchains/test-fonts-<version>/ (track CB1)
 #   go      the Go Dawn's build runs, unpacked into
 #           ~/.cache/jamos/toolchains/go-<version>/ (track CB1)
+#   jetstream, speedometer  not toolchains: the JetStream 2.2 and
+#           Speedometer 3.1 benchmarks cr-test.sh's bench case serves
+#           (CR-e), unpacked into ~/.cache/jamos/toolchains/<name>-<commit>/
+#           (fetched only when named)
 #
 #   tools/cr/toolchain.sh [clang] [cmake] [rust] [gperf] [node] [sysroot] [test-fonts] [go]
-#                                             (no names: all)
+#                         [jetstream] [speedometer]
+#                                             (no names: all the toolchains)
 #   tools/cr/toolchain.sh --dir clang         prints clang's directory (or another's)
 #   JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh tools/cr/toolchain.sh
 #
@@ -249,8 +254,12 @@ for n in "${names[@]}"; do
     sysroot) get_unpacked sysroot usr/include/stdio.h || rc=1 ;;
     test-fonts) get_unpacked test-fonts Ahem.ttf || rc=1 ;;
     go) get_unpacked go go/bin/go || rc=1 ;;
+    jetstream) get_unpacked jetstream "JetStream-$(pin jetstream | awk '{ print $2 }')/JetStreamDriver.js" ||
+        rc=1 ;;
+    speedometer) get_unpacked speedometer \
+        "Speedometer-$(pin speedometer | awk '{ print $2 }')/resources/main.mjs" || rc=1 ;;
     *) echo "toolchain: no toolchain called $n (clang, cmake, rust, gperf, node, sysroot," \
-            "test-fonts, go)" >&2; rc=2 ;;
+            "test-fonts, go, jetstream, speedometer)" >&2; rc=2 ;;
     esac
 done
 exit $rc

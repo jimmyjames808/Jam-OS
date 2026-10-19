@@ -85,6 +85,27 @@
 #           process left); tools/cr/multi-check.py checks the screenshots
 #           (<outdir>/multi/run/multi-{page,killed,reload}.png) and the log;
 #           about 2 minutes
+#   jit     content_shell (CR-e) as multi, with V8's compilers in the
+#           renderer (its list's `right jit`; ports/chromium's patches 0913
+#           and 0914): it loads tools/cr/jit.html by name twice, with the JIT
+#           (--js-flags=--trace-opt) and --jitless; the page times a hot loop
+#           in JavaScript and in WebAssembly and makes a WebAssembly memory
+#           trap; tools/cr/jit.txt checks that `ps` marks exactly one process
+#           [jit] (the renderer) the first time and none the second, and
+#           tools/cr/jit-check.py the results, TurboFan's line, the speed-up
+#           (3x at least) and the screenshots; the timings in
+#           <outdir>/jit/check.out; about 3 minutes
+#   bench   content_shell as jit, running parts of JetStream 2.2 and
+#           Speedometer 3.1 (tools/cr/toolchain.sh fetches them, pinned;
+#           tools/cr/bench-server.py serves them with a reporter that says
+#           the results as console lines): CR_BENCH_RUNS (default
+#           "jetstream-js:jit jetstream-js:jitless jetstream-wasm:jit
+#           speedometer:jit speedometer:jitless", each <run>:<jit|jitless>,
+#           the runs bench-server.py's RUNS), one content_shell each, in
+#           one boot (CR_BENCH_TIMEOUT seconds in all, 14400);
+#           tools/cr/bench-check.py makes the table (<outdir>/bench/check.out,
+#           the lines docs/BENCH.md takes); PASS if every run said a score;
+#           an hour or more: a long run (pc-batch.sh start --detach)
 #
 # The toolchain is fetched first if it isn't there (tools/cr/toolchain.sh:
 # clang, cmake, and for `rust` Rust; gperf, which Chromium's build needs, is
@@ -278,7 +299,13 @@ case_base() {
 # http.server here) as page.html, and QEMU booted from the stick with a USB
 # keyboard and mouse, <script> fed to the shell (the log and screenshots in
 # <dir>/run/<name>.*). Returns qemu-test.sh's status, or 2 with <dir>/result
-# written when a piece is missing. The shell-wl and multi cases.
+# written when a piece is missing. The shell-wl, multi, jit and bench cases;
+# the web server is $serve (default serve_web: the page's directory) on the
+# port it is given.
+serve_web() {
+    python3 -m http.server "$1" --bind 127.0.0.1 --directory "$dir/web"
+}
+
 shell_run() {
     dir=$1
     cr=${CR_DIR:-$HOME/cr}
@@ -314,7 +341,7 @@ shell_run() {
     sed 's/^/cr-test: /' "$dir/stick.out"
     # shellcheck disable=SC2046 # one word, the port
     set -- "$@" $(python3 tools/netpeer.py --free-ports 1)
-    python3 -m http.server "$7" --bind 127.0.0.1 --directory "$dir/web" > "$dir/http.log" 2>&1 &
+    ${serve:-serve_web} "$7" > "$dir/http.log" 2>&1 &
     hpid=$!
     QEMU_IMAGE=$stick QEMU_INPUT=$3 QEMU_TIMEOUT=${QEMU_TIMEOUT:-$6} \
         QEMU_MEM=${QEMU_MEM:-$5} QEMU_NET=1 QEMU_NET_PEER="--tcp-relay 8000:$7" \
@@ -485,6 +512,80 @@ case_multi() {
     sed 's/^/cr-test: /' "$dir/check.out"
 }
 
+case_jit() {
+    dir=$out/jit
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    shell_run "$dir" tools/cr/jit.html tools/cr/jit.txt jit "${CR_MULTI_MEM:-6G}" 900
+    qrc=$?
+    [ $qrc = 2 ] && [ -f "$dir/result" ] && return
+    grep -a -o 'crjit: [^"]*' "$dir/run/jit.log" 2> /dev/null | uniq | sed 's/^/cr-test: page said: /'
+    if [ $qrc -ne 0 ]; then
+        echo "FAIL (the script: $(grep 'serial-feed: .*: no ' "$dir/qemu.out" | tail -1 | sed 's/^serial-feed: //'), see $dir/run/)" > "$dir/result"
+        return
+    fi
+    if python3 tools/cr/jit-check.py "$dir/run" > "$dir/check.out" 2>&1; then
+        echo PASS > "$dir/result"
+    else
+        echo "FAIL (the checks, see $dir/check.out)" > "$dir/result"
+    fi
+    sed 's/^/cr-test: /' "$dir/check.out"
+}
+
+# bench: the benchmarks, served with the reporter (bench-server.py).
+serve_bench() {
+    python3 tools/cr/bench-server.py "$bench_js" "$bench_sp" "$1" "$dir/bench.log"
+}
+
+case_bench() {
+    dir=$out/bench
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    runs=${CR_BENCH_RUNS:-jetstream-js:jit jetstream-js:jitless jetstream-wasm:jit speedometer:jit speedometer:jitless}
+    if ! tools/cr/toolchain.sh jetstream speedometer > "$dir/fetch.log" 2>&1; then
+        echo "FAIL (the benchmarks' fetch, see $dir/fetch.log)" > "$dir/result"
+        return
+    fi
+    bench_js=$(tools/cr/toolchain.sh --dir jetstream)/JetStream-$(awk '$1 == "jetstream" { print $2 }' tools/cr/toolchain.pins)
+    bench_sp=$(tools/cr/toolchain.sh --dir speedometer)/Speedometer-$(awk '$1 == "speedometer" { print $2 }' tools/cr/toolchain.pins)
+    # The script: jit.txt's start, then each run the way jit.txt runs one.
+    {
+        sed -n '/^wait 120 Jam OS shell/,/^send H=/p' tools/cr/jit.txt
+        echo "wait {prompt}"
+        n=0
+        for r in $runs; do
+            n=$((n + 1))
+            name=${r%%:*}
+            flags=
+            [ "${r#*:}" = jitless ] && flags=--js-flags=--jitless
+            echo "send run \$H --no-sandbox --no-zygote --disable-gpu --enable-logging=stderr $flags http://www.jam:8000/run/$name &"
+            echo "wait 5400 crbench: done"
+            echo "sleep 2"
+            echo "shot bench-$n-$name-${r#*:}"
+            printf '%s\n' "pointer 1000 600" "monitor mouse_button 1" "monitor mouse_button 0" "sleep 1" \
+                "monitor sendkey meta_l-q" "sleep 20" "pointer 300 400" "monitor mouse_button 1" \
+                "monitor mouse_button 0" "sleep 1" "send jobs" "wait {prompt}"
+        done
+        printf '%s\n' "send reboot -f" "wait 60 reboot: resetting"
+    } > "$dir/bench.txt"
+    serve=serve_bench shell_run "$dir" tools/cr/jit.html "$dir/bench.txt" bench "${CR_MULTI_MEM:-6G}" \
+        "${CR_BENCH_TIMEOUT:-14400}"
+    qrc=$?
+    [ $qrc = 2 ] && [ -f "$dir/result" ] && return
+    grep -a -o 'crbench: [^"]*' "$dir/run/bench.log" 2> /dev/null | uniq | sed 's/^/cr-test: page said: /'
+    # shellcheck disable=SC2086 # the runs are words
+    python3 tools/cr/bench-check.py "$dir/run/bench.log" $runs > "$dir/check.out" 2>&1
+    crc=$?
+    if [ $qrc -ne 0 ]; then
+        echo "FAIL (the script: $(grep 'serial-feed: .*: no ' "$dir/qemu.out" | tail -1 | sed 's/^serial-feed: //'), see $dir/run/)" > "$dir/result"
+    elif [ $crc -eq 0 ]; then
+        echo PASS > "$dir/result"
+    else
+        echo "FAIL (the scores, see $dir/check.out)" > "$dir/result"
+    fi
+    sed 's/^/cr-test: /' "$dir/check.out"
+}
+
 for c in "$@"; do
     case $c in
     hello) case_hello ;;
@@ -493,7 +594,9 @@ for c in "$@"; do
     shell-wl) case_shell_wl ;;
     headless) case_headless ;;
     multi) case_multi ;;
-    *) echo "cr-test: no case $c (hello, rust, base, shell-wl, headless, multi)" >&2
+    jit) case_jit ;;
+    bench) case_bench ;;
+    *) echo "cr-test: no case $c (hello, rust, base, shell-wl, headless, multi, jit, bench)" >&2
        mkdir -p "$out/$c"
        echo "FAIL (no such case)" > "$out/$c/result" ;;
     esac

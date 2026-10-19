@@ -1,0 +1,70 @@
+# cr-test.sh's jit script (docs/CR-PLAN.md, CR-e): content_shell with every
+# process type its own (--no-zygote --no-sandbox, as the multi case) loads
+# tools/cr/jit.html by name twice: first with V8's compilers in the
+# renderer (content_shell's list says `right jit`; the browser keeps the
+# power, every child it forks keeps it across its exec of /proc/self/exe,
+# and every process type but the renderer gives it up at its start:
+# patches 0913 and 0914), the page allowed to ask V8 about its tiers
+# (--allow-natives-syntax); then with --js-flags=--jitless. The page says
+# its timings as console lines ("crjit: ..."), which the browser logs on
+# its stderr. `ps` after each: tools/cr/jit-check.py looks for the
+# renderers alone marked [jit] in the first (the browser holds the power
+# but never maps JIT memory, the rest gave it up) and none in the second.
+# Super+Q closes the window each time (exit 0).
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send export TMPDIR=/data/cr/tmp HOME=/data/cr/tmp FONTCONFIG_FILE=/data/cr/out/jamos/fonts/fonts.conf
+wait {prompt}
+send H=/data/cr/out/jamos/content_shell; U=http://www.jam:8000/page.html
+wait {prompt}
+# with the JIT
+send run $H --no-sandbox --no-zygote --disable-gpu --enable-logging=stderr --js-flags=--allow-natives-syntax $U &
+wait 300 crjit: done
+sleep 2
+shot jit-on
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send ps
+wait {prompt}
+pointer 1000 600
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+monitor sendkey meta_l-q
+sleep 20
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send jobs
+wait 30 re:\[\d+\] +\d+ +done \(exit 0\) +content_shell
+wait {prompt}
+# --jitless: no compiler, no WebAssembly, no process marked
+send run $H --no-sandbox --no-zygote --disable-gpu --enable-logging=stderr --js-flags=--jitless $U &
+wait 600 crjit: done
+sleep 2
+shot jit-off
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send ps
+wait {prompt}
+pointer 1000 600
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+monitor sendkey meta_l-q
+sleep 20
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send jobs
+wait 30 re:\[\d+\] +\d+ +done \(exit 0\) +content_shell
+wait {prompt}
+send reboot -f
+wait 60 reboot: resetting

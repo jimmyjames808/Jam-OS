@@ -64,3 +64,12 @@ test-fonts 9c07d19d9c5e 33413117 f0e9628f9e43e3f3476cde06a1849058de460e0e037b744
 # ~/.cache/jamos/toolchains/go-<version>/ (go/bin/go), which
 # ports/chromium's build links into the tree. Moves with Dawn's DEPS.
 go 1.26.6 66890545 708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89 https://go.dev/dl/go1.26.6.linux-amd64.tar.gz
+# jetstream: JetStream 2.2 (WebKit's JavaScript and WebAssembly benchmark,
+# the JetStream2.2 branch's last commit), not a toolchain but fetched the
+# same way: cr-test.sh's bench case serves it to content_shell in QEMU
+# (docs/CR-PLAN.md, CR-e; the scores in docs/BENCH.md). GitHub's archive of
+# the commit, unpacked into ~/.cache/jamos/toolchains/jetstream-<commit>/.
+jetstream 332d8ee1e4d5c40d9492c56f6865e64a9525ee9f 12352824 d81329a7558faa9f7357e2956b3dfcb3028999da1ba14b696f3626d0e30d4281 https://github.com/WebKit/JetStream/archive/332d8ee1e4d5c40d9492c56f6865e64a9525ee9f.tar.gz jetstream-332d8ee1e4d5.tar.gz
+# speedometer: Speedometer 3.1 (the browser benchmark's release/3.1
+# branch's last commit), for the same case, the same way.
+speedometer 1386415be8fef2f6b6bbdbe1828872471c5d802a 12358793 cfefa818d7789ed2f2b9f3f1bf608cc35e4e8241489eef47049296ce92791313 https://github.com/WebKit/Speedometer/archive/1386415be8fef2f6b6bbdbe1828872471c5d802a.tar.gz speedometer-1386415be8fe.tar.gz
