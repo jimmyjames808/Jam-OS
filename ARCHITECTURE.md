@@ -324,7 +324,11 @@ Every driver and service is a userspace process from the start.
     order just drops counts. Creation costs a reference per shared page
     and one shootdown of the parent's writable entries (made read-only);
     the child is charged then for every page it may come to own, so no
-    later write fails for its job. A kept VMO's pages are copied, never
+    later write fails for its job. A parent is frozen while its children
+    are made: the freeze waits for the `vmo_write` copies under way, so
+    a child's bytes never change after its copy returned, and a wait for
+    someone else's freeze ends at a kill, so a kill or an exec in place is
+    never held up by another process's clone. A kept VMO's pages are copied, never
     shared (a write would swap a page under its kept readers); a pin or a
     kernel mapping separates its shared pages first, and no child shares
     a pinned range. A child of a pager VMO copies the pager's pages as it
@@ -2469,6 +2473,10 @@ failures.
   (Chromium's PartitionAlloc, for its pages), and a signal handler may run
   inside `malloc` and make a call. `tools/checklayerheap.py` (in `make
   check`) proves no object of the layer reaches musl's allocator.
+- **The shell's commands as programs.** Its own commands also exist as
+  programs in the boot image (`user/sysbox/`, the same source files built
+  with `SH_BOX`), so a script, a POSIX program or an `ssh` session can
+  run them; sbase's tools and Lua are in `/boot/usr/bin`.
 - **One user**, uid and gid 1000, named `jam`, home `/data`: `getpwnam` and
   the like read libc's own `/etc` files.
 - **What is libc's alone**, with no service behind it: `/dev`, `/etc`
@@ -4238,6 +4246,11 @@ decisions, is in [docs/HISTORY.md, M8.5](docs/HISTORY.md#audio-a1-a2-as-and-m85-
   and adds user-space load): a test must pass on any run and in any order.
   Every panic names the loop, the seed and the test that was running (its
   note line, in the log and in the panic screen's details).
+- **Where threads wait.** The kernel notes what each thread is waiting for
+  (a channel, a futex, a port, a mutex, a pager request); the shell's
+  `ps -t <pid|name>` lists a process's threads with their states and
+  waits into the kernel log (`debug_command threads`), and
+  `tools/symbolize-threads.py` names the addresses on the host.
 - **DBG_HOOK** injection points (`kernel/include/jam/dbghook.h`) let race
   regression tests stop a thread at an exact line.
 - The RESULTS box: every run ends with a box of the lines that matter
