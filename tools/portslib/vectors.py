@@ -254,6 +254,11 @@ def _grammar_cases(mk, p, text):
     q.files["bin/vec"] = (0o755, tiny_elf(b"posix\nsvc session\n"))
     q.lists["bin/vec"] = b"posix\nsvc session\n"
     mk.package("p-session.jpk", q, "refused")
+    # One asking for the ESP writable: what the next boot runs (M13.7-REVIEW PR1).
+    q = good_package()
+    q.files["bin/vec"] = (0o755, tiny_elf(b"posix\nmount /esp rw\n"))
+    q.lists["bin/vec"] = b"posix\nmount /esp rw\n"
+    mk.package("p-esp.jpk", q, "refused")
 
 
 def index_cases(mk, good, data_pkg):

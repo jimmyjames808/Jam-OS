@@ -93,7 +93,8 @@ bool t_pkgfmt_lists_are_allows(void)
         "svc session", "svc init", "svc devmgr", "svc devmgr-ctl", "svc volumes", "svc net-sys",
         "svc dns-sys", "svc serve", "svc net listen low", "right debug", "svc net", "svc music",
         "svc net listen", "mount /data rw", "mount /data r", "right clock", "right jit",
-        "mount /data rw pkg",
+        "mount /data rw pkg", "mount /esp rw", "mount * rw", "mount /esp r", "mount * r",
+        "mount /usb* rw",
     };
     for (unsigned i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
         char list[96];

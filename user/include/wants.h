@@ -30,7 +30,11 @@
  *                             (every other stick) or * (every mount); a
  *                             writable one can't change the top-level
  *                             `pkg` (the packages' prefix: /jam/pkg, or
- *                             /data/pkg when there is no /jam)
+ *                             /data/pkg when there is no /jam); /esp
+ *                             and * writable (the ESP: what the next
+ *                             boot runs) the build allows only for a
+ *                             service or a test, and `allow` never for
+ *                             a program on /data
  *     mount /data rw pkg      /data writable, the packages' prefix too
  *     mount /jam rw pkg       (still no etc), or /jam: bin/pkg's; the
  *                             build allows them only for a service

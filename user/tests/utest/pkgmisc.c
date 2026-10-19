@@ -79,10 +79,13 @@ static void lists(void)
     EXPECT(!pkg_list_refused((const uint8_t *)"posix\n", 6), "posix alone refused");
     EXPECT(!pkg_list_refused((const uint8_t *)"posix\nmount /data rw\nsvc net\n", 28),
            "an ordinary list refused");
+    static const char reads[] = "posix\nmount /esp r\nmount * r\nmount /usb* rw\n";
+    EXPECT(!pkg_list_refused((const uint8_t *)reads, strlen(reads)), "the ESP read refused");
     static const char *const refused[] = {
         "posix\nsvc session\n", "posix\nsvc init\n", "posix\nsvc devmgr\n", "posix\nsvc devmgr-ctl\n",
         "posix\nsvc volumes\n", "posix\nsvc net-sys\n", "posix\nsvc dns-sys\n", "posix\nsvc serve\n",
         "posix\nsvc net listen low\n", "posix\nright debug\n", "mount /data r\n", "svc net\n",
+        "posix\nmount /esp rw\n", "posix\nmount /data r\nmount * rw\n",   /* PR1: the next boot */
     };
     for (unsigned i = 0; i < sizeof(refused) / sizeof(refused[0]); i++)
         EXPECT(pkg_list_refused((const uint8_t *)refused[i], strlen(refused[i])) != NULL,
