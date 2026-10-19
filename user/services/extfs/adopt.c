@@ -8,7 +8,9 @@
  * svcstate) then carries on from it:
  *
  *   1. the state is checked: the volume's UUID is the one it was made for,
- *      every open file's inode is there with its generation, every view's
+ *      every open file's inode is there with its generation (after step
+ *      2 has forgotten what an uncommitted request made: an fs.open's new
+ *      file never reached the disk), every view's
  *      flags and root in range (the watches' table was taken over before
  *      the mount, state.c: one that fails its own checks starts empty, and
  *      its watcher channels close, the rest carrying on);
@@ -338,6 +340,16 @@ status_t adopt(bool adopted, bool *no_volume)
                                         : kept->made.kind == XF_MADE_DIR   ? XF_DIRS
                                                                            : XF_MAX_MAPS)))
         f.why = "the request's slot out of range";
+    /* The request in progress, not committed: what it made forgotten
+     * before the slots are checked, since a slot it took may name what
+     * never reached the disk (an fs.open's new file: "an open file that
+     * isn't on the volume" gave the whole state up). */
+    if (!f.why && f.k == SVCSTATE_RERUN) {
+        if (journal_has(f.slot))
+            f.k = SVCSTATE_RESEND;   /* done: its answer is in the slot */
+        else
+            unmake(f.slot);
+    }
     if (!f.why)
         f.why = files_check();
     if (!f.why)
@@ -348,12 +360,6 @@ status_t adopt(bool adopted, bool *no_volume)
         f.why = locks_check();
     if (f.why)
         return start_fresh(&f);
-    if (f.k == SVCSTATE_RERUN) {
-        if (journal_has(f.slot))
-            f.k = SVCSTATE_RESEND;   /* done: its answer is in the slot */
-        else
-            unmake(f.slot);
-    }
     if (!restore(&f, (struct taking){ .files = true, .views = true, .watches = true,
                                        .locks = true, .dirs = true })) {
         f.why = "the keeper's restore failed";
