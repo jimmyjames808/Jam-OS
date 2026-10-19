@@ -7,6 +7,62 @@ Chromium's main branch online (about version 155, the one
 today) and Alpine's musl build. Every claim has a link; guesses are marked
 *unsure*. Links to Chromium files point at `main`, so line numbers drift.
 
+**Update (2026-10-20): this research is superseded by [CR-PLAN.md](CR-PLAN.md)**,
+which it fed, and is kept as the record of what Chromium's source said in
+October 2026. The text below is unchanged; what turned out differently, and
+what CR-PLAN decided over it:
+- **Launching (section 2, risk 6).** The research proposed an emulated
+  `vfork` or a `posix_spawn` branch in Chromium's launcher. The owner
+  (2026-10-16) chose neither: "build the fork/vfork emulation layer in libc
+  first and use it for Chromium's launcher instead of patching it". libc has
+  a real copy-on-write `fork` and an `execve` that replaces the image in place
+  ([FORK-PLAN](FORK-PLAN.md)), and Chromium's launcher runs unpatched
+  (CB5, multi-process, built 2026-10-19). `--no-zygote` stays; `/proc/self/exe`
+  and `addclosefrom_np` were built as CL2 and CS1.
+- **The JIT and signals (section 6).** The research offered "RWX under a
+  capability, perhaps PKU-guarded" or staying jitless, and for signals
+  "jitless and the profiler off". The owner's rule of 2026-10-16 ("build the
+  correct layer instead of disabling Chromium's features") decided both:
+  a `right jit` capability gives a program a JIT VMO of its own with write and
+  execute, no PKU, and Chromium's renderers alone use it (every other process
+  runs `--jitless`): CJ1, CJ2 and CR-e, built 2026-10-19 and reviewed (CJR).
+  Faults reach a handler on the faulting thread with a full `ucontext_t`, and
+  a signal reaches a chosen thread, so V8's WebAssembly trap handler works
+  ([SIGNALS-PLAN](SIGNALS-PLAN.md)). BENCH.md has the JIT's measured gain.
+- **Big reservations (section 6, risk 1).** Built as CK1 to CK3 and CL1
+  (sparse VMOs to 128 TiB, a mapping tree that merges, a reverse map indexed by
+  page range, reservations in libc): V8's 1 TiB cage and PartitionAlloc's pools
+  run.
+- **IPC and `/proc` (sections 3 and 4).** `AF_UNIX` socketpairs with
+  `SCM_RIGHTS` are CU1 (built); named sockets through a broker (`/svc/unix`)
+  are CU2, for `chrome`'s process singleton. The `/proc` files the research
+  expected were joined by the ones `base` reads (stat, statm, status, maps,
+  cpuinfo, meminfo): PRC.
+- **The build (section 8).** CR-PLAN uses Chromium 155's own pinned clang and
+  Rust (not Alpine's system clang 23), with libc++, libc++abi, libunwind and
+  compiler-rt built for the target from an LLVM release (CT1, CT2). The
+  build is cross-built on the PC's WSL; a clean build is estimated at 2.5 to
+  3.5 hours at `-j16` (memory, not CPUs, is the limit: the research's
+  3 to 4 hours held). The first targets ran in the order the research gave:
+  `base_unittests`, `headless_shell`, `content_shell --single-process` on
+  Wayland, multi-process with `--no-zygote --no-sandbox`; the `chrome` target
+  (CB6) is the one under way.
+- **The sandbox (section 7).** Early builds run `--no-sandbox` for ordinary
+  sites (the owner's choice, 2026-10-11); Jam OS's own sandbox is CR-f, after
+  `chrome`: each renderer in its own job with a narrowed namespace, chosen
+  per process type at spawn, as the research suggested.
+- **Program size (layer 1).** The "150 to 250 MB (*unsure*)" binary was real;
+  the 64 MiB program limits were raised to 1 GiB (CP1), and `allow`'s page
+  table for such a program is 2 MB.
+- **Other layers of section 10**: the toolchain (3, CT1 and CT2), address space
+  (4, CK1 to CK3), libc additions (5, CL1 to CL3 and RL for record locks),
+  descriptor passing (6, CU1 and CU2), launching (7, FORK-PLAN), G2 for
+  Chromium (8, [G2-PLAN](G2-PLAN.md)), the content shell (9, CB1 to CB5),
+  network limits (10, CN1), sound (11, CA1, with its Chromium back end),
+  the JIT (12, CJ1/CJ2), the sandbox (13, CR-f, not built) and `chrome` (14,
+  CB6, under way) all have tracks in CR-PLAN; layers 1 and 2 (M12.5's PX,
+  M13.6) are built.
+
 Link text is the file's path in Chromium's tree (or "v8 path" in V8's).
 "apk" below means a file in Alpine's
 [aports chromium directory](https://gitlab.alpinelinux.org/alpine/aports/-/tree/master/community/chromium).

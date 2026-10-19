@@ -1,6 +1,6 @@
 # M12 review P: the protocols
 
-Stage A of [M12-PLAN.md](../M12-PLAN.md#stage-a-the-reviews-findings-first),
+Stage A of [M12's plan](../HISTORY.md#m12-the-interface-review) (since deleted, see git history),
 review P. Docs only: nothing here is built. Read against main 56aa8904.
 
 What was read: the 26 files in `abi/idl/`, `tools/genidl.py` and what it
@@ -20,7 +20,7 @@ crash-test driver's protocol), and two copies of devmgr's protocol
 outside `user/include/devmgr.h`.
 
 Every finding is read in the light of
-[the owner's answers](../M12-PLAN.md#the-owners-answers-2026-10-07):
+[the owner's answers](../HISTORY.md#m12-the-interface-review):
 handles given to a send are always moved; `event` methods are one-way
 and may carry handles; `u8[<=N]` and a checked `str[<=N]`; a protocol per
 kind of channel; the storage split into volumes; disk protocols shaped
@@ -45,7 +45,7 @@ case asks") is met by M12's changes (question D2).
 
 Kinds: **bug** (wrong today), **inc** (an inconsistency), **need** (what
 M12's decisions or M13 need), **clean** (a cleanup). "Track" is the
-plan's [Stage C](../M12-PLAN.md#stage-c-the-fixes) track that would carry it.
+plan's [Stage C](../HISTORY.md#m12-the-interface-review) track that would carry it.
 
 ### genidl and what every protocol shares
 
