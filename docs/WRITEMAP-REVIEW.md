@@ -1,6 +1,6 @@
 # WR: the review of writable mappings (WK1 to WT1)
 
-Track WR of [WRITEMAP-PLAN.md](WRITEMAP-PLAN.md) ("5. Tracks"): everything
+Track WR of the writable-mappings plan ([HISTORY](HISTORY.md#writable-file-mappings-on-ext); the plan file is deleted, see git history) ("5. Tracks"): everything
 WK1 to WT1 built, read in full context at main a36453d7 by an agent that
 wrote none of it, ahead of CB5 (Chromium's processes share memory all the
 time).

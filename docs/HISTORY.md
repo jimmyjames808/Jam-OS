@@ -30,6 +30,461 @@ hashes are commits on main.
   2% of a process-to-process call; the cost was on the user side of the
   boundary.
 
+## Writable file mappings (on ext)
+
+*Planned 2026-10-16, built 2026-10-16 to 2026-10-18, reviewed and fixed
+2026-10-18, the review's error question closed 2026-10-20.* A shared
+mapping of a file with write access (`MAP_SHARED` with `PROT_WRITE`) was
+`ENODEV`. Chromium's `base::MemoryMappedFile` with `READ_WRITE` backs its
+persistent histograms and some databases, and the first `base_unittests`
+run met the error. The owner (2026-10-16): build them now, **on ext only**;
+FAT keeps read-only mappings. This reversed, for ext, M12.5's "every page of
+a pager VMO is clean" and M13.6's "no writable shared mappings".
+
+How it works:
+- **The kernel** (`kernel/object/vmo.c`, `pager.c`, `pager_cache.c`,
+  `kernel/mm/aspace.c`). A pager VMO may be made writable (a flag at its
+  creation). Its pages are clean, dirty or writing. A clean page is mapped
+  read-only everywhere, so the first store faults and the kernel marks it
+  dirty. The filesystem asks for dirty pages (`pager_dirty`): the kernel
+  write-protects them in every mapping, shoots the stale entries down, and
+  only then copies them out, so a store after the copy faults and dirties
+  the page again and is never lost. The filesystem writes them and says
+  `PAGER_OP_WRITTEN`, which makes them clean unless a store came
+  meanwhile. Write-back requests are a new request kind, made by the
+  background count, `msync` (`vmo_sync`) and the dirty limit.
+- **Never evicted, never unbounded.** A dirty page is never evicted. A
+  pager may have a quarter of its budget dirty; a writer that meets the
+  limit waits for write-back with a deadline (the pager's answer time),
+  never forever, and a copy that cannot wait returns `ERR_IO`. A dirty page
+  holds its VMO ("the hold"), so stores outlive `munmap`, the program and
+  an extfs restart.
+- **extfs keeps one cache** (`user/services/extfs/pager.c`, `wback.c`):
+  one VMO per file, keyed by the inode and found again while it lives
+  (`PAGER_VMO_FIND`); `file.write` stays write-through (an answered write is
+  on the medium) and writes the bytes into the pages too, `read` peeks at
+  dirty pages, so a mapping, `read` and `write` see one file. Write-back is
+  a journal transaction of its own (up to 32 runs, clipped to the size,
+  holes and unwritten extents filled in ordered mode); by age once a
+  second, for `file.sync`, `fs.sync`, the dirty limit and an orderly stop.
+  A file with a writable mapping cannot be run, and a running file cannot
+  be mapped writable (`ETXTBSY`/`ERR_BUSY`, M12.5's Q7 both ways).
+- **libc** (`user/posix/sys/mem.c`, `file.c`): every `MAP_SHARED` of an
+  `O_RDWR` descriptor asks for a writable VMO, as Linux decides at `mmap`;
+  `msync` calls `vmo_sync` per shared entry, `MS_SYNC` waiting; FAT answers
+  `ENODEV`.
+
+The owner's answers: a write-back that fails (**Linux's way**: the pages
+become clean, the error is kept and the next `msync` or `fsync` reports it
+once; a "reserve at the first store" check can come later), and **how long a
+store may wait for the disk: 10 seconds to start with**, a setting
+(`files.writeback`, 1 to 600 s) read at mount and on a settings change, not
+a constant. Decided as technical: one VMO per file keyed by the inode,
+dirty bits by write-protection, the limit at a quarter of the budget, no
+kernel timer, `vmo_write` refused, `MS_ASYNC` asking for write-back.
+
+The tracks: WK1 (writable pager VMOs, the states, FIND, the hold, `pager_dirty`,
+`pager_write`), WK2 (write-back), WK3 (the dirty limit, the store's wait,
+`vmo_sync`), WE1 and WE2 (extfs's cache and write-back), WL1 (libc), WT1 (the
+end-to-end tests), WR (the review), WR2 and WQ (errors to every mapper). New
+calls: `pager_dirty` (165), `pager_write` (166), `vmo_sync` (50); the ABI
+stamp moved with WK3, WR and WR2.
+
+Tests worth knowing: `pagertest rec` stores CRC'd records through a writable
+mapping, and `tools/pager-test.sh` runs them hard: `wmsync` (extfs killed with
+`msync`ed and dirty records, a monitor quit, `e2fsck` clean), `wcut` (QEMU
+killed at six points of a store-and-`msync` storm: every acknowledged
+record whole after Linux's replay), `wpress` (64 MiB stored three times
+under an 8 MiB dirty limit beside a reader), and `whostile` (eight writers
+in two processes, extfs killed every 200 ms, then a power cut). ktests in
+`test_pager_dirty.c` cover the states, the waits, the hold and an 8-thread
+store storm. Eight writable-mapping `base_unittests` came off the skip list
+(35 of 35 in their suites; on the FAT list instead).
+
+The review (docs/WRITEMAP-REVIEW.md, ahead of CB5's processes sharing
+memory): 0 High, 3 Medium, 6 Low. Fixed with a test each: a page whose
+write-back failed stays "kept", so `read` shows what every mapping shows;
+a shared VMO a fresh extfs instance finds with no slot is found again on
+`write`, `truncate` and the run check, instead of being overwritten by its
+dirty page's older bytes; a map racing another process's last `unmap` takes
+over the dying VMO's key. Its design question on errors was answered yes
+and built (WR2): the error is reported once to **each** mapping and each
+open (Linux's errseq: `vmo_sync` takes a sample, libc samples each shared
+mapping, extfs numbers errors per slot), and WQ closed a window where an
+`fsync` run again after an extfs death said 0.
+
+Still open (design questions the review left to the main session): a store's
+deadline counts from its first wait, so a healthy writer behind a busy pager
+can be killed (recommended: from the pager's last progress), and an orderly
+stop writes back for about 3 s at most (recommended: bounded by progress).
+Both are now tracks of [RUNWELL-PLAN](RUNWELL-PLAN.md#3-wr2s-two-questions):
+the deadline is RW7 and the orderly stop RW8. A third, a freeze that starves
+behind a waiting writer (FR1's option (b)), stays for before the sandbox's
+renderers. None blocks Chromium. FAT stays read-only for mappings.
+
+## File watching (inotify)
+
+*Planned 2026-10-17, built, reviewed and fixed 2026-10-18 to 2026-10-19.*
+`inotify_init` was `ENOSYS`, so Chromium's `base::FilePathWatcher` could not
+start and all 165 `FilePathWatcher*` tests of `base_unittests` sat on the
+skip list. The owner's rule (build the layer, don't patch Chromium) gave
+the design: the file services make the events, because only they see every
+change, through every view, by every process.
+
+What it is:
+- **The protocol.** A new `fs` method (`fs.watch`, 17) returns a *watcher
+  channel*; the `fswatch` protocol on it adds, removes and takes watches.
+  A kernel event with a user signal, "the bell", rings when a channel's
+  queue stops being empty. The queues, merge and overflow rules, ids with
+  generations and the caps are one library (`user/lib/fswatch.c`) that any
+  service links.
+- **extfs makes the events** (`user/services/extfs/watch.c`, with
+  `files.c`, `fsops.c`, `main.c`): every row of Linux's table (create,
+  delete, move with cookies, attrib, modify, open, close, `IN_DELETE_SELF`
+  when an orphan goes), held until the request's commit and queued then.
+  Watches are on inodes, so a change through `/jam` reaches a watch made
+  through `/tmp`'s view of the same volume. A close made before a request
+  is reported before that request's events (the order rule, which leans on
+  the port's order: utest `port_order` pins it).
+- **Views keep their rights.** A watcher channel is never wider than its
+  view: hidden names never appear in an event, and a watch whose inode a
+  rename takes out of the watcher's view ends (`IN_MOVE_SELF` if asked,
+  then `IN_IGNORED`).
+- **Restarts.** Watches and watcher records are in the state VMO, each
+  channel and its bell held by the keeper; a successor puts the watches
+  back and queues `IN_Q_OVERFLOW`, and rings the bell. A keeper that gives
+  a service up rings the bells itself (`keepch.put` carries a ring), so
+  `poll` and `epoll` wake when extfs is gone.
+- **libc's descriptor** (`user/posix/sys/inotify.c`): the four calls, a
+  kind whose readiness is the bell (so `poll`, `epoll` and `select` work as
+  for eventfd), `read` and `FIONREAD` taking records from each service and
+  handing out Linux's `struct inotify_event`. Watches in libc's own trees
+  (`/`, `/svc`, `/dev`, `/etc`, `/proc`, `/sys`) and on read-only mounts
+  are accepted and never fire ("quiet"). The limits are
+  `/proc/sys/fs/inotify/`: 8 descriptors a process (`EMFILE`), 1,024
+  watches a process on each volume and across its descriptors (`ENOSPC`),
+  512 queued events; a volume holds 8,192 watches.
+
+The owner's answers (2026-10-17, all three as recommended): **FAT watches
+later**: no track for fat, which answers `fs.watch` `ERR_NOT_SUPPORTED`,
+and libc refuses a watch on a writable FAT mount (`EOPNOTSUPP`; Chromium's
+watcher then stops at the first FAT component); **a watch whose inode
+leaves the watcher's view ends**, not Linux's way of following the inode;
+**the descriptor as `epoll`'s**: absent in a forked child, closed at
+`exec`, not handed to a spawned child. Decided as technical: events made
+by the services with one watcher channel per view, libc's cyclic `wd`s,
+Linux's merge rule, random cookie starts, a 0-byte `read` that never waits,
+and no kernel change (the one ABI change came later, with the review).
+
+The tracks: the protocol and library (IP), libc's descriptor (IL1), extfs's
+events (IE1), libc's limits and the fork and exec rules (IL2), extfs's
+rights and restarts (IE2), Chromium's tests (IC), the review (IR) and its
+follow-ups (IR2). **IC: all 165 `FilePathWatcher*` tests pass** on an ext
+`/data`, with `TMPDIR` on it or not; they moved to the FAT skip list.
+Nothing failed in libc's or extfs's watching; `RacyRecursiveWatch` takes
+208 to 337 s because each of its 2,000 make-write-remove cycles is a commit
+on extfs, not because of the watches (posixtest times both). The whole
+program: 8,874 pass / 37 self-skip / 45 listed, no regression.
+
+The review (docs/INOTIFY-REVIEW.md, by an agent that wrote none of it):
+0 High, 5 Medium, 8 Low. Fixed with a test each: a successor runs the reach
+check of a rename it answers from the journal; libc ends a removed watch
+whose `IN_IGNORED` an overflow dropped; a watch the reach check cannot
+place (deeper than 2,048 directories, unreadable) now ends instead of
+staying on; the reach check looks only where a rename can change a reach.
+Two design questions were answered by the main session: a process's share
+(1,024 watches on a volume across its channels, counted by the writer pid
+that `fs.watch` carries; libc counts across its descriptors; the volume's
+cap 4,096 to 8,192) and a given-up service's bells (the keeper's ring).
+IR2 added the hostile runs as utests on extfs itself: a rename storm with
+extfs killed every 200 ms (some 65,000 renames, none failed, only whole
+records, one overflow a restart), eight threads closing and renaming while
+another reads (each thread's records in order), protocol abuse, and a
+watcher that never reads (extfs's pages and handles flat). None found a
+High or Medium. Two Lows came out of them and were fixed later: a call with
+txid 0 is now dropped by every generated server (genidl), and a process at
+its limit can still change an existing watch's mask.
+
+Open, none on Chromium's path: fat's watches (the owner's "later"); a share
+per job, since eight processes can still fill a volume's 8,192 watches (the
+sandbox's renderers would be one job); a directory removed in the window of
+a crash loses its `IN_DELETE_SELF`; two closes before one request come in
+slot order, not close order; `max_user_instances` 8 counts a descriptor
+watching both `/data` and `/tmp` twice. The review lists each.
+
+What it taught: Linux's events were checked against its source before the
+table was written (a replaced rename target gets `IN_ATTRIB`;
+`RENAME_EXCHANGE` is two moves; `IN_ISDIR` is never on `IN_DELETE_SELF`),
+and the first notes' deviations (a bell with two bits so a `poll` cannot
+sleep through records another thread's take left) came from writing the
+tests against fake services before any real one existed.
+
+## M12.7: NVMe and the installer
+
+*Planned 2026-10-09, stage 1 built 2026-10-09 to 2026-10-10, stage 2
+2026-10-13, stage 3 2026-10-14 to 2026-10-16, checked on the PC 2026-10-11
+and 2026-10-18.* A user-space NVMe driver behind the IOMMU on the block
+interface M12 had just reviewed, in three stages because the PC's only NVMe
+drive held Windows: read-only, writes to a Jam OS disk only, an installer so
+the PC boots Jam OS from an internal disk. The owner fitted a second drive
+(blank, never initialised, Windows' prompt to initialise it refused) for
+stages 2 and 3; the driver refuses every write to any other drive.
+
+What was built:
+- **Stage 1, read-only** (`drivers/nvme/`): the controller (admin queue,
+  identify, an I/O pair, MSI-X, PRP lists, timeouts, abort, reset, the
+  shutdown notice), `storage` and `block` with 32 requests in flight
+  answered by txid, and no write opcode in the file that can be built:
+  `tools/checknvme.py` runs in `make check` and refuses one. The partition
+  library (`drivers/lib/parttable.c`: MBR, GPT with both headers and CRCs,
+  blank detection, the Jam OS mark) is checked on the host by
+  `tools/gptcheck.c`; `volumes` mounts a drive's FAT partitions read-only as `/nvme0`,
+  `/nvme1`..., and the shell gained `disks`, `disk digest` and `disk smart`.
+- **Stage 2, writes to a Jam OS disk only.** `sqe_write` (FUA) and
+  `sqe_flush` are reachable only through the drive's mode (other, blank,
+  Jam OS) and a range check; `create_table` works on a blank drive in a
+  fixed order; `disk prepare <disk>` asks for the last four characters of
+  the serial and makes a GPT with a "Jam OS ESP" and a "Jam OS data"
+  partition (type 71bae565-d4a8-4315-8c81-9b35462cc158 for data). `diskro`
+  from the boot menu keeps every drive read-only. The owner decided
+  later (2026-10-14, "leave it to the user, just warn") that `disk prepare`
+  works on any drive he picks: the empty rules decide the confirmation, not
+  whether, and a drive that is not empty is shown and erased only after the
+  serial and a typed `erase` (NV-warn; the rules include a MiB at 1 MiB and
+  at 513 MiB, where Jam OS would put its partitions).
+- **Stage 3, the installer.** The kernel passes Limine's GPT disk GUID
+  (`bootdisk=gpt:<GUID>`) to init and into the kexec command line, so the
+  boot disk is known by GUID; `install <disk>` (init's worker thread,
+  volumes' hold of the target's partitions from other mounts) copies the
+  build, `/data/etc` and the menu, the menu last, with read-backs; `update`
+  writes the disk the PC booted from. A stick plugged in beside an installed
+  drive boots itself and mounts the drive's partitions read-only.
+- **Names.** Drives are named in PCI order (`disks.attach` carries a
+  `unit`): on the owner's PC the names swapped between a boot from the
+  stick and a boot from the new drive until then.
+
+The owner's answers (2026-10-09, "your recommendation for everything unless
+unsure"): the GPT layout is the mark, written only onto a blank drive after
+the serial's last four are typed; the installed disk boots from the
+firmware's default path and the owner sets the boot order; no Windows entry
+in the boot menu (F8 or the boot order); the Jam OS drive's filesystem FAT
+32 at first (ext came with M13.6); `/nvme0`, `/nvme1` for the mounts; the
+installer copies the build plus `/data/etc`; the stick stays a working stick.
+**Stage 1 is checked in Jam OS as it is**: no Linux stick and no separate
+hash of the drive; the drive's own host-write counter, printed in the
+driver's start and end lines, is the record. Reviews (2026-10-11): R1 and R2
+dropped, R3 once after each of stages 2 and 3; in their place mechanical
+checks (checknvme.py for the write path; every NVMe QEMU test keeps a
+Windows-like disk attached whose hash must be unchanged). Stage 3 was
+deferred for porting (2026-10-11) and then, on 2026-10-14, "finished whole".
+
+The reviews (docs/M12.7-REVIEW.md, by an agent that wrote none of it). Stage
+2: 0 High, 2 Medium, 5 Low; fixed with a test each: "blank" was decided from
+a buffer prefilled with 0xA5 rather than zeros, and a second one fixed by the
+merge of main itself. Stage 3: 0 High, 3 Medium, 10 Low; fixed with a test
+each, on the PC before and after: a held disk could become the boot disk of
+a GPT boot after the wait (S1), a cut erase was offered as "finish" for good
+instead of being offered for erase again (S2), install refused a read-only
+mount before anything was stopped (S3), and the installer's clearing also
+removes a menu at Limine 11's other places (S11); S4 (a reinstall cut after
+the new kernel, the drive picked beside a copy of the stick) has a guard test.
+
+On the PC: **P1 passed 2026-10-11** (Crucial/Windows drive: the host write
+counter unchanged across two Jam OS boots, the new drive at 0 writes).
+**P2 and P3 on 2026-10-18**: `disk prepare` of the new drive, the refusals
+(`mount -w` of Windows' drive no; `disk prepare` of it showed "not empty" and
+was stopped), the Windows drive's write count unchanged, `install` of the
+new drive, the PC booting Jam OS from it without the stick, Windows starting
+from F8. The two power-cut steps of P2 (holding the power button during a
+`disktest`) were skipped at the owner's choice, since QEMU covers the cuts
+(`tools/nvme-write-test.sh`, `tools/install-test.sh`'s ten cut points,
+`tools/extfs-test.sh`); only the real drive honouring its flush is unproven
+on hardware. headless_shell then fetched pages over the internet from the
+installed drive.
+
+Open: the milestone's closing sign-off (All tests and `soak 10` on the PC
+booted from the internal disk) is the main session's pre-push pass, not a
+separate run; the real power-cut check above.
+
+## M13.6: the ext filesystem
+
+*Planned 2026-10-11, built 2026-10-11 to 2026-10-17, reviewed and fixed
+2026-10-17.* "Porting first" (the owner, 2026-10-11): FAT32 has no symbolic
+links, permission bits, owners or hard links, a 4 GiB file limit and
+case-blind names, and Unix software breaks on each of them. The owner's
+2026-09-30 decision (FAT32 only) was reopened for this and only this.
+
+What was built:
+- **The format** (`user/services/extfs/ext/`, no Jam OS calls, built for
+  the host too): a subset of ext4's on-disk format, Jam OS's own code
+  (about 10,500 lines in all): superblock and feature table, group
+  descriptors, CRC32C on every structure, inodes, extent trees, bitmaps
+  with flex groups, plain and hashed directories, symbolic links, hard
+  links, atomic rename (replace and exchange), the orphan list, mkfs, and
+  jbd2's journal (descriptor, revoke and commit blocks, checksum v3, replay).
+  Linux reads and checks it: `e2fsck -fn` is the judge of every crash test.
+- **The service** (`bin/extfs`, `user/services/extfs/`): the `fs` and
+  `file` protocols on the ext core, a journal transaction per request, a
+  restart as recovery (the state VMO, the keeper, a warm spare), views
+  judged where paths resolve, subviews, many writers (`FS_APPEND`),
+  unlink of open files, remount read-only on an error. New protocol calls
+  (`getattr`, `setattr`, `symlink`, `readlink`, `link`, `resolve`,
+  `subview`, `ERR_LINK_OUT`) with answers from fat and bootfs.
+- **libc** follows links in the caller's own namespace (`ELOOP` at 40),
+  sends paths uncleaned, keeps `..` above a mount's root in `/`, and has
+  `stat`, `chmod`, `chown`, `utimensat`, `symlink`, `readlink`, `link`,
+  `RENAME_EXCHANGE`, `umask`, and `fsync` backed by the journal.
+- **extfs as a pager** (U10): `file.map` read and exec from extents,
+  invalidation on write and truncate, `ERR_BUSY` for running programs,
+  unlinked mapped files kept on the orphan list, maps carried across
+  restarts. Writable shared maps came later ([above](#writable-file-mappings-on-ext)).
+- **volumes and init**: an ext superblock on a partition starts `bin/extfs`
+  (the Jam OS data type, GPT's Linux type, MBR 0x83); the Jam OS drive's
+  data partition is `/jam`, read-write; foreign ext volumes are always
+  read-only; init mounts `/usr`, `/var`, `/home` and `/tmp` as views of
+  `/jam`; 16 mounts. **On a drive boot the data partition is `/data` and
+  `/jam` at once** (DB1, "drive boot first"), `/tmp` is a view of
+  `/jam/tmp`, and `/pkg` is the package area.
+- **Tools**: `tools/jamext` (mkfs, an image from a directory, import, put,
+  get, ls, ln, chmod, check; reproducible images), the checker shared by
+  `jamext check` and the shell's `disk check`, `ls -l`, `stat`, `ln`,
+  `chmod`, `readlink` in the shell, `tools/extcheck.c` (cut storms on the
+  Mac), and `tools/extfs-test.sh` (basic, links, case, a 6 GiB file and a
+  file sparse at 5 GiB checked by hash, cuts at 20 write points judged by
+  `e2fsck`, extfs killed 0/1/10/100 times a second during a copy, interop
+  with three `mke2fs` volumes, foreign volumes read-only).
+
+The owner's answers (2026-10-11, all as recommended): **own code for ext4's
+format** (compared with lwext4, libext2fs, FreeBSD's and Haiku's ext2: none
+permissive, current and journalled at once; libext2fs, LGPL, in extfs was
+the fallback if the first tracks ran into trouble; FreeBSD's and Haiku's
+code may be read as references; no code from Linux or e2fsprogs); the Jam
+OS drive's data partition first; the stick unchanged until the owner
+revised that on **2026-10-15: ext is the default data filesystem**, FAT only
+when asked for (`disk format <disk> data fat`; `make image` and `make usb`
+build the stick's `/data` as ext with `jamext`; the ESP stays FAT32 because
+the firmware reads only FAT). A write is on the disk when its request is
+answered; the Mac does not read the stick (logs by network, files by
+`update` and SSH).
+
+The review (docs/M13.6-REVIEW.md, by an agent that wrote none of it): 1
+High, 2 Medium, 9 Low. The High: **extfs never flushed a disk's cache.**
+drv/nvme's writes are FUA, so the journal's order held, but usb-storage's
+writes land in the stick's volatile cache in any order, and since ext became
+the stick's default `/data` a power cut could break the journal's order.
+Now the journal flushes around the commit block, before the tail moves and
+before the log is marked empty, at close and at mkfs; requests, `fs.sync`
+and `file.sync` flush; NVMe uses `EXTFS_ARG_FUA`. The Mediums: a request in
+progress at two deaths in a row ran again instead of being answered; one
+extfs held only 32 open files, 32 views and 64 maps for a whole volume
+(now 256, 128 and 256, with room in the keeper and volumes' job limits).
+Also fixed with tests: a name a view hides gives nothing away when walked
+through, and a journal's region is counted in 64 bits. Left as reported
+Lows: a stick's writes cost two or three cache flushes a request; the
+guards judge a place by its top-level name (only the unviewed shell can make
+an `etc` link); `statfs` has no inode counts (an IDL change wanted before M14
+freezes `fs`); `NS_MAX_MOUNTS` 16 is tight for a stick beside three drives.
+
+Open: the PC check P1 (hold the power button during a `disktest` write on
+the drive's ext `/jam`, then check the journal replays and `e2fsck` is
+clean) was not run; the owner skipped the same step for M12.7 and QEMU's
+cuts cover it, so only the real drive honouring its flush is unproven. The
+three review questions (flushes per request, links named `etc`, inode counts
+in `statfs`) are the owner's.
+
+## M13: POSIX on musl
+
+*Planned 2026-10-09, built 2026-10-09 to 2026-10-12, reviewed and fixed
+2026-10-11 to 2026-10-14.* Unmodified POSIX programs build and run on
+Jam OS: musl 1.2.6 over a call layer in libc that turns Linux's system calls
+into handles, channels and the services' protocols. The first port was an SSH
+server, and `ssh` from the Mac opened a shell on the PC. The plan stays in
+the tree as [M13-PLAN.md](M13-PLAN.md) because the call layer's code and the
+other plans cite its design sections and per-track notes.
+
+What was built:
+- **The kernel's part** (K1, K2, F1a): small process and thread ids (a full
+  lap before reuse), `thread_set_tid_word`, `thread_interrupt` and
+  `ERR_INTERRUPTED` on the four interruptible waits, `cpu_ns`,
+  `sys_public_info`; the time page (`clock_gettime` in about 17 ns from user
+  space) and `VMAR_REPLACE` (an unmap and a map in one step, for
+  `MAP_FIXED`); copy-on-write child VMOs (`vmo_create_child`). The call
+  path got no slower.
+- **musl and the toolchain** (A1, A2): musl 1.2.6 vendored with a checked
+  list of overrides (`user/posix/musl/OVERRIDES`), the sysroot, `jamos-cc`
+  (one compiler wrapper, one sysroot, on the Mac), `posixtest` (the layer's
+  own test program, in the init run), libjam (libos without its libc parts)
+  and the POSIX hand-over message (`posixfds.h`, `fdmsg.c`: fuzzed) that
+  gives a child its descriptors.
+- **Descriptors, files, pipes, processes** (B1, B2, B3, B5, B6): a descriptor
+  table over open file descriptions, the file, path, directory and `*at`
+  calls, `pipe2`, `dup`, `fcntl`, `/dev` and `/etc`, memfd, eventfd,
+  `socketpair`, the one user (uid 1000, home `/data`); `posix_spawn` with
+  file actions and attributes, the child table, `wait4`, process groups and
+  sessions, `execve` as spawn-wait-exit (no `fork`: that came later as
+  [FORK-PLAN](FORK-PLAN.md)); `poll`, `select` and `epoll` over the wait
+  sets, each kind with its ready and arm hooks; AF_INET sockets and
+  `getaddrinfo` through `/svc/dns`.
+- **Signals** (B4): libc's own signal thread, delivery at the call boundary
+  with `thread_interrupt`, `EINTR` and `SA_RESTART`, timers, `pthread_cancel`,
+  SIGCHLD, SIGPIPE, SIGWINCH, exit status 128 + N, the `signal` protocol.
+  Faults to a handler and signals to a busy thread came later
+  ([SG](SIGNALS-PLAN.md)).
+- **Terminals and sessions** (T1, T2, X1, S1, S2): the console split into a
+  front end and back ends (a connection back end: output as bytes on a master
+  channel, input through `termkeys.h`, size by `conn_ctl`); the `tty` protocol
+  and a line discipline (`user/lib/ldisc.c`, `keybytes.c`) with Ctrl+C under
+  `ISIG`; `/svc/session` in init (at most 8 sessions, a console and shell
+  each, `posix_openpt`/`openpty`); the shell gives programs descriptors 0 to
+  2, redirections, an 8 MiB stack and the environment, runs pipelines at
+  once, and sends Ctrl+C as SIGINT.
+- **Ports** (P1, P2, X2): sbase (70 tools in three multi-call programs) and
+  Lua 5.4.9 in `/boot/usr/bin`; libc-test (113 passing and 25 listed with
+  reasons at first, 114 later); tinyssh 20261001 as `bin/sshd` (one program
+  whose mode is `argv[0]`, key login only, a host key made at the first boot,
+  `authorized_keys` in `/data/etc`, port 22 while it holds a key, `ssh = off`
+  stops it).
+- **Jam commands as programs** (the owner's decision, 2026-10-11): the shell's
+  own commands also exist as programs in the boot image (`user/sysbox/`, the
+  same source files compiled with `-DSH_BOX`), so a POSIX shell, a script or
+  an `ssh` session can run them.
+- **Mapped files** (F1b, after M12.5): read-only and shared mappings of the
+  pager VMO, `MAP_PRIVATE` as a copy-on-write child, `msync`, and
+  `posix_spawn` of programs on `/data` through the pager's loader.
+
+The owner's answers (2026-10-09, "your recommendation for everything unless
+unsure", all as recommended): unmodified musl with the build's overrides and
+a Linux call layer; the line discipline in the terminal service with a `tty`
+protocol; signals in libc at the call boundary plus `thread_interrupt` (a
+kernel upcall was added later, under it, in SG); `posix_spawn` only, no
+`fork` (later reopened: [FORK-PLAN](FORK-PLAN.md)); a file's offset per
+process in libc; with `ISIG` off a program gets the byte, and Ctrl+Alt+C
+always reaches the shell on the desktop; one user `jam`, uid and gid 1000;
+sshd on port 22 whenever `authorized_keys` holds a key; sbase in
+`/boot/usr/bin` after the shell's builtins; the `jamos-cc` wrapper.
+
+The reviews (each by an agent that wrote none of it, `docs/M13-REVIEW-*.md`):
+- **Kernel** (K1, K2): 0 High, 1 Medium, 7 Low; the Medium and two Lows
+  fixed.
+- **POSIX layer** (R1): 0 High, 7 Medium, 14 Low, 4 notes. The Mediums fixed
+  with a test each (smaller programs, writable files handed to children, and
+  the rest); the hand-over parser, handles on every path, the signal model
+  and readiness were found sound.
+- **Terminal, sessions, SSH and shell** (R2, 2026-10-13): 1 High, 4 Medium,
+  7 Low. The High: **sshd's host key was readable by any program with `mount
+  /data r`** (a view guarded `etc` against changes only). The key is now
+  hidden from `/data` views and `kill sshd` was checked to end its sessions.
+  The Mediums: a POSIX program's output came after the shell's prompt, typed
+  keys went to a pipeline's last stage instead of its first, the console
+  served requests without the unread bound, and a program silently lost
+  arguments past 18.
+
+Open: the join row of the plan is only partly done: no PORTING.md
+(a guide to porting a program) was written, and the release `0.2.0` that the plan
+tied to M13 has not been cut (the version is still `0.1.0`). M13.5, the
+POSIX shell (mksh), is after Chromium. The milestone's PC sign-off ("All
+tests and `soak 10`") is the main session's pre-push pass.
+
 ## M12.1: the code check
 
 *2026-10-09 to 2026-10-11.* A check of what M12 and G1 changed, by fresh
@@ -131,6 +586,41 @@ What changed:
   full-screen mode and libfun's borrowed screen are gone. The desktop is
   the only way Jam OS draws; the previous build is the way back from a bad
   build.
+
+The owner's answers (2026-10-07; "your recommendation for the rest unless
+unsure or very important", so all but one as recommended). The kernel: a
+send's handles are always moved; **the writer keeps paying for a message
+nobody reads** (first answered "the reader pays once the writer closes",
+reversed on 2026-10-09 after M12.1's kernel review); `handle_info`; a
+read-only DMA pin; a futex (private only, with requeue) and the FS base;
+five new error codes; one rule for time in arguments (deadlines,
+`sleep_until`); a dead service's kept objects stay charged to its job; a
+`vmo_pin` argument struct with a flags word; a port binding ends when its
+object has no handle left anywhere. The protocols: `u8[<=N]` and a checked
+`str[<=N]`, scalar arrays (records stay byte arrays until M14), one-way
+`event` methods that may carry handles, a protocol per kind of channel,
+`const` lines in each `.idl`, typed handle arguments checked by the
+generated server, the kernel dropping replies to calls that gave up, a
+pipe as a channel of byte messages, libos's heap reserving 1 GiB, the
+re-arm flag of `channel_reply_wait` left for the speed pass. The
+compositor: events go from server to client, `notify` split off, flow
+control by the kernel's count (JWL2), at most 28 handles queued a
+connection. The storage split: the new service named `volumes`, one shared
+supervision module, disks reaching it on fresh `disks` pairs, **a volumes
+crash ends its filesystem services and every stick remounts fresh** (a
+service that outlives its process waits for the drivers' milestone), and
+the disk protocols shaped for GPT and NVMe with nothing built for them.
+The one against the recommendation was `nocomp`, above. M12.1 is M12's
+independent review.
+
+Where it lives: the channel, handle and wait rules in `kernel/object/`
+(`channel.c`, `channel_send.c`, `handle.c`, `port.c`) and `kernel/sched/`;
+the calls and their contracts in `abi/syscalls.def` and `<jam/abi.h>`; the
+IDL's new shapes in `tools/genidl.py` and `abi/idl/` (every protocol id in
+`abi/idl/ids.txt`); the supervision module in `user/lib/supervise.c`; the
+storage split in `user/services/volumes/` and `user/services/devmgr/`; the
+compositor's transport in `user/lib/jwl_transport.c`. The four reviews
+(K, P, W, S) are in `docs/history/`.
 
 The PC sign-off: the build updated over the network, ACS isolation, `storm`
 at 10 and 100 kills a second (the copy matched), a stick pulled and put
