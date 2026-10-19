@@ -1847,7 +1847,7 @@ so Chinese, Japanese, Korean, Arabic and even Greek and Cyrillic were boxes.
 - **The lists.** A pattern with no generic family (Chromium asks for a
   fallback font by language alone, `ui/gfx/font_fallback_linux.cc`: a
   `lang` and `scalable`, no family, `FcFontSort` and the first font with the
-  character) gets `sans-serif` last, as fontconfig's own `49-sansserif.conf`
+  character) gets `sans-serif` last, as fontconfig's own 49-sansserif rule
   does. `system-ui` is `sans-serif`. The order of a list is: GP2's fonts
   (Noto Sans and Liberation Sans, Noto Serif and Liberation Serif,
   JetBrains Mono, Liberation Mono and Noto Sans Mono; Arial, Helvetica,
