@@ -17,8 +17,10 @@
  *      (ext_jnl_committed): it is done, and its slot is committed now with
  *      the reply it holds. Not committed in the journal: the slot it made
  *      (an fs.open's file, an fs.view's view, an fs.watch's watcher
- *      channel, an fs.opendir's directory channel) is forgotten, and it
- *      runs again (step 5);
+ *      channel, an fs.opendir's directory channel) is forgotten, a
+ *      write-back error a file.sync's open heard of is put back (the
+ *      answer that reported it never went out: wback.c's kept->heard),
+ *      and it runs again (step 5);
  *   3. the keeper's handles taken back (keep_restore), each only if the
  *      state knows its slot;
  *   4. the orphans dropped but those the state holds (files open or
@@ -284,11 +286,15 @@ static status_t start_fresh(struct found *f)
     return OK;
 }
 
-/* A request not committed: what it made is forgotten (it runs again). */
+/* A request not committed: what it made is forgotten, and an error its
+ * file.sync's open heard of is put back (it runs again: the answer that
+ * reports it never went out). */
 static void unmake(unsigned slot)
 {
     const struct xf_made *m = &kept->made;
-    if (m->seq != state_slots()->h->slot[slot].seq)
+    uint64_t seq = state_slots()->h->slot[slot].seq;
+    wback_unhear(seq);
+    if (m->seq != seq)
         return;
     if (m->kind == XF_MADE_FILE && m->index < XF_MAX_FILES)
         kept->files[m->index].used = false;   /* the keeper's copy is refused, so dropped */

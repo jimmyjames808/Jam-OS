@@ -296,6 +296,11 @@ bool op_running(void)
     return op.running;
 }
 
+uint64_t op_seq(void)
+{
+    return op.running ? op.seq : 0;
+}
+
 static status_t take(const struct xf_chan *c, unsigned slot, const struct idl_slot *is)
 {
     if (c->proto == XF_PROTO_CTL)

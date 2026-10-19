@@ -848,12 +848,18 @@ static bool wb_on_disk(struct tfile *f, handle_t pager, const char *what)
  *   4  wback:2  the data written into a hole's new blocks, no commit: they
  *               are free in the committed bitmaps, taken again;
  *   5  wback:7  a file.sync's write-back committed, not answered: the
- *               request runs again from its slot, its write-back with it. */
+ *               request runs again from its slot, its write-back with it;
+ *   6  heard:1  a file.sync's open heard of a full volume's error (the
+ *   7  heard:1  mark in the state), the answer not committed, twice in a
+ *               row: the successor runs it again and still reports it,
+ *               once (WR2's errseq kept across deaths); a second open and
+ *               a mapper that sampled before hear of it once each. */
 bool t_extfs_restart_wback(void)
 {
     static struct ramdisk test_disk;
     static const char *const dies[] = {
         "die=wback:1", "die=wback:6", "die=wback:7", "die=wback:8", "die=wback:2", "die=wback:7",
+        "die=heard:1", "die=heard:1",
     };
     handle_t root = startup_handle(SR_RESOURCE), pager = HANDLE_INVALID, a = HANDLE_INVALID;
     handle_t h = HANDLE_INVALID, self = startup_handle(SR_SELF_VMAR);
@@ -864,7 +870,7 @@ bool t_extfs_restart_wback(void)
         printf("utest: extfs_restart_wback: no pager power (RIGHT_ROOT_PAGER): skipped\n");
         return true;
     }
-    if (!ramdisk_create(&test_disk, DISK_SECTORS) || !sup_begin(&test_disk, dies, 6, NULL, pager))
+    if (!ramdisk_create(&test_disk, DISK_SECTORS) || !sup_begin(&test_disk, dies, 8, NULL, pager))
         return false;
     CHECK_ST(t_open(&sv.r, "/w.bin", FS_READ | FS_WRITE | FS_CREATE, &f), OK);
     for (uint32_t p = 0; p < WB_PAGES; p++) {
@@ -914,6 +920,41 @@ bool t_extfs_restart_wback(void)
     CHECK_ST(jam_vmar_unmap(self, (uint64_t)(uintptr_t)hm, 3 * PAGE_SIZE), OK);
     CHECK_ST(jam_handle_close(a), OK);
     CHECK_ST(jam_handle_close(h), OK);
+
+    /* A file.sync that heard of an error, ended before its answer: /e.bin
+     * a page of hole, two opens and a mapper's sample taken, the volume
+     * filled, then a store over the hole. */
+    struct tfile e, e2, big;
+    handle_t ev = HANDLE_INVALID;
+    uint32_t sample = 0;
+    CHECK_ST(t_open(&sv.r, "/e.bin", FS_READ | FS_WRITE | FS_CREATE, &e), OK);
+    CHECK_ST(file_truncate_until(e.ch, dl(), PAGE_SIZE), OK);
+    CHECK_ST(t_open(&sv.r, "/e.bin", FS_READ | FS_WRITE, &e2), OK);
+    CHECK_ST(file_map_until(e.ch, dl(), FILE_MAP_WRITE, &ev, &size), OK);
+    CHECK_ST(jam_vmo_sync(ev, 0, 0, VMO_SYNC_SAMPLE, &sample), OK);
+    CHECK_ST(jam_vmar_map(self, ev, 0, PAGE_SIZE, VMAR_READ | VMAR_WRITE, &addr), OK);
+    uint8_t *em = (uint8_t *)(uintptr_t)addr;
+    CHECK_ST(t_open(&sv.r, "/big", FS_READ | FS_WRITE | FS_CREATE, &big), OK);
+    memset(buf, 0, sizeof(buf));
+    status_t st = OK;
+    for (uint64_t at = 0; st == OK; at += done)
+        st = t_write(&big, at, buf, sizeof(buf), &done);
+    t_close(&big);
+    CHECK_ST(st, ERR_NO_SPACE);
+    em[100] = 1;
+    CHECK_ST(file_sync_until(e.ch, dl()), ERR_NO_SPACE);   /* from the third instance */
+    if (!wb_deaths(8))
+        return false;
+    CHECK_ST(file_sync_until(e.ch, dl()), OK);   /* once */
+    CHECK_ST(file_sync_until(e2.ch, dl()), ERR_NO_SPACE);
+    CHECK_ST(file_sync_until(e2.ch, dl()), OK);
+    CHECK_ST(jam_vmo_sync(ev, 0, PAGE_SIZE, VMO_SYNC_WAIT, &sample), ERR_NO_SPACE);
+    CHECK_ST(jam_vmo_sync(ev, 0, PAGE_SIZE, VMO_SYNC_WAIT, &sample), OK);
+    t_close(&e);
+    t_close(&e2);
+    CHECK_ST(t_unlink(&sv.r, "/big"), OK);
+    CHECK_ST(jam_vmar_unmap(self, (uint64_t)(uintptr_t)em, PAGE_SIZE), OK);
+    CHECK_ST(jam_handle_close(ev), OK);
     bool ok = sup_stop() && extfs_save(&test_disk, "restart-wback");
     CHECK_ST(jam_handle_close(pager), OK);
     return ramdisk_destroy(&test_disk) && ok;

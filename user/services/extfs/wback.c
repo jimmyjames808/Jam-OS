@@ -391,13 +391,50 @@ uint32_t wback_sample(uint32_t ino, uint32_t igen)
     return m->error_seen ? m->error_seq : 0;   /* unheard of: this open hears of it too */
 }
 
-status_t wback_file(uint32_t ino, uint32_t igen, uint32_t *since)
+/* Open f hears of map slot s's error. The request may die before its
+ * answer goes out (its slot not committed): the mark is recorded first,
+ * whole, for a successor to put back (wback_unhear) before it runs the
+ * request again, which then reports the error too. */
+static void hear(struct xf_file *f, unsigned s)
 {
-    if (!vol.pager || ino > XF_SHARED_INO_MAX)
+    struct xf_map *m = &kept->maps[s];
+    struct xf_heard *h = &kept->heard;
+    h->file = (uint32_t)(f - kept->files);
+    h->was = f->wb_seq;
+    h->heard = m->error_seq;
+    h->map = s;
+    h->seen = m->error_seen;
+    __atomic_store_n(&h->seq, op_seq(), __ATOMIC_RELEASE);
+    __atomic_signal_fence(__ATOMIC_SEQ_CST);   /* the record before the mark: a kill may
+                                                * come between any two stores */
+    f->wb_seq = m->error_seq;
+    m->error_seen = true;
+}
+
+void wback_unhear(uint64_t seq)
+{
+    struct xf_heard *h = &kept->heard;
+    if (!seq || __atomic_load_n(&h->seq, __ATOMIC_ACQUIRE) != seq)
+        return;
+    /* Only what the mark changed (it may not have been made), then the
+     * record dropped: a death before that puts back the same again. */
+    if (h->file < XF_MAX_FILES && kept->files[h->file].used &&
+        kept->files[h->file].wb_seq == h->heard)
+        kept->files[h->file].wb_seq = h->was;
+    if (h->map < XF_MAX_MAPS && kept->maps[h->map].used &&
+        kept->maps[h->map].error_seq == h->heard)
+        kept->maps[h->map].error_seen = h->seen;
+    __atomic_signal_fence(__ATOMIC_SEQ_CST);
+    __atomic_store_n(&h->seq, 0, __ATOMIC_RELEASE);
+}
+
+status_t wback_file(struct xf_file *f)
+{
+    if (!vol.pager || f->ino > XF_SHARED_INO_MAX)
         return OK;
-    uint64_t key = XF_SHARED_KEY(ino, igen);
+    uint64_t key = XF_SHARED_KEY(f->ino, f->igen);
     struct ext_inode in;
-    if (ext_iget(&vol.fs, ino, EXT_IGET_UNLINKED, &in) != OK)
+    if (ext_iget(&vol.fs, f->ino, EXT_IGET_UNLINKED, &in) != OK)
         return OK;   /* (the caller's inode_of says why) */
     uint64_t end = ext_isize(&in) < VMO_SMALL_MAX_SIZE ? ext_isize(&in) : VMO_SMALL_MAX_SIZE;
     first = OK;
@@ -411,10 +448,10 @@ status_t wback_file(uint32_t ino, uint32_t igen, uint32_t *since)
      * open heard of last. Ours is among them: an error of this call's
      * write-back took a new number unless the one kept was unheard of. */
     struct xf_map *m = &kept->maps[s];
-    if (!m->error_seq || m->error_seq == *since)
+    if (!m->error_seq || m->error_seq == f->wb_seq)
         return OK;
-    *since = m->error_seq;
-    m->error_seen = true;
+    hear(f, (unsigned)s);
+    test_die(XF_DIE_HEARD);
     return m->error;
 }
 
