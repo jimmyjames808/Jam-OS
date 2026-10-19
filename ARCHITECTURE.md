@@ -1957,8 +1957,8 @@ restarts:
   bare name is no want); `tools/checkwants.py` allows that line only
   under `user/services/`, and `allow` refuses it for every program on
   `/data`, approval or not: a program there could pose as one of the
-  system's services on the network (a web or a time server, the ssh M13
-  brings) or take its port before the service starts, and nothing the
+  system's services on the network (a web or a time server, the ssh
+  server) or take its port before the service starts, and nothing the
   owner reads at the prompt would make that plain. bin/serve alone has
   it, so `serve <file> 80` works; a program with `svc net listen` is
   still refused port 80.
@@ -2146,8 +2146,8 @@ at. An entry that is not ready is armed (its event's bits cleared, the
 rings' `waits` flags raised, one more look) and leaves the list; a ready
 one stays on it, so a wait costs the entries that are ready or were
 signalled, not all of them. Hung up (netstack's end of the channel closed,
-a stream closed) and errors are always reported. This is what M13's
-`poll`, `select` and `epoll` will be built on.
+a stream closed) and errors are always reported. libc's `poll`, `select`
+and `epoll` are built on it ([The POSIX layer](#the-posix-layer)).
 
 **The programs on TCP** ([HISTORY: M9.5](docs/HISTORY.md#m95-network-streams);
 the commands are in [NETWORK.md](docs/NETWORK.md)). Each holds only
@@ -3639,8 +3639,8 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   partition over the whole disk (a block 0 that holds a partition table
   is never taken for one, whatever else it holds). usb-storage reads an
   MBR and nothing else, so a GPT stick shows its protective partition
-  (type 0xEE), which volumes leaves alone ([M12.7-PLAN](docs/M12.7-PLAN.md)
-  reads GPT for internal drives). A partition that turns
+  (type 0xEE), which volumes leaves alone (drv/nvme reads GPT for internal
+  drives). A partition that turns
   out to hold no FAT volume is left alone and said so in the log.
 - Read-only is enforced below the filesystem: a `/usbN` partition's
   `block` channel is opened read-only, and usb-storage refuses every write
