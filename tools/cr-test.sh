@@ -95,6 +95,18 @@
 #           tools/cr/jit-check.py the results, TurboFan's line, the speed-up
 #           (3x at least) and the screenshots; the timings in
 #           <outdir>/jit/check.out; about 3 minutes
+#   webgl   content_shell (CR-e) as jit, with WebGL in software: SwiftShader
+#           linked in as ANGLE's Vulkan (ports/chromium's patch 0915), its
+#           Reactor compiling the shaders in the GPU process, which keeps
+#           the JIT power when it runs SwiftShader (patch 0914): it loads
+#           tools/cr/webgl.html by name twice, with
+#           --enable-unsafe-swiftshader (the browser starts the GPU process
+#           with --use-angle=swiftshader-webgl) and without (no WebGL); the
+#           page draws a band with a shader and reads three pixels back;
+#           tools/cr/webgl-check.py checks the page's lines (a WebGL context,
+#           SwiftShader's renderer, the pixels; none the second time), `ps`
+#           (one child more marked [jit] the first time: the GPU process) and
+#           the screenshots (the band where the canvas is); about 2 minutes
 #   bench   content_shell as jit, running parts of JetStream 2.2 and
 #           Speedometer 3.1 (tools/cr/toolchain.sh fetches them, pinned;
 #           tools/cr/bench-server.py serves them with a reporter that says
@@ -299,7 +311,7 @@ case_base() {
 # http.server here) as page.html, and QEMU booted from the stick with a USB
 # keyboard and mouse, <script> fed to the shell (the log and screenshots in
 # <dir>/run/<name>.*). Returns qemu-test.sh's status, or 2 with <dir>/result
-# written when a piece is missing. The shell-wl, multi, jit and bench cases;
+# written when a piece is missing. The shell-wl, multi, jit, webgl and bench cases;
 # the web server is $serve (default serve_web: the page's directory) on the
 # port it is given.
 serve_web() {
@@ -532,6 +544,26 @@ case_jit() {
     sed 's/^/cr-test: /' "$dir/check.out"
 }
 
+case_webgl() {
+    dir=$out/webgl
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    shell_run "$dir" tools/cr/webgl.html tools/cr/webgl.txt webgl "${CR_MULTI_MEM:-6G}" 600
+    qrc=$?
+    [ $qrc = 2 ] && [ -f "$dir/result" ] && return
+    grep -a -o 'crgl: [^"]*' "$dir/run/webgl.log" 2> /dev/null | uniq | sed 's/^/cr-test: page said: /'
+    if [ $qrc -ne 0 ]; then
+        echo "FAIL (the script: $(grep 'serial-feed: .*: no ' "$dir/qemu.out" | tail -1 | sed 's/^serial-feed: //'), see $dir/run/)" > "$dir/result"
+        return
+    fi
+    if python3 tools/cr/webgl-check.py "$dir/run" > "$dir/check.out" 2>&1; then
+        echo PASS > "$dir/result"
+    else
+        echo "FAIL (the checks, see $dir/check.out)" > "$dir/result"
+    fi
+    sed 's/^/cr-test: /' "$dir/check.out"
+}
+
 # bench: the benchmarks, served with the reporter (bench-server.py).
 serve_bench() {
     python3 tools/cr/bench-server.py "$bench_js" "$bench_sp" "$1" "$dir/bench.log"
@@ -595,6 +627,7 @@ for c in "$@"; do
     headless) case_headless ;;
     multi) case_multi ;;
     jit) case_jit ;;
+    webgl) case_webgl ;;
     bench) case_bench ;;
     *) echo "cr-test: no case $c (hello, rust, base, shell-wl, headless, multi, jit, bench)" >&2
        mkdir -p "$out/$c"
