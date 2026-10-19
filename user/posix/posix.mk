@@ -10,7 +10,12 @@
 #
 #   build/sysroot/include   musl's headers (its two generated ones made
 #                           by the same sed steps as musl's Makefile) and
-#                           Jam OS's extensions (user/posix/include)
+#                           Jam OS's extensions (user/posix/include);
+#                           in jamos/libos/, libos's headers that
+#                           <jamos/libjam.h> and the sound output
+#                           (<audio.h>) need, for a port that speaks libos
+#                           (Chromium's audio back end): it adds
+#                           -isystem <sysroot>/include/jamos/libos
 #   build/sysroot/lib       libc.a (musl, the overrides, the call layer
 #                           and libjam), crt1.o, crti.o, crtn.o,
 #                           posix.ld, and musl's empty libm.a & co. so
@@ -157,6 +162,11 @@ $(POSIX_OUT)/libjam/%.c.o: %.c $(FLAGDIR)/libjam-gc | $(UINC) $(SYSCALLS_OK) $(I
 -include $(LIBJAM_GC_OBJS:.o=.d)
 
 SYSROOT_HDRS := $(SYSROOT)/include/.made
+# libos's headers for a POSIX program (include/jamos/libos): <os.h> and what
+# it includes, and the sound output's.
+SYSROOT_LIBOS := user/include/os.h user/include/roles.h user/include/jam_syscalls.h \
+                 user/include/mixer.h user/include/audio.h
+SYSROOT_LIBOS_JAM := $(addprefix kernel/include/jam/,abi.h startup.h status.h syscall_nums.h)
 SYSROOT_EMPTY := $(addprefix $(SYSROOT)/lib/lib,$(addsuffix .a,m rt pthread crypt util xnet resolv dl))
 SYSROOT_LIBS := $(SYSROOT)/lib/libc.a $(SYSROOT)/lib/crt1.o $(SYSROOT)/lib/crti.o \
                 $(SYSROOT)/lib/crtn.o $(SYSROOT)/lib/posix.ld $(SYSROOT_EMPTY)
@@ -221,7 +231,8 @@ $(MUSL_OUT)/ovr/%.S.o: %.S $(FLAGDIR)/musl-ovr-s | $(MUSL_GENH) $(MUSL_CHECKED) 
 
 $(SYSROOT_HDRS): $(MUSL_GENH) $(shell find $(MUSL)/include $(MUSL)/arch/generic/bits \
                                           $(MUSL)/arch/x86_64/bits $(POSIX)/include \
-                                          $(POSIX)/musl/arch/x86_64/bits -name '*.h')
+                                          $(POSIX)/musl/arch/x86_64/bits -name '*.h') \
+                 $(SYSROOT_LIBOS) $(SYSROOT_LIBOS_JAM)
 	rm -rf $(SYSROOT)/include
 	mkdir -p $(SYSROOT)/include/bits
 	cp -R $(MUSL)/include/. $(SYSROOT)/include/
@@ -232,6 +243,9 @@ $(SYSROOT_HDRS): $(MUSL_GENH) $(shell find $(MUSL)/include $(MUSL)/arch/generic/
 	cp $(MUSL_OUT)/include/bits/alltypes.h $(MUSL_OUT)/include/bits/syscall.h \
 	    $(SYSROOT)/include/bits/
 	cp -R $(POSIX)/include/. $(SYSROOT)/include/
+	mkdir -p $(SYSROOT)/include/jamos/libos/jam
+	cp $(SYSROOT_LIBOS) $(SYSROOT)/include/jamos/libos/
+	cp $(SYSROOT_LIBOS_JAM) $(SYSROOT)/include/jamos/libos/jam/
 	touch $@
 
 $(POSIX_OUT)/%.c.o: %.c $(FLAGDIR)/posix | $(SYSROOT_HDRS) $(UINC) $(SYSCALLS_OK) $(IDL_OK)
