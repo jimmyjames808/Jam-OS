@@ -70,8 +70,9 @@ finding below says otherwise):
 - **Can a hostile client make extfs block or crash?** Not crash: every
   message is checked by the generated code or `fsw_chan_bell` (a call
   first, a give with a txid, a give of a non-event or without
-  `RIGHT_SIGNAL`, a second give, handles on a request: refused, the
-  channel ended), ids are checked against their channel, `take`'s room is
+  `RIGHT_SIGNAL`: refused, the channel ended; a second give, handles on a
+  request: refused, `ERR_INVALID_ARGS`, the channel kept, as IR2's
+  `extfs_watch_abuse` found), ids are checked against their channel, `take`'s room is
   clipped. Block: yes, the reach check reads each watched directory's
   `..` chain to the volume's root for every watch of every subview channel
   on every rename anywhere on the volume (4). And one process can take
@@ -85,9 +86,9 @@ finding below says otherwise):
 | 2 | Medium | `user/posix/sys/inotify.c:741` (`lx_inotify_rm_watch`), `:292` (`convert_locked`), `:205` (`watch_room_locked`) | A removed wd is held until its `IN_IGNORED` comes. The service drops `IN_IGNORED` like any record once a queue is full (fswatch.idl, Linux's rule), and answers OK, with no `IN_IGNORED`, a removal of a watch that already ended (its own `IN_IGNORED` lost to an overflow). Either way the wd is held for good and counts against the descriptor's 1,024 (`ENOSPC`). Chromium never reads `IN_Q_OVERFLOW` and removes watches as its paths change: a busy watcher that overflows now and then loses its room over a long session. Linux frees the wd at once. | Fill a channel's queue, `inotify_rm_watch` a wd, read everything: no `IN_IGNORED` for it, and it is held (posixtest's new `lost_ignored`). | Fixed: see "Fixes" |
 | 3 | Medium | `user/services/extfs/watch.c:298` (`moved`: `if (!n ...) continue`), `:185` (`CHAIN_MAX`) | Fail-open: a watch whose place the reach check can't find (its directory deeper than 2,048, a directory that can't be read, a file's directory gone) is left on. A subview's client can make its own watch too deep: watch a directory, then move the directory's top under fresh 32-deep chains again and again (each move short of path, inside the view, so judged by nothing). When something later moves that tree out of the subview the watch stays, and an open file in it reports to the client (with Directory handles, DIRHANDLE-PLAN, so will names made there). | utest `extfs_watch_deep`: a watch 2,100 directories down, its tree moved above the subview's root, then a write to a file open in it: the subview's watcher gets `IN_MODIFY` with the name. | Fixed: see "Fixes" |
 | 4 | Medium | `user/services/extfs/watch.c:268` to `:289` (`moved`'s choice of channels), `:296` (a chain per watch) | Every rename on the volume judges every subview channel with watches unless the rename's target is under the channel's root: a rename in `/data` judges the watchers of `/tmp`. For each, each of its watches reads its whole `..` chain to the volume's root (an inode and a directory block each step). A subview client's 1,024 watches 2,000 directories down make every rename anyone makes on the volume read some 2 million directories while extfs serves nothing else; ordinary deep watches still cost each unrelated rename thousands of reads. | utest `extfs_watch_deep`: 256 watches 1,000 directories down in a subview; renames elsewhere on the volume take some 250,000 directory reads each (seconds), against well under a millisecond with no watch. | Fixed: see "Fixes" |
-| 5 | Medium (design) | `user/include/fswatch.h:54` to `:57`, `user/lib/fswatch.c:251` (`fsw_chan_new`), `:381` (`fsw_add`) | The volume's caps are shared by every process: one process with four inotify descriptors holds all 4,096 watches of `/data` (1,024 a channel), four processes all 32 channels. Every other program's add then fails `ENOSPC` (Chromium's watchers stop). Linux's caps are a user's, and its default watch limit is far above what one program uses. | Four descriptors in one process, each with 1,024 watches on `/data` (or `/tmp`): a second process's `inotify_add_watch` is `ENOSPC`. | Left: design question 1 |
+| 5 | Medium (design) | `user/include/fswatch.h:54` to `:57`, `user/lib/fswatch.c:251` (`fsw_chan_new`), `:381` (`fsw_add`) | The volume's caps are shared by every process: one process with four inotify descriptors holds all 4,096 watches of `/data` (1,024 a channel), four processes all 32 channels. Every other program's add then fails `ENOSPC` (Chromium's watchers stop). Linux's caps are a user's, and its default watch limit is far above what one program uses. | Four descriptors in one process, each with 1,024 watches on `/data` (or `/tmp`): a second process's `inotify_add_watch` is `ENOSPC`. | Fixed by IR2: see "IR2" |
 | 6 | Low | `user/services/extfs/files.c:534` (`files_reap`) | Before an fs request, the files closed since are handled in slot order, not in the order they were closed: two closes and then an fs request (behind another client's fs packet) give the two `IN_CLOSE_*` in slot order. Nothing known depends on the order of two files' closes. | Close the file in the higher slot, then the lower, then a `mkdir`, while another process's fs request is queued. | Left |
-| 7 | Low (design) | `user/lib/keep.c:435` (`keeper_release`) | IL1's open item (the main session's "a mount going should wake poll/epoll"): IE2 made every channel extfs itself ends ring its bell (a fresh start, a restart that can't keep it, the end, the disk gone). A dead extfs that volumes gives up on has its channels closed by the keeper, which knows no bell: `poll` and `epoll` sleep on until something else wakes them; a blocked `read` sees it within a second. | Kill extfs past its restart limit while a thread polls an inotify descriptor watching `/data`. | Left: design question 2 |
+| 7 | Low (design) | `user/lib/keep.c:435` (`keeper_release`) | IL1's open item (the main session's "a mount going should wake poll/epoll"): IE2 made every channel extfs itself ends ring its bell (a fresh start, a restart that can't keep it, the end, the disk gone). A dead extfs that volumes gives up on has its channels closed by the keeper, which knows no bell: `poll` and `epoll` sleep on until something else wakes them; a blocked `read` sees it within a second. | Kill extfs past its restart limit while a thread polls an inotify descriptor watching `/data`. | Fixed by IR2: see "IR2" |
 | 8 | Low | `user/services/extfs/request.c:363` (`unmake`) | A request whose commit fails has what it made dropped (a file, a view, a map), but not a watcher channel: `fs.watch` answered `ERR_IO` leaves the channel's record and keeper slot until the client's end, closed with the failed reply, is seen closed at the channel's next packet (at once). Self-healing; one slot for a moment. | A journal commit failing at an `fs.watch` (a disk error). | Left |
 | 9 | Low | `user/lib/fswatch.c:129` (`queue`), docs/INOTIFY-PLAN.md 2.6 ("Memory") | A queue's bound is 16 KiB of records, but each record is its own allocation (a 24-byte header and the allocator's own), so a full queue of short names is some 50 KiB of the service's heap; 32 channels some 1.6 MiB. Bounded; the plan's "costs the service its 16 KiB" understates it. | 1,170 events of no name on one channel. | Left (the plan's text says so now) |
 | 10 | Low | `user/services/extfs/watch.c:88` (`SPECIAL_MAX`) | The hidden-name filter knows at most 16 etc-like directories (`etc`, `ETC`, `etc.`, ... in the root, and their `ssh` and `authorized_keys`). A volume whose root holds more names the views call etc may leave the real etc unknown, and its `ssh` named in events to a view hiding the keys. Only a writer of the volume's root (a whole view) can make them. | 16 directories `etc.`, `ETC.`, ... made before `etc` in the root's order. | Left |
@@ -135,6 +136,9 @@ Not fixed (Low, said why in the table): 6 to 13.
 
 ## Design questions
 
+Both decided as recommended by the main session (10-18) and built by
+IR2 (below).
+
 1. **The volume's caps are every process's (finding 5).** One process
    with four descriptors holds all of a volume's 4,096 watches; four
    processes hold its 32 channels. Recommendation: a watch cap per process
@@ -168,4 +172,72 @@ cases), posixtest inotify's `lost_ignored`.
 No kernel change, so no ktest. The plan's other hostile runs (a rename
 storm with extfs killed every 200 ms, 8 threads closing and renaming
 while another reads, protocol abuse against extfs itself rather than
-the library's fake) were not written: see the report's open items.
+the library's fake) were not written here: IR2 wrote them (below).
+
+## IR2: the follow-ups
+
+The main session decided both design questions as recommended above
+([INOTIFY-PLAN's IR2 notes](INOTIFY-PLAN.md#ir2-notes)) and asked for the
+hostile runs.
+
+| # | The fix | Its test | Without the fix |
+|---|---|---|---|
+| 5 | The services' library holds a process to 1,024 watches on a volume across all its channels (`FSW_PROCESS_WATCHES`, by fs.watch's writer pid); libc holds a process to 1,024 across all its inotify descriptors (`max_user_watches` the process's); a volume's watches 4,096 to 8,192 (an id's slot 13 bits, `FSW_TABLE_VERSION` 2, `XF_STATE_LAYOUT` 9, the state asserted to fit its VMO). | utest `extfs_watch_limits` (8 channels of this process, 1,024 watches across them, the next refused on any, a second process's taken), `fswatch_caps` (the volume filled by 8 processes, pid 0's channel alone); posixtest `procfs` (two descriptors share `max_user_watches`) | `extfs_watch_limits`: the 1,025th add (a's `/c/127`) OK; `fswatch_caps`: pid 5's 1,025th OK; `procfs`: the second descriptor took 1,024 of its own, no `ENOSPC` at the limit |
+| 7 | `keepch.put` carries a ring (an IDL change, its own commit: the ABI stamp moves): bits of `SIG_USER_ALL` the keeper sets on the slot's event when it closes the slot itself (`keeper_release`, a slot a restore can't hand over), after the slot's channel is closed; never at a drop or a replacing put; a ring it can't sound refused. extfs keeps each belled watcher with `FSWATCH_BELL` as its ring. | utest `keep_ring`; `extfs_restart_giveup` (extfs killed and given up by its supervisor: the watcher's bell rung, its channel closed) | `extfs_restart_giveup`: the bell never rang (5 s, `ERR_TIMED_OUT`) though the channel closed; `keep_ring` wasn't reached (`fswatch_caps` failed first in that boot) |
+
+The hostile runs (`user/tests/utest/extfs_watch.c`, in the init run and
+`extfs-svc`), each against extfs itself; none found a High or Medium:
+
+- `extfs_watch_storm`: renames of one file back and forth in a watched
+  directory while the restart supervisor kills extfs every 200 ms (15
+  kills): some 61,000 to 71,000 renames in 3.2 s, every one answered OK
+  (no `ERR_IO`); the watcher's channel never closed; its records only
+  whole pairs (one cookie, the other name) and one `IN_Q_OVERFLOW` a
+  restart; the pairs some 30 to 50 fewer than the renames (events of
+  renames the dead instances had committed, which the overflows say were
+  lost); after the storm one rename makes exactly one pair; the disk
+  e2fsck clean.
+- `extfs_watch_threads`: 8 threads, each 60 rounds of open, write, close,
+  rename away and back, while another takes: all 3,368 records, each
+  thread's in its order (every `IN_CLOSE_WRITE` before its thread's next
+  `IN_MOVED_FROM`: the close rule held under load), no overflow.
+- `extfs_watch_abuse`: every first message but the bell ends its channel
+  (a take, the give as a call, a channel, an event without
+  `RIGHT_SIGNAL`, no handle, two, a short give, an unknown ordinal);
+  after the bell, malformed requests are answered `ERR_NOT_SUPPORTED` or
+  `ERR_INVALID_ARGS` (an unknown ordinal, a short take, one 8 KiB too
+  long, one carrying an event, a second bell, another protocol's
+  ordinal); odd but well-formed ones are answered (a take of no room or
+  of 4 GiB, removes of 0, of `UINT32_MAX` and of another channel's id,
+  which stays; adds of no path: the view's root, of 4,095 bytes
+  `ERR_NAME_TOO_LONG`, with a NUL `ERR_INVALID_ARGS`, every mask bit
+  `ERR_INVALID_ARGS`); 1,000 gives after a bell and 1,032 takes never
+  read: extfs serves the other watcher all the while, and its job's
+  handles are back to what they were within 4 ms of the flooder's close.
+- `extfs_watch_unread`: a watcher that never reads through 2,000 changes
+  of 200-byte names: extfs's job 366 pages when the watch was made, 372
+  once its queue was full, 372 after 2,000 more; handles 16 throughout;
+  what it reads at last is the bound's 76 records and the overflow.
+
+New Low and notes (left):
+
+- **L14.** A take sent as an event (txid 0) is served: its records are
+  copied into an answer with txid 0 that no call waits for. Only the
+  client's own records; the generated server's rule for a call's ordinal
+  without a txid (every protocol's, not this one's).
+- **L15.** libc refuses at its limit before it asks the service, so a
+  process at 1,024 watches can't change an existing watch's mask
+  (`ENOSPC`; Linux lets it). Since libc's count is the process's (IR2),
+  this applies across descriptors; Chromium keeps below
+  `max_user_watches`.
+- **N5.** A second give after the bell, and handles on a request, are
+  refused `ERR_INVALID_ARGS` with the channel kept (the text above said
+  the channel ended; corrected).
+- **N6.** Eight processes can still fill a volume's 8,192 watches (32
+  channels); a share per job would close it (a sandbox's renderers in one
+  job).
+
+| Batch | Runs | Result |
+|---|---|---|
+| 19201225 (the branch, DL0 merged) | PC `make check`; the full init run; ktest at 4 CPUs; `tools/extfs-svc-test.sh`; `posix-inotify.txt`, `posix-procinfo.txt`; the shell scripts basic, cmds, commands, files; `tools/kdump-test.sh save`; `tools/fat-restart-test.sh`, `tools/volumes-restart-test.sh` | 12 of 13 PASS; extfs-svc FAILED twice: the three new runs' saved disks filled its `/data` (`extfs_restart_locks`' save `ERR_NO_SPACE`): those three no longer save theirs |
+| 19202251 (the fixes taken out, the tests kept) | `keep_ring` and `fswatch_caps`, `extfs_watch_limits`, `extfs_restart_giveup`, posixtest `procfs` | each FAILED as the table above says |

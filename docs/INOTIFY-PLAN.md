@@ -276,8 +276,9 @@ view meets every watch on the inode. A watcher channel keeps its view's
 flags and root (a copy: the view's own channel may close first), and
 judges its adds and its events by them.
 
-Limits (per volume, *unsure* of the state's room): 4096 watches, at most
-1024 on one channel; 32 watcher channels, at most 8 from one process
+Limits (per volume): 8,192 watches (4,096 until [IR2](#ir2-notes)), at
+most 1,024 from one process on all its channels (IR2) and 1,024 on one
+channel; 32 watcher channels, at most 8 from one process
 (the `fs.watch` request's writer pid, CBF2a); a queue of at most 16 KiB
 per channel, allocated as events come. Past the queue's limit one
 `IN_Q_OVERFLOW` is queued and later events are dropped until a `take`
@@ -325,7 +326,7 @@ services.
 |---|---|---|
 | the service dies and a successor carries on (the keeper's restart) | kept: the table is in the state VMO (watcher records: view flags and root, the bell's keeper slot; watches: inode, generation, mask, id); the keeper holds each watcher channel and its bell | `IN_Q_OVERFLOW` first (the dead queue and any change finished by the successor from its slot without running again went unreported), then events as before |
 | the successor starts fresh (the state given up) | gone: the watcher channels close, as open files do | `IN_UNMOUNT`, then `IN_IGNORED` per watch (libc makes them on the channel's peer-closed) |
-| the mount goes (a stick pulled, `mount -w` / `-r`, volumes gives up) | gone | the same |
+| the mount goes (a stick pulled, `mount -w` / `-r`, volumes gives up) | gone | the same; a dead service given up has its keeper close the channels and ring their bells (`keepch.put`'s ring, IR2), so `poll` and `epoll` wake |
 
 The open files' directories and names are kept in memory only: after a
 restart a file opened before it makes no events in its directory's watch
@@ -424,14 +425,16 @@ notes](#il2-notes)).
 
 ### 3.5 Limits
 
-What the services allow is the bound (2.5: 1,024 watches on a channel, 8
-channels from a process on a volume, a 16 KiB queue per channel), so the
+What the services allow is the bound (2.5: 1,024 watches from a process
+on a volume, all its channels, 8 channels from a process on a volume, a
+16 KiB queue per channel), so the
 files say that and libc keeps to it ([IL2 notes](#il2-notes)):
 `/proc/sys/fs/inotify/max_user_watches` 1024, `max_user_instances` 8,
 `max_queued_events` 512 (16 KiB of records, each 14 bytes and its name:
 512 of an 18-byte name, 60 of the longest; no program read is known but
-Chromium's of the first). A descriptor holds at most 1,024 watches
-(`ENOSPC` past that, as a service's refusal is) and a process at most 8
+Chromium's of the first). A process holds at most 1,024 watches, all its
+descriptors ([IR2](#ir2-notes); a descriptor's until then; `ENOSPC` past
+that, as a service's refusal is) and at most 8
 descriptors (`EMFILE` at `inotify_init`, as Linux's per-user limit
 answers). Chromium's per-watcher limit is then 64. The 8 channels are a
 volume's, and `/data` and `/tmp` are two mounts of one volume: a
@@ -446,9 +449,9 @@ descriptor watching both takes two, so only four such descriptors fit
 - A watch ends when its inode leaves the watcher's view (Q2).
 - `read` of 0 bytes doesn't wait (3.3).
 - Absent after `fork`, closed at `exec` (Q3).
-- The limits are the services' (3.5): a descriptor's watches and a
-  process's descriptors, not a user's (two processes can hold 1,024
-  watches each, up to a volume's 4,096). `max_queued_events` is the
+- The limits are the services' (3.5): a process's watches and its
+  descriptors, not a user's (two processes can hold 1,024 watches each,
+  up to a volume's 8,192). `max_queued_events` is the
   records a queue's bytes hold, for an 18-byte name.
 - The same inode watched through two different mounts of one volume
   (`/data/x` and `/jam/x` on a drive boot) gets two `wd`s: libc can't
@@ -507,6 +510,7 @@ after it (`pager.c`, `main.c`, `fsops.c`, `test.c`, `extfs.h`),
 | **IC. Chromium's tests** (built: [IC notes](#ic-notes)) | the 165 run: `FilePathWatcher*` off `tools/cr/base_unittests.skip` (what still fails listed with its reason), the stage relinked (`tools/cr/build.sh start base_unittests test_child_process`) | `tools/cr/base_unittests.skip`, `docs/CR-PLAN.md`'s rows | IE2, IL1 and IL2 merged; no other agent running `base` | `CR_BASE_ONLY='FilePathWatcher*' tools/cr-test.sh <out> base` with `TMPDIR` on ext `/data`, and once on `/tmp` (`CR_BASE_ENV=`) | 0.5 | Sonnet 5.5 |
 | **IR. Independent review and fix** (built: [IR notes](#ir-notes)) | everything above, findings first (a new docs/INOTIFY-REVIEW.md), then High and Medium fixed with a test each: can an event reach a watcher who can't list its name, can a watch outlive its reach, can a service be made to hold unbounded memory, is a wake ever lost, is a close ever reported after the next request's events, can a `wd` be reused while Chromium holds it | the files its fixes need | IC | its own; hostile: a watcher that never reads (one overflow, the service's memory flat), 8 channels from one process and the ninth refused, renames moving directories in and out of a subview while it watches, a rename storm with extfs killed every 200 ms, 8 threads closing and renaming while another reads; full init run; the extfs and posix scripts | 1.5 | **Opus** |
 | **IJ. The join** | ARCHITECTURE (Storage: watches; the POSIX layer: the kind), TESTING's rows, CR-PLAN, ROADMAP, HISTORY; this plan deleted when HISTORY covers it | the docs | IR | `make check` | 0.5 | Sonnet 5.5 |
+| **IR2. The review's follow-ups** (built: [IR2 notes](#ir2-notes)) | IR's design questions as the main session decided them (a process's watches on a volume, the volume's raised; a given-up service's bells) and the hostile runs IR didn't write | `abi/idl/keepch.idl`, `user/lib/keep.c`, `user/lib/fswatch.c`, extfs's watch.c and keeper.c, libc's inotify.c, their tests | IR | utest `extfs_watch_*`, `extfs_restart_*`, `keep_*`, `fswatch_*`; posixtest `inotify`, `procfs`; the init run, the extfs and shell scripts | 2.5 | **Opus** |
 
 **Order.** IP first (it gates nothing running). Then IE1 (after WE1) and
 IL1 (after CBF6) side by side; then IE2 and IL2 side by side; then IC,
@@ -901,6 +905,36 @@ changed from the notes above:
 - Left as design questions for the main session: the volume's caps shared
   by every process, and a dead extfs's keeper closing channels without
   their bells.
+
+### IR2 notes
+
+The main session's answers to IR's two design questions, and the hostile
+runs the IR row named and IR left
+([INOTIFY-REVIEW.md](INOTIFY-REVIEW.md) has each outcome):
+
+- *A process's share* (IR's 5): the services' library counts a process's
+  watches on a volume across all its channels (fs.watch's writer pid; pid
+  0, not known, has its channel's 1,024 alone) and refuses the 1,025th
+  with `ERR_NO_SPACE`; libc counts a process's watches across all its
+  inotify descriptors (quiet ones too), so `max_user_watches` 1024 is the
+  process's, as Linux's is a user's. A volume holds 8,192 watches (an id's
+  slot 13 bits, its count 19: an ended watch's id back after half a
+  million more; `FSW_TABLE_VERSION` 2, `XF_STATE_LAYOUT` 9 here, the
+  state asserted to fit `EXTFS_STATE_SIZE`). Eight processes can still
+  fill a volume; a share per job (a sandbox's renderers) would close that.
+- *A given-up service's bells* (IR's 7): `keepch.put` carries a ring, bits
+  of `SIG_USER_ALL` the keeper sets on the slot's second handle (an event
+  it may signal: a put that says otherwise is refused) when it closes the
+  slot itself: `keeper_release` (the service given up, retired or stopped)
+  and a slot a restore can't hand over; after the slot's other handles
+  are closed, so the woken client finds its channel closed. A drop, or a
+  put replacing the slot, rings nothing. extfs keeps each belled watcher
+  with `FSWATCH_BELL` as its ring (watch.c's `keep_bell`).
+- *The hostile runs*: utest `extfs_watch_storm` (renames while extfs is
+  killed every 200 ms), `extfs_watch_threads` (8 threads closing and
+  renaming while another reads), `extfs_watch_abuse` (bad first messages,
+  malformed and odd requests, floods), `extfs_watch_unread` (a watcher
+  that never reads: extfs's pages and handles flat).
 
 ## 6. Tests
 
