@@ -218,6 +218,94 @@ and the first notes' deviations (a bell with two bits so a `poll` cannot
 sleep through records another thread's take left) came from writing the
 tests against fake services before any real one existed.
 
+## M12.7: NVMe and the installer
+
+*Planned 2026-10-09, stage 1 built 2026-10-09 to 2026-10-10, stage 2
+2026-10-13, stage 3 2026-10-14 to 2026-10-16, checked on the PC 2026-10-11
+and 2026-10-18.* A user-space NVMe driver behind the IOMMU on the block
+interface M12 had just reviewed, in three stages because the PC's only NVMe
+drive held Windows: read-only, writes to a Jam OS disk only, an installer so
+the PC boots Jam OS from an internal disk. The owner fitted a second drive
+(blank, never initialised, Windows' prompt to initialise it refused) for
+stages 2 and 3; the driver refuses every write to any other drive.
+
+What was built:
+- **Stage 1, read-only** (`drivers/nvme/`): the controller (admin queue,
+  identify, an I/O pair, MSI-X, PRP lists, timeouts, abort, reset, the
+  shutdown notice), `storage` and `block` with 32 requests in flight
+  answered by txid, and no write opcode in the file that can be built:
+  `tools/checknvme.py` runs in `make check` and refuses one. The partition
+  library (`drivers/lib/parttable.c`: MBR, GPT with both headers and CRCs,
+  blank detection, the Jam OS mark) is checked on the host by
+  `tools/gptcheck.c`; `volumes` mounts a drive's FAT partitions read-only as `/nvme0`,
+  `/nvme1`..., and the shell gained `disks`, `disk digest` and `disk smart`.
+- **Stage 2, writes to a Jam OS disk only.** `sqe_write` (FUA) and
+  `sqe_flush` are reachable only through the drive's mode (other, blank,
+  Jam OS) and a range check; `create_table` works on a blank drive in a
+  fixed order; `disk prepare <disk>` asks for the last four characters of
+  the serial and makes a GPT with a "Jam OS ESP" and a "Jam OS data"
+  partition (type 71bae565-d4a8-4315-8c81-9b35462cc158 for data). `diskro`
+  from the boot menu keeps every drive read-only. The owner decided
+  later (2026-10-14, "leave it to the user, just warn") that `disk prepare`
+  works on any drive he picks: the empty rules decide the confirmation, not
+  whether, and a drive that is not empty is shown and erased only after the
+  serial and a typed `erase` (NV-warn; the rules include a MiB at 1 MiB and
+  at 513 MiB, where Jam OS would put its partitions).
+- **Stage 3, the installer.** The kernel passes Limine's GPT disk GUID
+  (`bootdisk=gpt:<GUID>`) to init and into the kexec command line, so the
+  boot disk is known by GUID; `install <disk>` (init's worker thread,
+  volumes' hold of the target's partitions from other mounts) copies the
+  build, `/data/etc` and the menu, the menu last, with read-backs; `update`
+  writes the disk the PC booted from. A stick plugged in beside an installed
+  drive boots itself and mounts the drive's partitions read-only.
+- **Names.** Drives are named in PCI order (`disks.attach` carries a
+  `unit`): on the owner's PC the names swapped between a boot from the
+  stick and a boot from the new drive until then.
+
+The owner's answers (2026-10-09, "your recommendation for everything unless
+unsure"): the GPT layout is the mark, written only onto a blank drive after
+the serial's last four are typed; the installed disk boots from the
+firmware's default path and the owner sets the boot order; no Windows entry
+in the boot menu (F8 or the boot order); the Jam OS drive's filesystem FAT
+32 at first (ext came with M13.6); `/nvme0`, `/nvme1` for the mounts; the
+installer copies the build plus `/data/etc`; the stick stays a working stick.
+**Stage 1 is checked in Jam OS as it is**: no Linux stick and no separate
+hash of the drive; the drive's own host-write counter, printed in the
+driver's start and end lines, is the record. Reviews (2026-10-11): R1 and R2
+dropped, R3 once after each of stages 2 and 3; in their place mechanical
+checks (checknvme.py for the write path; every NVMe QEMU test keeps a
+Windows-like disk attached whose hash must be unchanged). Stage 3 was
+deferred for porting (2026-10-11) and then, on 2026-10-14, "finished whole".
+
+The reviews (docs/M12.7-REVIEW.md, by an agent that wrote none of it). Stage
+2: 0 High, 2 Medium, 5 Low; fixed with a test each: "blank" was decided from
+a buffer prefilled with 0xA5 rather than zeros, and a second one fixed by the
+merge of main itself. Stage 3: 0 High, 3 Medium, 10 Low; fixed with a test
+each, on the PC before and after: a held disk could become the boot disk of
+a GPT boot after the wait (S1), a cut erase was offered as "finish" for good
+instead of being offered for erase again (S2), install refused a read-only
+mount before anything was stopped (S3), and the installer's clearing also
+removes a menu at Limine 11's other places (S11); S4 (a reinstall cut after
+the new kernel, the drive picked beside a copy of the stick) has a guard test.
+
+On the PC: **P1 passed 2026-10-11** (Crucial/Windows drive: the host write
+counter unchanged across two Jam OS boots, the new drive at 0 writes).
+**P2 and P3 on 2026-10-18**: `disk prepare` of the new drive, the refusals
+(`mount -w` of Windows' drive no; `disk prepare` of it showed "not empty" and
+was stopped), the Windows drive's write count unchanged, `install` of the
+new drive, the PC booting Jam OS from it without the stick, Windows starting
+from F8. The two power-cut steps of P2 (holding the power button during a
+`disktest`) were skipped at the owner's choice, since QEMU covers the cuts
+(`tools/nvme-write-test.sh`, `tools/install-test.sh`'s ten cut points,
+`tools/extfs-test.sh`); only the real drive honouring its flush is unproven
+on hardware. headless_shell then fetched pages over the internet from the
+installed drive.
+
+Open: the milestone's closing sign-off (All tests and `soak 10` on the PC
+booted from the internal disk) is the main session's pre-push pass, not a
+separate run; the real power-cut check above; FAT is still the Jam OS ESP's
+format, ext is the data partition's (M13.6).
+
 ## M12.1: the code check
 
 *2026-10-09 to 2026-10-11.* A check of what M12 and G1 changed, by fresh

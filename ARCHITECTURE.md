@@ -1013,7 +1013,7 @@ port, so while it handles one request every other client waits behind it.
 | console | a window on `/svc/wayland` and COM1's output (the root's `RIGHT_ROOT_SERIAL_OUT`), the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log ([Debugging](#debugging)), and its keys to the focused client (`keys`) | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
 | usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` (devmgr asks it for a channel of volumes' own), a `block` channel per partition | yes |
-| nvme | its PCI function (an NVMe controller: MSI-X, DMA queues) | `storage` and `block` for an internal drive, up to 32 requests in flight; writes only a Jam OS drive's two partitions, and a blank drive's table on `create_table` (or, with the owner's confirmation checked in the driver, an erased one's), decided from the table it reads itself ([M12.7-PLAN](docs/M12.7-PLAN.md)) | every boot (every other drive read-only: `tools/checknvme.py`; `ro`, from `diskro`, makes every drive read-only; volumes mounts its FAT partitions read-only as `/nvmeN`); the word `nvmetest=` only adds the driver's test reads |
+| nvme | its PCI function (an NVMe controller: MSI-X, DMA queues) | `storage` and `block` for an internal drive, up to 32 requests in flight; writes only a Jam OS drive's two partitions, and a blank drive's table on `create_table` (or, with the owner's confirmation checked in the driver, an erased one's), decided from the table it reads itself ([HISTORY](docs/HISTORY.md#m127-nvme-and-the-installer)) | every boot (every other drive read-only: `tools/checknvme.py`; `ro`, from `diskro`, makes every drive read-only; volumes mounts its FAT partitions read-only as `/nvmeN`); the word `nvmetest=` only adds the driver's test reads |
 | fat | one partition's `block` channel, a state VMO and a keep channel from volumes | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to volumes; outlives its process ([below](#services-that-outlive-their-process)) | yes |
 | bootfs | the bootfs image VMO | `fs` and `file` for `/boot`, read-only | yes |
 | logd | the kernel log, `/data` | each boot's log as a file on the stick | yes |
@@ -2999,7 +2999,7 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   partition over the whole disk (a block 0 that holds a partition table
   is never taken for one, whatever else it holds). usb-storage reads an
   MBR and nothing else, so a GPT stick shows its protective partition
-  (type 0xEE), which volumes leaves alone ([M12.7-PLAN](docs/M12.7-PLAN.md)
+  (type 0xEE), which volumes leaves alone ([HISTORY](docs/HISTORY.md#m127-nvme-and-the-installer)
   reads GPT for internal drives). A partition that turns
   out to hold no FAT volume is left alone and said so in the log.
 - Read-only is enforced below the filesystem: a `/usbN` partition's
