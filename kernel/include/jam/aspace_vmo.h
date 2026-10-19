@@ -157,18 +157,23 @@ void     vmo_resident(struct vmo *v, uint64_t first, uint64_t n, bool cache, uin
  * VMO as large as v (a pager child's gets the same window), charged to
  * job (ERR_NO_MEMORY, and nothing raised, if it refuses).
  * ERR_SHOULD_WAIT, nothing raised: a writer of v waits for its freezes to
- * end, or another thread has the freeze turn; the clone lets go of every
+ * end, or the freeze turn's holder claimed v; the clone lets go of every
  * freeze and lock it holds and calls vmo_freeze_backoff (vmo.c's "Freezes
  * and writers"). With the turn it waits for v's writers instead
  * (ERR_CANCELED at a kill). */
 status_t vmo_clone_begin(struct job *job, struct vmo *v, struct vmo **out);
 /* After a freeze of v backed off for the `tries`th time, with nothing
  * held: wait for v's writers to go on, or (from FREEZE_TRIES on, or if
- * another thread has it) take the freeze turn (*turn: give it back with
- * vmo_freeze_turn_end once the try with it is over), then try again.
+ * the turn's holder claimed v) take the freeze turn (*turn: give it back
+ * with vmo_freeze_turn_end once the try with it is over), then try again.
  * ERR_CANCELED if the thread is killed meanwhile. */
 status_t vmo_freeze_backoff(struct vmo *v, unsigned tries, bool *turn);
 void     vmo_freeze_turn_end(void);
+/* With the freeze turn: claim v (on) before the try's first freeze, so
+ * that no other freeze of it begins while the try runs, or release it
+ * (off) once the try is over. Only claimed VMOs' freezers wait for the
+ * turn's holder. */
+void     vmo_freeze_claim(struct vmo *v, bool on);
 /* Give c, v's copy, v's pages [first, end) (up to c's size): shared
  * copy-on-write with v's writable entries for them write-protected into g,
  * which the caller shoots down before vmo_clone_end; a kept VMO's are

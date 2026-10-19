@@ -260,18 +260,22 @@
  *     lock go and waits, holding nothing, for those writers to go on
  *     (vmo_freeze_backoff), then starts again from the beginning; a
  *     creation lets "vmo resize" go and does the same. A freezer that
- *     backed off FREEZE_TRIES times, or that met someone else's turn,
- *     waits for the freeze turn (one mutex for all VMOs, which hands itself
- *     to its longest waiter): while a thread has the turn no other freeze
- *     begins anywhere, and its own begins wait for the VMO's writers
- *     instead of backing off. No deadlock: only the turn's holder ever
- *     waits with a freeze held, and what it waits for (writers asleep on
- *     freezes begun before it had the turn, and their freezers, which never
- *     wait with a freeze held but for `inflight`) never waits for it. Those
- *     freezes end and no new one begins, so the turn's try never backs off:
- *     a clone or creation is done after at most FREEZE_TRIES back-offs and
- *     the turns queued before its own. A completed clone still began every
- *     freeze before its one shootdown, so its instant is kept.
+ *     backed off FREEZE_TRIES times, or that met a claim (below), waits
+ *     for the freeze turn (one mutex for all VMOs, which hands itself to
+ *     its longest waiter). The turn's holder claims every VMO its try will
+ *     freeze before it begins any (`turn_claim`: a clone's copied VMOs, a
+ *     creation's parent): no other freeze of a claimed VMO begins (it
+ *     backs off), and the holder's own begins wait for the VMO's writers
+ *     instead of backing off. Other VMOs' freezes go on as before: the turn
+ *     holds back only freezers of its holder's VMOs (FZR-1). No deadlock:
+ *     only the turn's holder ever waits with a freeze held, and what it
+ *     waits for (writers asleep on freezes begun before its claims, and
+ *     their freezers, which never wait with a freeze held but for
+ *     `inflight`) never waits for it. Those freezes end and no new one of a
+ *     claimed VMO begins, so the turn's try never backs off: a clone or
+ *     creation is done after at most FREEZE_TRIES back-offs and the turns
+ *     queued before its own. A completed clone still began every freeze
+ *     before its one shootdown, so its instant is kept.
  *   - A separation under the lock: the copy (made with the lock dropped,
  *     from a page held by a reference) goes in if the slot still holds the
  *     page it copied, the old page's entries are cleared in every user
@@ -411,6 +415,9 @@ struct vmo {
      * a freezer that backed off to wait for (lock). */
     uint32_t         frozen_waiters;
     uint32_t         drains;
+    /* The freeze turn's holder will freeze this VMO in its try: no other
+     * freeze of it begins until the try is over (vmo_freeze_claim; lock). */
+    bool             turn_claim;
     /* Everyone waiting on this VMO's freezes: writers for `protecting` to
      * fall to 0, freezes for `inflight` to, freezers for the writers. */
     struct waitqueue protect_wq;
@@ -557,27 +564,32 @@ static void freeze_drain_locked(struct vmo *v, uint64_t *f)
 uint64_t vmo_freeze_backoffs, vmo_freeze_turns;
 
 /* The freeze turn: its holder (turn_owner, atomic; set and cleared with
- * the mutex held) is the only thread that may begin a freeze while it has
- * it. A freezer reads turn_owner under the VMO's lock it begins, so one
- * that takes that lock after the holder first did sees it. */
+ * the mutex held, read only to tell whether the reader holds it) claims
+ * the VMOs its try freezes (`turn_claim`), and only it may begin a freeze
+ * of a claimed VMO. */
 static struct mutex freeze_turn = {
     SPINLOCK_INIT("vmo freeze turn"), NULL,
     { SPINLOCK_INIT("mutex waiters"), LIST_INIT(freeze_turn.wq.waiters) }, 0
 };
 static struct thread *turn_owner;
 
+static bool turn_mine(void)
+{
+    return __atomic_load_n(&turn_owner, __ATOMIC_RELAXED) == current_thread();
+}
+
 /* Begin a freeze of v: raise `protecting`, then wait for the copies under
  * way. ERR_SHOULD_WAIT, nothing raised, while a writer waits for v's
- * freezes to end or another thread has the turn (the caller lets go of
+ * freezes to end or the turn's holder claimed v (the caller lets go of
  * every freeze and lock it holds and calls vmo_freeze_backoff); with the
  * turn, wait for v's writers instead (ERR_CANCELED at a kill). */
 static status_t freeze_begin(struct vmo *v)
 {
     status_t st = OK;
+    bool mine = turn_mine();
     uint64_t f = vlock(v);
-    struct thread *t = __atomic_load_n(&turn_owner, __ATOMIC_RELAXED);
-    if (t != current_thread()) {
-        if (t || v->frozen_waiters)
+    if (!mine) {
+        if (v->turn_claim || v->frozen_waiters)
             st = ERR_SHOULD_WAIT;
     } else {
         while (v->frozen_waiters && st == OK)
@@ -595,18 +607,20 @@ status_t vmo_freeze_backoff(struct vmo *v, unsigned tries, bool *turn)
 {
     ASSERT(!*turn);   /* the turn's holder never backs off */
     __atomic_add_fetch(&vmo_freeze_backoffs, 1, __ATOMIC_RELAXED);
-    if (tries < FREEZE_TRIES && !__atomic_load_n(&turn_owner, __ATOMIC_RELAXED)) {
+    status_t st = OK;
+    uint64_t f = vlock(v);
+    if (tries < FREEZE_TRIES && !v->turn_claim) {
         /* The writers that made it back off go first: until v's count of
          * them has fallen to 0 since (or is 0). */
-        status_t st = OK;
-        uint64_t f = vlock(v);
         uint32_t gen = v->drains;
         while (v->frozen_waiters && v->drains == gen && st == OK)
             st = waitqueue_wait_cancellable(&v->protect_wq, &v->base.lock, &f, DEADLINE_NEVER);
         vunlock(v, f);
         return st;
     }
-    status_t st = mutex_lock_cancellable(&freeze_turn);
+    vunlock(v, f);
+    /* Claimed by the turn's holder: queue behind it at once. */
+    st = mutex_lock_cancellable(&freeze_turn);
     if (st == OK) {
         __atomic_store_n(&turn_owner, current_thread(), __ATOMIC_RELAXED);
         __atomic_add_fetch(&vmo_freeze_turns, 1, __ATOMIC_RELAXED);
@@ -619,6 +633,14 @@ void vmo_freeze_turn_end(void)
 {
     __atomic_store_n(&turn_owner, NULL, __ATOMIC_RELAXED);
     mutex_unlock(&freeze_turn);
+}
+
+void vmo_freeze_claim(struct vmo *v, bool on)
+{
+    ASSERT(turn_mine());
+    uint64_t f = vlock(v);
+    v->turn_claim = on;   /* nobody waits for a release: they queue for the turn */
+    vunlock(v, f);
 }
 
 /* A GET_WRITE page's copy is done: let a freeze that waits for it go on. */
@@ -2328,6 +2350,8 @@ static status_t child_share(struct vmo *p, struct vmo *c, uint64_t offp, uint64_
     bool turn = false;
     for (unsigned tries = 1;; tries++) {
         mutex_lock(&p->resize);
+        if (turn)   /* no other freeze of p begins while we wait for its writers */
+            vmo_freeze_claim(p, true);
         /* A JIT VMO shares nothing (the file header): checked under "vmo
          * resize", which vmo_make_jit holds while it marks one. */
         st = vmo_is_jit(p) ? ERR_NOT_SUPPORTED : freeze_begin(p);
@@ -2342,6 +2366,8 @@ static status_t child_share(struct vmo *p, struct vmo *c, uint64_t offp, uint64_
                 st = share_pages(p, c, offp);
             protect_end(p);
         }
+        if (turn)
+            vmo_freeze_claim(p, false);
         mutex_unlock(&p->resize);
         if (st != ERR_SHOULD_WAIT)
             break;

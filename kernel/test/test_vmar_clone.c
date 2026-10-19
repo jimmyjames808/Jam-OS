@@ -1494,8 +1494,9 @@ KTEST(vmar_clone_backs_off)
     bo_free(x);
 }
 
-/* The clone meets this thread's freeze turn at its first begin and waits
- * for the turn. With the turn it holds va frozen (a writer waits for it)
+/* The clone meets this thread's freeze turn at its first begin (the turn's
+ * claim on both VMOs, as a holder's try makes) and waits for the turn.
+ * With the turn it holds va frozen (a writer waits for it)
  * while it waits for vb's writer, which waits for this thread's freeze of
  * vb. This thread's next freeze, of va, backs off (the turn is the
  * clone's), it lets vb go, and everything goes on: no deadlock. */
@@ -1506,12 +1507,16 @@ KTEST(vmar_clone_turn_waits)
     bool turn = false;
     KT_EQ(vmo_freeze_backoff(x->v[0], 1000, &turn), OK);   /* past any try: the turn */
     KT_ASSERT(turn);
+    vmo_freeze_claim(x->v[0], true);
+    vmo_freeze_claim(x->v[1], true);
     struct thread *ct;
     bo_start(x, &ct);
     if (!bo_begun(x, 1))
         ktest_fail("vmar_clone_turn_waits: the clone never began");
     thread_sleep_ms(20);
     if (__atomic_load_n(&x->done, __ATOMIC_ACQUIRE)) {
+        vmo_freeze_claim(x->v[0], false);
+        vmo_freeze_claim(x->v[1], false);
         vmo_freeze_turn_end();
         bo_stop();
         ktest_fail("vmar_clone_turn_waits: the clone went on past another thread's turn");
@@ -1521,6 +1526,8 @@ KTEST(vmar_clone_turn_waits)
     KT_EQ(vmo_clone_begin(NULL, vb, &cf), OK);   /* with the turn: no writer, so it begins */
     struct fc_ctx wa = { .v = va }, wb = { .v = vb };
     struct thread *tb = start_waiter(&wb);
+    vmo_freeze_claim(x->v[0], false);
+    vmo_freeze_claim(x->v[1], false);
     vmo_freeze_turn_end();
     bool second = bo_begun(x, 3);   /* va again, then vb: waiting for vb's writer */
     thread_sleep_ms(10);
