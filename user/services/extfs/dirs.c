@@ -18,8 +18,22 @@
  * moved where the view doesn't reach (above a subview's root) or hides
  * (`etc/ssh` for a view that hides the keys) cuts the channel off: every
  * request ERR_NOT_FOUND while it lies there (the plan's Q2); moved back,
- * it works again. A directory removed: ERR_NOT_FOUND to everything (its
- * inode goes; DE2 keeps it as an orphan).
+ * it works again.
+ *
+ * **Removed** (3.3: an rmdir, or a rename over an empty directory). Its
+ * name goes and its parent's link count drops, but while a channel holds
+ * it the inode stays, with no name, on the orphan list (on the disk, so a
+ * cut frees it at the next mount), as an open unlinked file does
+ * (files_held asks dirs_has): never freed, never used again, so a
+ * directory made again at its name is another one. Each channel holding
+ * it remembers the parent it was removed from (dirs_removed, in the state
+ * before the removal commits). Its channel then answers "" and "." (getattr
+ * with a link count of 0, stat, sync, statfs, opendir: W_GONE), ".." the
+ * remembered parent (ERR_NOT_FOUND once that inode is free or used again;
+ * a parent removed too and held answers as this one does), and
+ * ERR_NOT_FOUND to everything else, readdir and creations too (walk.c). It
+ * has no place, so no view hides it. Its last channel closing drops it
+ * (let_go: defer_drop).
  *
  * **Limits.** XF_DIRS per volume, XF_DIRS_PROC from one process (the
  * opendir request's writer: a channel handed to another process still
@@ -27,12 +41,15 @@
  * and whose close the loop hasn't seen yet are let go first.
  *
  * **Restarts** (2.5). Each slot's record (the directory's inode and
- * generation, the view's flags and root, the opener) is in the state
- * (struct xf_dir); its channel here and with the keeper (slot
- * XF_KEEP_DIR), put before the request that made it commits. A successor
- * takes the channels back as views.c's are (dirs_take, dirs_adopt), and
- * climbs once for each at its first request. A fresh start closes them:
- * the client sees ERR_PEER_CLOSED and opens the directory again. */
+ * generation, the view's flags and root, the opener, a removed one's
+ * parent) is in the state (struct xf_dir); its channel here and with the
+ * keeper (slot XF_KEEP_DIR), put before the request that made it commits.
+ * A successor's mount keeps the removed directories its records hold
+ * (recover_orphans asks files_held); it takes the channels back as
+ * views.c's are (dirs_take, dirs_adopt), and climbs once for each at its
+ * first request. A fresh start closes them, and its mount drops the
+ * removed ones: the client sees ERR_PEER_CLOSED and opens the directory
+ * again. */
 #include "extfs.h"
 
 static handle_t dir_ch[XF_DIRS];
@@ -64,13 +81,74 @@ static void close_channel(unsigned i)
     kept_drop(XF_KEEP_DIR(i));
 }
 
+/* Directory ino's last channel went: removed, it goes now, or after the
+ * running request's answer (serve_slot's defer_run). The state forgot the
+ * slot first, so a death between leaves an orphan the next mount drops. */
+static void let_go(uint32_t ino)
+{
+    struct ext_inode in;
+    if (!vol.mounted || files_held(ino) ||
+        ext_iget(&vol.fs, ino, EXT_IGET_UNLINKED, &in) != OK || in.d.links_count ||
+        (in.d.mode & EXT_S_IFMT) != EXT_S_IFDIR)
+        return;
+    defer_drop(ino);
+    if (!op_running())
+        defer_run();
+}
+
 void dirs_drop(uint32_t i)
 {
     if (i >= XF_DIRS)
         return;
+    bool was = kept->dirs[i].used;
     kept->dirs[i].used = false;
     held[i / 64] &= ~(1ull << (i % 64));
     close_channel(i);
+    if (was)
+        let_go(kept->dirs[i].ino);
+}
+
+void dirs_close_all(void)
+{
+    for (unsigned i = 0; i < XF_DIRS; i++)
+        if (kept->dirs[i].used)
+            dirs_drop(i);
+}
+
+bool dirs_has(uint32_t ino)
+{
+    for (unsigned i = 0; i < XF_DIRS; i++)
+        if (kept->dirs[i].used && kept->dirs[i].ino == ino)
+            return true;
+    return false;
+}
+
+bool dirs_up(uint32_t ino, uint32_t gen, uint32_t *up, uint32_t *up_gen)
+{
+    for (unsigned i = 0; i < XF_DIRS; i++) {
+        const struct xf_dir *d = &kept->dirs[i];
+        if (d->used && d->ino == ino && d->igen == gen && d->up_ino) {
+            *up = d->up_ino;
+            *up_gen = d->up_igen;
+            return true;
+        }
+    }
+    return false;
+}
+
+void dirs_removed(const struct ext_inode *in, const struct ext_inode *parent)
+{
+    bool any = false;
+    for (unsigned i = 0; i < XF_DIRS; i++) {
+        struct xf_dir *d = &kept->dirs[i];
+        if (d->used && d->ino == in->ino && d->igen == in->d.generation) {
+            d->up_ino = parent->ino;
+            d->up_igen = parent->d.generation;
+            any = true;
+        }
+    }
+    if (any)
+        test_die(XF_DIE_REMOVED);
 }
 
 /* Every channel its client has closed, let go now (a close whose packet
@@ -111,6 +189,9 @@ status_t dirs_open(const struct xf_ctx *c, const struct xf_walk *w, handle_t *ou
         i = free_slot(pid);
     if (i < 0)
         return ERR_NO_RESOURCES;
+    uint32_t up = 0, up_gen = 0;
+    if (w->gone && !dirs_up(w->in.ino, w->in.d.generation, &up, &up_gen))
+        return ERR_NOT_FOUND;   /* (walk.c's answer: one a channel holds) */
     handle_t mine, theirs;
     status_t st = jam_channel_create(&mine, &theirs);
     if (st != OK)
@@ -120,7 +201,7 @@ status_t dirs_open(const struct xf_ctx *c, const struct xf_walk *w, handle_t *ou
     *d = (struct xf_dir){
         .gen = gen, .ino = w->in.ino, .igen = w->in.d.generation, .flags = c->flags,
         .root_ino = c->root_ino, .root_igen = c->root_igen, .view = c->view < 0 ? -1 : 0,
-        .pid = pid,
+        .pid = pid, .up_ino = up, .up_igen = up_gen,   /* removed: the same ".." */
     };
     if (c->view < 0 && c->root_ino == EXT_ROOT_INO) {   /* the volume's root: its generation */
         struct ext_inode root;
@@ -215,7 +296,7 @@ void dirs_event(uint64_t key)
     if (st == OK || st == ERR_SHOULD_WAIT)
         st = arm(i);
     if (st != OK)
-        dirs_drop(i);
+        dirs_drop(i);   /* closed: a removed directory goes with its last channel */
 }
 
 void dirs_unheld(void)

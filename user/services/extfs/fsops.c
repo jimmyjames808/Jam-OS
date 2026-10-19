@@ -162,7 +162,7 @@ static status_t op_stat(void *ctx, const char *path, uint32_t path_len, uint64_t
                         uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
     struct xf_walk *w = &wa;
-    status_t st = walk_found(ctx, path, path_len, W_STAT, w);
+    status_t st = walk_found(ctx, path, path_len, W_STAT | W_GONE, w);
     if (st != OK)
         return st;
     struct ext_time t;
@@ -299,11 +299,13 @@ static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32
                     &now, &orphan);
     if (st != OK)
         return st;
+    bool dir = is_dir(&w->in);
+    if (orphan && dir)
+        dirs_removed(&w->in, &w->dir);   /* its channels' ".." */
     if (orphan)
-        defer_drop(orphan);   /* on the orphan list: dropped after the answer, unless open;
+        defer_drop(orphan);   /* on the orphan list: dropped after the answer, unless held;
                                * its watches' IN_DELETE_SELF then (defer_run) */
     /* A file's link count: IN_ATTRIB first (vfs_unlink); a directory has none. */
-    bool dir = is_dir(&w->in);
     if (!dir)
         ev_inode(&w->in, FSWATCH_IN_ATTRIB, 0);
     ev_name(&w->dir, &w->name, FSWATCH_IN_DELETE, dir, 0);
@@ -383,6 +385,8 @@ static status_t rename_in(const struct xf_ctx *c, const char *from, uint32_t fro
     st = ext_rename(&vol.fs, &r, &orphan);
     if (st != OK)
         return st;
+    if (orphan && orphan == wb.in.ino && is_dir(&wb.in))
+        dirs_removed(&wb.in, &wb.dir);   /* an empty directory renamed over: its channels' ".." */
     if (orphan)
         defer_drop(orphan);
     if (wb.found && wb.in.ino == wa.in.ino)
@@ -412,10 +416,11 @@ static status_t op_rename_at(void *ctx, const char *from, uint32_t from_len, uin
 }
 
 /* A directory channel cut off (its directory gone, or out of its view's
- * reach): every request ERR_NOT_FOUND, these two that name no path too. */
+ * reach): every request ERR_NOT_FOUND, these two that name no path too.
+ * One removed while held answers them (docs/DIRHANDLE-PLAN.md 3.3). */
 static status_t dir_held(const struct xf_ctx *c)
 {
-    return c->dir_ino ? walk(c, "", 0, 0, &wa) : OK;
+    return c->dir_ino ? walk(c, "", 0, W_GONE, &wa) : OK;
 }
 
 static status_t op_sync(void *ctx)
@@ -460,8 +465,8 @@ static status_t op_getattr(void *ctx, const char *path, uint32_t path_len, uint3
     if (flags & ~(uint32_t)FS_NOFOLLOW)
         return ERR_INVALID_ARGS;
     struct xf_walk *w = &wa;
-    status_t st = walk_found(ctx, path, path_len, (flags & FS_NOFOLLOW ? W_NOFOLLOW : 0) | W_STAT,
-                             w);
+    status_t st = walk_found(ctx, path, path_len,
+                             (flags & FS_NOFOLLOW ? W_NOFOLLOW : 0) | W_STAT | W_GONE, w);
     if (st != OK)
         return st;
     struct xf_attr a;
@@ -651,7 +656,7 @@ static status_t op_opendir(void *ctx, const char *path, uint32_t path_len, uint3
     struct xf_walk *w = &wa;
     if (flags & ~(uint32_t)(FS_READ | FS_NOFOLLOW))
         return ERR_INVALID_ARGS;
-    status_t st = walk_found(c, path, path_len, flags & FS_NOFOLLOW ? W_NOFOLLOW : 0, w);
+    status_t st = walk_found(c, path, path_len, (flags & FS_NOFOLLOW ? W_NOFOLLOW : 0) | W_GONE, w);
     if (st != OK)
         return st;
     if ((w->in.d.mode & EXT_S_IFMT) == EXT_S_IFLNK)
@@ -693,6 +698,7 @@ static status_t ctl_stop(void *ctx)
     (void)ctx;
     wback_stop();
     files_close_all();
+    dirs_close_all();   /* a removed directory goes with its last channel */
     defer_run();
     stopping = true;
     if (vol.disk_gone)
