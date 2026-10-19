@@ -26,6 +26,13 @@
  * holds while nobody reads it: the console stops serving them (a write
  * waits) and, once the master is read, every byte arrives, none dropped.
  *
+ * t_con_conn_typeahead: what is typed before anyone opened keys, more than
+ * the console keeps for the first (PENDING_KEYS), and more than a key
+ * channel holds while its client doesn't read: the console waits instead
+ * of dropping, and every key arrives, in order (SF2: a session whose
+ * shell opened its keys after ssh's input came lost all but the first
+ * 256); the master closed while it waits ends the console.
+ *
  * t_con_conn_stop: once rig_stop returns, the console has ended and our
  * job holds the handles, threads and message bytes it held before
  * rig_start: nothing of it is left for the next test to count. */
@@ -279,7 +286,91 @@ bool t_con_conn_backpressure(void)
     return rig_stop(ok) && ok;
 }
 
-/* ---- 5. stopping ---------------------------------------------------------------------- */
+/* ---- 5. typed ahead ------------------------------------------------------------------- */
+
+#define AHEAD_BYTES 1500u   /* one message: more than the 256 keys kept for a first focus */
+
+/* The keys read so far, each the next letter of the pattern typed? */
+struct ahead {
+    unsigned n;
+    bool wrong;
+};
+
+static void ahead_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp)
+{
+    (void)usage;
+    (void)state;   /* a connection's keys are all presses */
+    (void)mods;
+    struct ahead *a = ctx;
+    a->wrong |= cp != (uint32_t)('a' + a->n % 26);
+    a->n++;
+}
+
+/* Type keys from..from+n of the pattern (a to z, over and over), one message. */
+static bool ahead_type(unsigned from, unsigned n)
+{
+    static char buf[AHEAD_BYTES];
+    for (unsigned i = 0; i < n; i++)
+        buf[i] = (char)('a' + (from + i) % 26);
+    return rig_typed(buf, n);
+}
+
+/* Read keys until want have come, none more than CON_WAIT after the last. */
+static bool ahead_read(handle_t keys, struct ahead *a, unsigned want)
+{
+    static const struct keys_events tab = { .key = ahead_key };
+    uint64_t until = now() + CON_WAIT;
+    while (a->n < want) {
+        signals_t seen;
+        if (jam_object_wait_one(keys, SIG_READABLE, until, &seen) != OK)
+            break;
+        unsigned was = a->n;
+        while (keys_read_event(keys, &tab, a) == OK)
+            ;
+        if (a->n != was)
+            until = now() + CON_WAIT;
+    }
+    if (a->n != want || a->wrong)
+        FAIL("%u of %u typed keys came%s", a->n, want, a->wrong ? ", not in order" : "");
+    return true;
+}
+
+static bool typeahead(void)
+{
+    /* Typed before anyone opened keys: 256 are kept for the first, the
+     * console waits with the rest. */
+    CHECK(ahead_type(0, AHEAD_BYTES));
+    (void)jam_sleep_until(now() + 200 * NS_PER_MS);
+    handle_t client, keys;
+    CHECK_ST(console_new_client_within(rig.admin, CON_WAIT, SHELL_LEVEL, &client), OK);
+    CHECK_ST(console_open_keys_within(client, CON_WAIT, &keys), OK);
+    /* More, with nobody reading the keys: past the channel's 1024 messages. */
+    CHECK(ahead_type(AHEAD_BYTES, AHEAD_BYTES));
+    (void)jam_sleep_until(now() + 200 * NS_PER_MS);
+    struct ahead a = { 0, false };
+    bool ok = ahead_read(keys, &a, 2 * AHEAD_BYTES) && rig_size_is(rig.admin, 80, 24);
+    /* Keys waiting again (the channel full), and the terminal hangs up:
+     * the console ends. */
+    ok = ok && ahead_type(0, AHEAD_BYTES);
+    (void)jam_sleep_until(now() + 200 * NS_PER_MS);
+    if (ok) {
+        jam_handle_close(rig.master);
+        rig.master = HANDLE_INVALID;
+        ok = rig_exit_code_is(rig.proc, 0);
+    }
+    jam_handle_close(keys);
+    jam_handle_close(client);
+    return ok;
+}
+
+bool t_con_conn_typeahead(void)
+{
+    const char *argv[] = { "console", "conn" };
+    bool ok = rig_start(argv, 2, false) && typeahead();
+    return rig_stop(ok) && ok;
+}
+
+/* ---- 6. stopping ---------------------------------------------------------------------- */
 
 bool t_con_conn_stop(void)
 {

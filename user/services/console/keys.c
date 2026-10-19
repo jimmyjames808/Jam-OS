@@ -80,7 +80,8 @@ static bool is_shell_chord(const struct input_key_event *ev)
 }
 
 /* The last send_below met a full channel (the key was dropped), and the
- * last focus_key's key did: focus_key_try tells its caller. */
+ * last focus_key's key did, or found no focus and PENDING_KEYS waiting
+ * for one: focus_key_try tells its caller. */
 static bool last_full, key_refused;
 
 /* The key to the newest key channel below `from` with a level <= max
@@ -118,6 +119,8 @@ static void send_key(const struct input_key_event *ev)
     if (!took && !nfocus) {
         if (npending < PENDING_KEYS)
             pending[npending++] = *ev;
+        else
+            key_refused = true;   /* no room: dropped, or kept by focus_key_try's caller */
         return;
     }
     /* A program's focus: Ctrl+C reaches the shell below it too. */

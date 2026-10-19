@@ -3429,3 +3429,21 @@ Track X2 (tinyssh) as built, with the choices the plan left open.
   needs all of them run and the last, `exit 3`, to end the session. A
   Ctrl+C typed behind such a backlog waits for the focus to take the keys
   before it (a program that stops reading its keys with 1,024 unread).
+- **SF2 notes (2026-10-19): typed-ahead input before the shell is up.**
+  `typed_ahead` passed alone but failed twice in a loaded batch (DE0's
+  19193056), both times stopped after exactly 256 keys (`echo ahead-009`
+  and the `echo a` of the next line): the pcap showed the whole input
+  reached the guest at once. Cause: on a loaded machine ssh's input
+  reached the session's console before its shell had opened its keys
+  (open_keys), and with no focus a key goes to keys.c's `pending` (256,
+  PENDING_KEYS, for the first focus); past that it was dropped, and
+  focus_key_try still said taken, so connin.c's wait never started. The
+  shell then ran the 256 keys it got and waited for the rest, which were
+  gone. Now a key that finds `pending` full is refused like one a full
+  channel refuses, so the connection waits for the first focus the same
+  way (the window console's keys are still dropped there). The 5 ms
+  timer stays (a writable signal can't say a focus has opened; the timer
+  runs only while keys wait). utest's `con_conn_typeahead` types 1,500
+  keys before anyone listens and 1,500 more into an unread key channel
+  and needs all 3,000 in order, every run, not only when the PC is
+  loaded; on the old console it gets 1,756, out of order.
