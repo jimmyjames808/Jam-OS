@@ -31,6 +31,10 @@
 # exec, and a forwarded signal that allocates nothing. 38 launching tests and the
 # four that set the threadsafe style came off; what is left of the two groups
 # went into the groups below by cause (docs/CR-PLAN.md, "CCS").
+#
+# FileLockingTest (7) came off 2026-10-19 (CR-e's base run, RL's record
+# locks per inode in the file service): 177 of 177 FileLockingTest*,
+# FilePathWatcher* and ProcessMetrics* OK on ext.
 
 [posix] the layer's calls allocate from the program's own malloc (fd.c's calloc of a description at every open, procfs's buffers, ...), which Linux's calls never touch. StackDumpSignalHandlerIsMallocFree puts in a malloc that crashes, then raises SIGSEGV: base's handler is async-signal-safe, but its BeingDebugged() opens /proc/self/status, the open's calloc crashes, and the handler prints nothing (either death style). Needs the layer's own heap (docs/CR-PLAN.md, "CCS")
 StackTraceDeathTest.StackDumpSignalHandlerIsMallocFree
@@ -46,15 +50,6 @@ ProcessUtilTest.KillSlowChild
 ForkWithFlagsTest.UpdatesPidCache
 PlatformThreadTidCacheTest.MainThreadFirst
 PlatformThreadTidCacheTest.MainThreadSecond
-
-[posix] fcntl's record locks are each process's own: no keeper holds them across processes (libc-test's fcntl too), so the child's lock is granted while the parent holds the file's
-FileLockingTest.LockAndUnlockExclusive
-FileLockingTest.LockAndUnlockShared
-FileLockingTest.UnlockOnCloseExclusive
-FileLockingTest.UnlockOnCloseShared
-FileLockingTest.UnlockOnExitExclusive
-FileLockingTest.UnlockOnExitShared
-FileLockingTest.UnlockOnTerminate
 
 [posix] clone of a process sharing our directory and umask (CLONE_FS without CLONE_VM) is refused, EINVAL ("clone flags 529" in the ENOSYS log): LaunchProcess's case with clone_flags CLONE_FS fails, its others pass. Copying instead of sharing would pass it (the child execs at once); not decided (docs/CR-PLAN.md, "CCS")
 ProcessUtilTest.LaunchProcess

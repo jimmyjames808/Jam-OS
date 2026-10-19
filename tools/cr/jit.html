@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<!-- cr-test.sh's jit page (docs/CR-PLAN.md, CR-e): content_shell, every
+     process type its own, loads it by name, once with V8's compilers in
+     the renderer (the JIT power, `right jit`) and once --jitless. Each
+     result is a console line the browser logs ("crjit: ..."):
+       page <visibility> <focus>          what the page is told of itself
+       js <best ms> <total ms> <result>   a hot loop in JavaScript, 5 runs
+       wasm <best ms> <total ms> <result> the same loop in WebAssembly (a
+                                          module made here, 5 runs), or
+       wasm none                          (no WebAssembly: --jitless)
+       trap <what>                        a load past the module's memory
+                                          caught as the RuntimeError it is
+                                          (V8's trap handler or its checks)
+       tierup <first ms> <last ms>        tier-up as a page meets it: a
+                                          function with a short loop called
+                                          often, in 40 batches with the event
+                                          loop between them (V8's background
+                                          compiles finish and are installed
+                                          meanwhile): the first batch's time
+                                          and the last's
+       tier <status>                      with --allow-natives-syntax only:
+                                          V8's optimization status of the hot
+                                          function a second after its runs
+                                          and of the tier-up's (two numbers;
+                                          src/runtime/runtime.h's bits:
+                                          Maglev 1<<4, TurboFan 1<<5,
+                                          Sparkplug 1<<14)
+       turbofan <best> <total> <result> <status>   with it too: a copy of
+                                          the loop optimized by TurboFan on
+                                          the main thread before its runs
+       done
+     The loop: acc = acc * 31 + i, 32-bit, for i below N. -->
+<html><head><meta charset="utf-8"><title>Jam OS JIT</title>
+<style>
+body { margin: 0; background: #1b1b3a; font-family: Inter, sans-serif; color: #fff }
+#said { position: fixed; left: 40px; top: 40px; font-size: 20px; color: #f5d76e; white-space: pre }
+</style></head>
+<body>
+<div id="said">running</div>
+<script>
+var N = 30000000, RUNS = 5;
+var lines = [];
+
+function say(what) {
+    console.log("crjit: " + what);
+    lines.push(what);
+    document.getElementById("said").textContent = lines.join("\n");
+}
+
+function hot(n) {
+    var acc = 0;
+    for (var i = 0; i < n; i++)
+        acc = (Math.imul(acc, 31) + i) | 0;
+    return acc;
+}
+
+// (module (memory (export "mem") 1)
+//   (func (export "sum") (param $n i32) (result i32) (local $i i32) (local $acc i32)
+//     (block (loop (br_if 1 (i32.ge_s (local.get $i) (local.get $n)))
+//       (local.set $acc (i32.add (i32.mul (local.get $acc) (i32.const 31)) (local.get $i)))
+//       (local.set $i (i32.add (local.get $i) (i32.const 1))) (br 0)))
+//     (local.get $acc))
+//   (func (export "load") (param i32) (result i32) (i32.load (local.get 0))))
+var WASM = [
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+    0x03, 0x03, 0x02, 0x00, 0x00,
+    0x05, 0x03, 0x01, 0x00, 0x01,
+    0x07, 0x14, 0x03,
+    0x03, 0x73, 0x75, 0x6d, 0x00, 0x00,
+    0x04, 0x6c, 0x6f, 0x61, 0x64, 0x00, 0x01,
+    0x03, 0x6d, 0x65, 0x6d, 0x02, 0x00,
+    0x0a, 0x30, 0x02,
+    0x26, 0x01, 0x02, 0x7f,
+    0x02, 0x40, 0x03, 0x40, 0x20, 0x01, 0x20, 0x00, 0x4e, 0x0d, 0x01,
+    0x20, 0x02, 0x41, 0x1f, 0x6c, 0x20, 0x01, 0x6a, 0x21, 0x02,
+    0x20, 0x01, 0x41, 0x01, 0x6a, 0x21, 0x01, 0x0c, 0x00, 0x0b, 0x0b,
+    0x20, 0x02, 0x0b,
+    0x07, 0x00, 0x20, 0x00, 0x28, 0x02, 0x00, 0x0b
+];
+
+// The tier-up's function: the same loop, short.
+function chunk(n) {
+    var acc = 0;
+    for (var i = 0; i < n; i++)
+        acc = (Math.imul(acc, 31) + i) | 0;
+    return acc;
+}
+
+// 40 batches of 100 calls of chunk(7500) (N iterations in all), each batch
+// a task of its own; then(): after the last.
+function tierup(then) {
+    var k = 0, first = 0;
+    function batch() {
+        var t0 = performance.now();
+        for (var j = 0; j < 100; j++)
+            chunk(7500);
+        var t = performance.now() - t0;
+        if (k == 0)
+            first = t;
+        if (++k < 40)
+            return setTimeout(batch, 0);
+        say("tierup " + first.toFixed(1) + " " + t.toFixed(1));
+        then();
+    }
+    batch();
+}
+
+// RUNS runs of f(N): "<best ms> <total ms> <result>".
+function timed(f) {
+    var best = Infinity, total = 0, r = 0;
+    for (var k = 0; k < RUNS; k++) {
+        var t0 = performance.now();
+        r = f(N);
+        var t = performance.now() - t0;
+        total += t;
+        best = Math.min(best, t);
+    }
+    return best.toFixed(1) + " " + total.toFixed(1) + " " + r;
+}
+
+// The work starts two seconds after the load event: while a page loads,
+// Chromium runs its renderer's V8 in efficiency mode (a long loop then
+// stays in Maglev's code, never moving on to TurboFan's: V8's
+// tiering-manager.cc and runtime-compiler.cc).
+addEventListener("load", function () {
+    setTimeout(start, 2000);
+});
+
+function start() {
+    say("page " + document.visibilityState + (document.hasFocus() ? " focused" : " unfocused"));
+    say("js " + timed(hot));
+    if (typeof WebAssembly === "undefined") {
+        say("wasm none");
+    } else {
+        var inst = new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array(WASM)));
+        say("wasm " + timed(inst.exports.sum));
+        try {
+            inst.exports.load(65536);
+            say("trap none");
+        } catch (e) {
+            say("trap " + (e instanceof WebAssembly.RuntimeError ? "RuntimeError" : e.name) +
+                ": " + e.message);
+        }
+    }
+    tierup(after);
+}
+
+// V8's own view, when it lets the page ask (--allow-natives-syntax): which
+// tier runs hot() and chunk() now, and TurboFan made to compile a copy at once.
+function after() {
+    var status = null;
+    try {
+        status = new Function("f", "return %GetOptimizationStatus(f)");
+    } catch (e) {
+    }
+    if (!status) {
+        say("done");
+        return;
+    }
+    setTimeout(function () {
+        say("tier " + status(hot) + " " + status(chunk));
+        var copy = new Function("n", "var acc = 0; for (var i = 0; i < n; i++) " +
+                                "acc = (Math.imul(acc, 31) + i) | 0; return acc;");
+        new Function("f", "%PrepareFunctionForOptimization(f)")(copy);
+        copy(1000);
+        new Function("f", "%OptimizeFunctionOnNextCall(f)")(copy);
+        copy(1000);
+        say("turbofan " + timed(copy) + " " + status(copy));
+        say("done");
+    }, 1000);
+}
+</script>
+</body></html>

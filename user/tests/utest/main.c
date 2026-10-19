@@ -69,10 +69,17 @@ status_t new_job(handle_t *out)
 status_t child(const char *mode, const char *arg, handle_t job, handle_t extra,
                       handle_t *proc)
 {
+    return child_as(mode, arg, job, SR_USER, extra, proc);
+}
+
+/* child with the extra handle as role. */
+status_t child_as(const char *mode, const char *arg, handle_t job, uint32_t role, handle_t extra,
+                  handle_t *proc)
+{
     char name[32];
     snprintf(name, sizeof(name), "utest-%s", mode);
     const char *argv[] = { "utest", mode, arg };
-    struct spawn_handle x = { SR_USER, extra };
+    struct spawn_handle x = { role, extra };
     struct spawn_args a = {
         .path = "bin/utest", .name = name, .argc = arg ? 3 : 2, .argv = argv, .job = job,
         .extra = extra ? &x : NULL, .nextra = extra ? 1 : 0,

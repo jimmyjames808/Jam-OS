@@ -73,6 +73,11 @@ const char *startup_exe(void);
 handle_t    startup_channel(void);
 /* The first handle with this role (enum startup_role), or HANDLE_INVALID. */
 handle_t    startup_handle(uint32_t role);
+/* Close the first handle with this role and take it out of the table, so
+ * startup_handle no longer finds it (a power given up: libc's PR_SET_MDWE
+ * closes SR_JIT). The table has no lock: the caller makes sure no other
+ * thread of ours is using that role's handle meanwhile. */
+void        startup_handle_drop(uint32_t role);
 /* Every handle in the message, in order. */
 unsigned    startup_handle_count(void);
 handle_t    startup_handle_at(unsigned i, uint32_t *role);

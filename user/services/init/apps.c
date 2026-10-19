@@ -7,7 +7,8 @@
  *
  * Each app gets what the shell would give it when typed at a prompt (its
  * own list, <wants.h>: the services and mounts it names, read-only or
- * writable as it says, and the root's rights it asks for), and
+ * writable as it says, the root's rights it asks for, and SR_JIT for
+ * `right jit`), and
  * /svc/wayland whether its list says so or not (a desktop app is a
  * window); but no console (it was started from no terminal) and no
  * SR_STDOUT: what it prints goes to the log. It runs in a job of its own
@@ -39,7 +40,7 @@ void apps_init(handle_t loop_port)
 /* Test programs init also starts this way, for the shell's channel only
  * (never the compositor's: its search box starts the desktop's apps and
  * nothing else). bin/jittest's list asks for `right jit`, as no desktop
- * app's does yet, so a test sees an app given the root's rights
+ * app's does yet, so a test sees an app given the JIT power
  * (tools/shell-tests/jit.txt). */
 static const char *const test_apps[][2] = { { "jittest", "bin/jittest" } };
 
@@ -79,8 +80,8 @@ static status_t start(struct app *a, const char *cmd, const char *path)
     if (!wayland)
         grants[n++] = "/svc/" SVC_WAYLAND;
     grants[n] = NULL;
-    struct spawn_handle x[1];
-    rights_t xr[1] = { RIGHT_SAME };
+    struct spawn_handle x[2];
+    rights_t xr[2] = { RIGHT_SAME, RIGHT_SAME };
     unsigned nx = 0;
     if (w.rights) {
         /* The root as it is, narrowed in the send to the list's powers
@@ -91,6 +92,13 @@ static status_t start(struct app *a, const char *cmd, const char *path)
         if (root) {
             xr[nx] = dp_root_rights(w.rights);
             x[nx++] = (struct spawn_handle){ SR_RESOURCE, root };
+        }
+    }
+    if (w.rights & WANT_RIGHT_JIT) {   /* the JIT power alone (<dataprog.h>) */
+        handle_t power = services_root_with(RIGHT_SAME);
+        if (power) {
+            xr[nx] = DP_JIT_RIGHTS;
+            x[nx++] = (struct spawn_handle){ SR_JIT, power };
         }
     }
     status_t st = dp_job_create(startup_handle(SR_JOB), &a->job);

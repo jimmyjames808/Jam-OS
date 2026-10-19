@@ -71,6 +71,15 @@ enum {
                              * can't hold them (struct startup_args, below):
                              * a VMO, read only, which libos copies into the
                              * program's own memory and closes before main */
+    SR_JIT = 22,            /* the JIT power alone (docs/CR-PLAN.md section 12):
+                             * a root resource narrowed to RIGHT_ROOT_JIT,
+                             * RIGHT_DUPLICATE and RIGHT_TRANSFER (<dataprog.h>
+                             * DP_JIT_RIGHTS), given by every starter to a
+                             * program whose list says `right jit`, whose root
+                             * (SR_RESOURCE) never has that right; vmo_make_jit
+                             * takes it, libc's MAP_JIT looks for it, a forked
+                             * child gets a duplicate, an exec of the same
+                             * program keeps it, and PR_SET_MDWE closes it */
 };
 
 /* SR_ARGS's VMO: this header, then strings_len bytes of strings (argc

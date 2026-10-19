@@ -158,8 +158,17 @@ bool        dp_wants_within(const struct wants *w, const struct wants *of);
 bool        dp_wants_mounts(const struct wants *w, const char *point);
 /* The root resource's rights for a list's WANT_RIGHT_* (w->rights): what
  * the program's copy gets. Never RIGHT_TRANSFER: it can narrow its copy
- * (RIGHT_DUPLICATE), never pass it on. */
+ * (RIGHT_DUPLICATE), never pass it on. Never RIGHT_ROOT_JIT either: the
+ * JIT power comes alone, as SR_JIT (below). */
 rights_t    dp_root_rights(uint32_t want);
+/* The JIT power alone (docs/CR-PLAN.md section 12, CJR's design question
+ * 2's (b)): what a starter gives a program whose list says `right jit`
+ * (WANT_RIGHT_JIT), as SR_JIT, besides its root: a duplicate of the
+ * starter's root narrowed to these rights. The program may hand it on
+ * (libjam's fork gives a forked child a duplicate, libc's exec of the
+ * same program keeps it) and give it up (libc's PR_SET_MDWE closes it),
+ * and nothing else of the root goes with it. */
+#define DP_JIT_RIGHTS (RIGHT_ROOT_JIT | RIGHT_DUPLICATE | RIGHT_TRANSFER)
 
 /* ---- a program's job ------------------------------------------------------------------ */
 

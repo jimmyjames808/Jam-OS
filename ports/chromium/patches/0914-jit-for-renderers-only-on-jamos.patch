@@ -1,0 +1,114 @@
+Description: V8 compiles code in renderers only on Jam OS; every other process type gives the JIT power up
+ Jam OS's JIT power (`right jit` in content_shell's list, docs/CR-PLAN.md
+ section 12) is a handle of its own, SR_JIT, that every child the browser
+ forks keeps across its exec of /proc/self/exe; Chromium's own launcher,
+ unpatched, can't choose which child gets it. The owner's rule is
+ renderers only (docs/FORK-PLAN.md Q4, answered (A)): this is that policy,
+ a few lines away from the launcher.
+ - content's child start (ContentMainRunnerImpl::Initialize): every
+   process type but the renderer gives the power up at once, before it
+   reads anything and while it is one thread, with Linux's own call for
+   it, prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN) (memory-deny-write-
+   execute: never undone, inherited by its children), which Jam OS's libc
+   answers by closing SR_JIT. The browser keeps it to hand on.
+ - gin's V8 flags: V8 runs --jitless unless the process is a renderer that
+   still holds the power (PR_GET_MDWE is 0 exactly then): the browser, the
+   GPU process, the utilities, and a single-process renderer, rather than
+   failing to reserve a code range it can't make executable.
+ Neither has a Linux path a layer could take: every Linux process may JIT.
+Forwarded: not-needed (Jam OS's: its JIT power)
+---
+--- a/content/app/content_main_runner_impl.cc
++++ b/content/app/content_main_runner_impl.cc
+@@ -189,6 +189,15 @@
+ 
+ #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+ 
++#if defined(__jamos__)
++#include <sys/prctl.h>
++
++#ifndef PR_SET_MDWE  // Linux 6.3's; musl 1.2.6's <sys/prctl.h> has none
++#define PR_SET_MDWE 65
++#define PR_MDWE_REFUSE_EXEC_GAIN 1UL
++#endif
++#endif  // defined(__jamos__)
++
+ #if BUILDFLAG(USE_ZYGOTE)
+ #include "base/stack_canary_linux.h"
+ #include "content/browser/sandbox_host_linux.h"
+@@ -865,6 +874,20 @@
+   std::string process_type =
+       command_line.GetSwitchValueASCII(switches::kProcessType);
+ 
++#if defined(__jamos__)
++  // Jam OS (docs/CR-PLAN.md section 12, docs/FORK-PLAN.md Q4): the JIT
++  // power (the program's `right jit`) is the browser's, which keeps it to
++  // hand on (every child it forks keeps it across its exec of this program),
++  // and the renderers', where V8 compiles code. Every other process type
++  // gives it up here, at its start, before it reads anything and while it
++  // is one thread: PR_SET_MDWE closes it for good, as Linux's
++  // memory-deny-write-execute; V8 runs --jitless there
++  // (gin/v8_initializer.cc).
++  if (!process_type.empty() && process_type != switches::kRendererProcess) {
++    PCHECK(prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0UL, 0UL, 0UL) == 0);
++  }
++#endif  // defined(__jamos__)
++
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+   // Must run while the process is still single-threaded, i.e. before the
+   // thread pool (and, in Chrome, the stack sampling profiler) is created below.
+--- a/gin/v8_initializer.cc
++++ b/gin/v8_initializer.cc
+@@ -45,6 +45,12 @@
+ #include "tools/v8_context_snapshot/buildflags.h"
+ #include "v8/include/v8-initialization.h"
+ #include "v8/include/v8-snapshot.h"
++
++#if defined(__jamos__)
++#include <sys/prctl.h>
++
++#include "base/command_line.h"
++#endif
+ 
+ #if defined(V8_USE_EXTERNAL_STARTUP_DATA)
+ #if BUILDFLAG(IS_ANDROID)
+@@ -269,6 +275,26 @@
+ };
+ 
+ namespace {
++
++#if defined(__jamos__)
++#ifndef PR_GET_MDWE
++#define PR_GET_MDWE 66  // Linux 6.3's; musl 1.2.6's <sys/prctl.h> has none
++#endif
++
++// Jam OS (docs/CR-PLAN.md section 12): only a process holding the JIT power
++// (its program's list says `right jit`; a forked child keeps it) can make
++// memory executable, as MAP_JIT memory, and the owner's rule gives it to
++// renderers alone: content's child start has every other process type give
++// it up (PR_SET_MDWE). So V8 compiles code only in a renderer that holds
++// it, and runs --jitless everywhere else (the browser, which keeps the
++// power to hand on, included), rather than failing to reserve its code
++// range. PR_GET_MDWE is 0 exactly while the process holds the power.
++bool MayJitOnJamOS() {
++  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("type") ==
++             "renderer" &&
++         prctl(PR_GET_MDWE, 0UL, 0UL, 0UL, 0UL) == 0;
++}
++#endif  // defined(__jamos__)
+ 
+ // Sets mandatory V8 flags.
+ void SetFlags(IsolateHolder::ScriptMode mode,
+@@ -287,6 +313,12 @@
+       v8::V8::SetFlagsFromString(std::string(flag).c_str(), flag.size());
+     }
+   }
++
++#if defined(__jamos__)
++  if (!MayJitOnJamOS()) {
++    SetV8Flags("--jitless");
++  }
++#endif
+ }
+ 
+ // Sets feature flags that are default to enabled.
