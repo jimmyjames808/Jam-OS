@@ -14,8 +14,11 @@
 #   basic    files and directories of every size made by mke2fs read by Jam
 #            OS (hashes the host's), and made by Jam OS (copied, replaced,
 #            renamed, removed, 300 files removed with `rm -r`, 100 synced
-#            files, 200 files held open at once by `exttest open`); a second
-#            boot finds it all; debugfs reads what Jam OS
+#            files, 200 files held open at once by `exttest open`, a tree
+#            26 levels of 255-byte names deep made through directory
+#            channels and three directories removed while channels held
+#            them by `exttest dirs`); a second boot finds it all; debugfs
+#            reads what Jam OS
 #            wrote (hashes the host's) and e2fsck -fn calls the volume clean.
 #   links    symbolic links (relative, to a directory, chains, dangling, a
 #            loop, one whose target is too long to sit in the inode) and
@@ -309,6 +312,7 @@ case_basic() {
         g dt2 disktest /jam/many2 check
         g mk3 mkdir /jam/opens
         g op1 exttest open /jam/opens 200
+        g dir1 exttest dirs /jam deep
         g sum3 sha256sum /jam/w2/moved.bin /jam/w2/b/c/b1.bin /jam/w/s4097 /jam/w/t.txt
         g df2 df
         g_end
@@ -324,6 +328,8 @@ case_basic() {
     want 1 "disktest: check /jam/many2: files=100 whole=100 damaged=0 missing=0 prefix=100" "$run"
     status op1 0   # 200 files open at once on /jam: extfs's tables and volumes' limits (review R3)
     want 1 "exttest: open /jam/opens: 200 files open at once" "$run"
+    status dir1 0   # directory channels: a deep tree, held directories removed (e2fsck below)
+    want 1 "exttest: dirs /jam/deep: 26 levels, 3 removed while held: PASS" "$run"
     want 1 "^first line" "$run"
     want 1 "^second line" "$run"
     want 1 "^$sb  /jam/w2/moved.bin" "$run"
@@ -347,6 +353,9 @@ case_basic() {
     debugfs -R "stat /many" "$vol" 2>&1 | grep -q "File not found" || fail "/many is still there"
     n=$(debugfs -R "ls -p /many2" "$vol" 2> /dev/null | grep -c "/dt-")
     [ "$n" -eq 100 ] || fail "/many2 holds $n of the 100 files"
+    debugfs -R "stat /deep/h1" "$vol" 2>&1 | grep -q "File not found" || fail "/deep/h1 is still there"
+    n=$(debugfs -R "ls -p /deep" "$vol" 2> /dev/null | grep -c "/h[23]/")
+    [ "$n" -eq 2 ] || fail "/deep holds $n of h2 and h3 (made again, and renamed over)"
     rm -f "$vol"
     # A second boot finds everything.
     {
