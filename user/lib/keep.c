@@ -45,7 +45,7 @@ status_t keep_put(handle_t keep, uint32_t slot, const handle_t *hs, unsigned n)
     /* The duplicates are gone whatever the write's status (a send's handles
      * are always moved): never closed here again, as their values may
      * already be another thread's new handles. */
-    return keepch_put(keep, slot, d, n);
+    return keepch_put(keep, slot, 0, d, n);
 }
 
 status_t keep_drop(handle_t keep, uint32_t slot)
@@ -262,9 +262,10 @@ static void refuse(struct keeper *k, const char *why, const handle_t *hs, unsign
  * format: a put of 0 to KEEP_SLOT_HANDLES handles, a drop with none; what
  * it refuses never gets here, keeper_take counts it). Both count
  * themselves handled. */
-static void on_put(void *ctx, uint32_t slot, const handle_t *hs, uint32_t n)
+static void on_put(void *ctx, uint32_t slot, uint32_t ring, const handle_t *hs, uint32_t n)
 {
     struct keeper *k = ctx;
+    (void)ring;
     k->handled++;
     const char *why = n < 1 ? "a put of no handles" : put_slot(k, slot, hs, n);
     if (why)

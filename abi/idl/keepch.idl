@@ -51,8 +51,15 @@ const BATCH         64
 
 # To the keeper: the service made duplicates of the handles in hs (same
 # rights; its own stay its own) and gives them as slot `slot`, replacing
-# what the keeper held there. 1 to SLOT_HANDLES of them.
-1  put      (u32 slot, handle[<=4] hs) event
+# what the keeper held there. 1 to SLOT_HANDLES of them. `ring`: 0, or
+# bits of SIG_USER_ALL the keeper sets on hs[1] (an event with
+# RIGHT_SIGNAL: a put that says otherwise is refused) when it closes the
+# slot without being told to: it gave the service up (keeper_release, a
+# restore that failed) or couldn't hand the slot over. A client waiting
+# on that event alone (a watcher channel's bell: an inotify descriptor's
+# poll) wakes to find the slot's channel closed (INOTIFY-REVIEW's 7). A
+# drop, or a put replacing the slot, rings nothing.
+1  put      (u32 slot, u32 ring, handle[<=4] hs) event
 # To the keeper: forget slot (close what it held there); a slot it never
 # kept is no error.
 2  drop     (u32 slot) event

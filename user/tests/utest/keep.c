@@ -646,7 +646,7 @@ bool t_keep_restore_refusals(void)
      * restore cut short, a done with a txid), one too big, a reply. */
     CHECK_ST(jam_channel_create(&kp, &sp), OK);
     CHECK_ST(jam_event_create(&e), OK);
-    CHECK_ST(keepch_put(kp, 1, &e, 1), OK);
+    CHECK_ST(keepch_put(kp, 1, 0, &e, 1), OK);
     CHECK_ST(run_restore(kp, sp, SOON), ERR_INVALID_ARGS);
     CHECK_ST(jam_channel_create(&kp, &sp), OK);
     struct keepch_restore_msg h = { 0, KEEPCH_RESTORE };
