@@ -8,7 +8,8 @@
 Jam OS is a from-scratch operating system for x86_64 PCs, written in C.
 Every driver and service is a separate process that can only use the
 handles it is given, so a crashed driver doesn't take the system down. It
-boots from a USB stick on a real PC into a desktop of its own.
+boots from a USB stick, or from an NVMe drive it was installed on, on a
+real PC into a desktop of its own.
 
 ## A tour
 
@@ -29,27 +30,24 @@ on each title bar close, minimise and go full screen.
 
 ## What works today
 
-- **Desktop**: a Wayland compositor of its own, tiling and floating
-  windows, virtual screens, search, notices, terminals with copy and
-  paste, and Jamjar, a music player.
-- **Kernel**: preemptive SMP on all 28 CPUs of the PC, capability handles,
-  processes and jobs with quotas, reboot by kexec, a calm panic screen.
-- **Drivers**: user processes, restarted when they crash, behind the
-  IOMMU (Intel VT-d): USB, Intel HD Audio, the Realtek RTL8125B network chip.
-- **Storage**: FAT32 on USB sticks (a driver and a filesystem service per
-  stick, restarted without the programs noticing), and read-only access to
-  internal NVMe drives (a Windows drive's EFI partition shows at `/nvme0`;
-  nothing is ever written to them yet).
-- **Network**: DHCP, DNS, UDP and TCP, files over HTTP, and updates
-  straight from the Mac.
-- **POSIX, partly** (M13, nearly done): programs built on the Mac against
-  musl 1.2.6 run from the shell with files, pipes, `poll` and `epoll`,
-  threads, signals, `posix_spawn`, redirections, terminals and sessions,
-  and TCP and UDP sockets. `ssh` into Jam OS works (tinyssh), and ported
-  sbase utilities and Lua run. `fork` is emulated with copy-on-write; no
-  Linux binaries.
-- **Testing**: kernel and user-space test suites, stress and soak tests,
-  benchmarks.
+Jam OS boots on all 28 CPUs of its author's PC into a tiling Wayland
+desktop of its own, with terminals, a shell, a music player and a search
+box. Its drivers (USB, Intel HD Audio, the Realtek RTL8125B network chip,
+NVMe) and its services are separate processes that are started again when
+they crash, the drivers kept inside the IOMMU. It has FAT32 sticks and a
+filesystem of its own in ext4's on-disk format (journalled, with links
+and permissions); it installs itself onto an NVMe drive without touching
+the Windows drive beside it, and updates itself over the network from
+signed builds; a package system (`pkg`) installs signed packages from a
+repository on the Mac. A POSIX layer on musl runs ported software (sbase,
+Lua, and an SSH server you log into with a key) and carries Chromium:
+`content_shell` runs on the desktop as a multi-process browser with V8's
+JIT, system fonts for most scripts and sound, and with WebGL in software
+when asked for; `chrome`, the full browser, is being finished. Chromium
+has no sandbox of Jam OS's own yet, so it is for ordinary sites only, and
+so far it has run in QEMU and, in its headless form, on the PC. There is no
+GPU acceleration, Wi-Fi, power management or sleep yet, no Linux binaries
+run, and the system call interface is not frozen.
 
 ## Try it
 
@@ -64,22 +62,34 @@ On a real PC: `make usb DEV=/dev/diskN` writes a stick (it erases the
 whole disk), then boot it in UEFI mode with Secure Boot off. More in
 [docs/HARDWARE.md](docs/HARDWARE.md).
 
+To build and test: `make` builds the kernel, the programs and the boot
+image, and `make check` runs the checks that need no machine (generated
+code current, the drivers' isolation, the docs, the ports and the package
+formats). The tests run Jam OS in QEMU: `tools/qemu-test.sh` runs one,
+`tools/init-test.sh` the user-space regression run, `ktest` the kernel's
+own tests at 4 and 8 CPUs, with shell, area and soak scripts beside them.
+The author runs every QEMU test on his PC (`tools/pc-batch.sh` copies the
+checkout there, builds once and prints one table). [docs/TESTING.md](docs/TESTING.md)
+has the tiers and every script.
+
 ## What's next
 
 The goal is to run Chromium, reached layer by layer: each layer a
-general piece of the system (a Unix filesystem, the ports system, Wayland
-clients, a C++ and Rust toolchain, big sparse address spaces) that later
-ports use too. Writing to NVMe drives, so Jam OS can be installed
-on one, is on that path. The plan: [docs/ROADMAP.md](docs/ROADMAP.md).
+general piece of the system that later ports use too. What is left on that
+path: `chrome` as an installable package, then Jam OS's own sandbox for
+its processes, then rendering on the Intel iGPU together with measuring
+how well the browser runs against Linux on the same PC; power management,
+a stable system call interface and self-hosting come after. The plan:
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Documentation
 
-- [docs/USING.md](docs/USING.md): the desktop, its keys and the shell
+- [docs/USING.md](docs/USING.md): the desktop, its keys, the shell, programs, the browser and updating
 - [ARCHITECTURE.md](ARCHITECTURE.md): how it is designed, and why
 - [CODING-GUIDE.md](CODING-GUIDE.md): how the code is written, and the build commands
 - [docs/TESTING.md](docs/TESTING.md): the tests
 - [docs/HARDWARE.md](docs/HARDWARE.md): the PC, and flashing the stick
-- [docs/NETWORK.md](docs/NETWORK.md): the network and `update`
+- [docs/NETWORK.md](docs/NETWORK.md): the network, `ssh` and `update`
 - [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/HISTORY.md](docs/HISTORY.md): what's next and what's done
 
 ## Licence
@@ -93,6 +103,8 @@ own one-clause BSD-style licence; dr_mp3: public domain or MIT-0;
 pl_mpeg: MIT; stb_image and stb_truetype: MIT or public domain; Inter and
 JetBrains Mono: SIL Open Font License 1.1; Wayland's protocol files: MIT;
 lwIP: BSD-3-Clause; Monocypher: BSD-2-Clause, or CC0; tinyssh: public
-domain, as CC0-1.0, 0BSD, MIT-0 or MIT). The music in the
+domain, as CC0-1.0, 0BSD, MIT-0 or MIT; musl, Lua, sbase and libc-test:
+MIT). Chromium and the font packages are built from their own sources and
+are not in this repository. The music in the
 pictures is public-domain recordings from the Internet Archive (Musopen
 and others); none of it is in this repository.
