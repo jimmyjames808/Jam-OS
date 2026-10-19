@@ -9,16 +9,20 @@ programs (their list asks for `svc net`, and `svc dns` for names; taking
 connections needs `svc net listen`), the clock from the network (SNTP),
 the boot log sent to the Mac as it is written, files over plain HTTP both
 ways (`fetch` from a web server, `serve` a file in the background), a
-throughput tester (`speed`, with `tools/speed.py` on the Mac), and
-`update`, which runs the Mac's newest build, signed with the owner's key,
-without moving the stick. The design is in
+throughput tester (`speed`, with `tools/speed.py` on the Mac), an SSH
+server (`ssh` from the Mac, key login only), `pkg` (packages from the
+Mac's repository) and `update`, which runs the Mac's newest build, signed
+with the owner's key, without moving the stick. Programs that speak TLS
+bring their own: Chromium has BoringSSL and its root store, and drew real
+HTTPS sites on the PC on 2026-10-18; Jam OS itself has no TLS. The design is in
 [ARCHITECTURE.md](../ARCHITECTURE.md#networking); what each stage built, and
 what the PC taught, is in [HISTORY: M9](HISTORY.md#m9-networking) and
 [M9.5](HISTORY.md#m95-network-streams); the status is in
 [ROADMAP.md](ROADMAP.md). All of it ran on the PC in October 2026 (pings,
 names, a DHCP lease, the log to the Mac, `update` and `update -w`,
 `speed` and `sntp`), and the network has been up in every PC sign-off's
-`soak 10` since, but M9 and M9.5 never had a sign-off of their own.
+`soak 10` since, but M9 and M9.5 never had a sign-off of their own. Not
+there: IPv6, TLS in Jam OS's own tools (`fetch` is `http://` only), Wi-Fi.
 
 ## Loopback
 
@@ -71,15 +75,17 @@ the everyday entry "Jam OS" is on the network; "Developer > Jam OS (no network)"
 | `net stats` | every count netstack keeps, and the network card's own |
 | `ping <address or name> [-c count] [-s size]` | ICMP echo, one a second; Ctrl+C stops it |
 | `host <name>` | the name's IPv4 addresses, from the DNS server |
-| `update [-n \| -m \| -w] [-r] [-f] [address]` | fetch the build the Mac serves, have init check its signature and files, write it (and its boot menu) to the stick and load it, then stop: `reboot` starts it, `reboot -f` too (from the stick); `-m` loads it into memory only, the stick untouched; `-n` fetches and checks only; `-w` is the same as plain `update`; `-r` reboots into it at once; `-f` takes a build whose network default isn't this one's |
+| `update [-n \| -m \| -w] [-r] [-f] [address]` | fetch the build the Mac serves, have init check its signature and files, write it (and its boot menu) to the disk the PC booted from (the stick, or an installed NVMe drive) and load it, then stop: `reboot` starts it, `reboot -f` too (from that disk); `-m` loads it into memory only, the disk untouched; `-n` fetches and checks only; `-w` is the same as plain `update`; `-r` reboots into it at once; `-f` takes a build whose network default isn't this one's |
+| `pkg update \| install \| upgrade \| remove \| list \| info \| audit ...` | packages from the Mac's repository (`tools/ports-server.py`, TCP port 8080 of `net.host` unless `pkg.repo` says otherwise); [USING](USING.md#the-shell) has the commands |
+| `ssh` | the SSH server: its host key's fingerprint, how many keys may log in, whether it runs and its connections ([SSH into Jam OS](#ssh-into-jam-os)) |
 | `fetch <url> [file \| -]` | download a file over plain HTTP (`http://` only: https needs TLS, which Jam OS doesn't have yet), into the URL's last name here, a file or a folder, or a pipe |
 | `serve [<file> [port] \| stop [port]]` | serve one file over HTTP in the background (port 8080 unless given); alone, what is served; `stop`, stop it |
 | `speed <host> [port] [-r \| -u] [-t s]`, `speed -l [port]` | network throughput against `tools/speed.py` on the Mac, either way, TCP or UDP |
 
 ## Settings
 
-The settings, in `/data/etc/settings` on the stick (edit `etc/settings`
-on the Mac, or in Jam OS), for example:
+The settings, in `/data/etc/settings` (on the stick, or on the installed
+drive's data partition), for example:
 
 ```
 net.address = 10.2.21.240/24 10.2.21.1 10.2.21.1
@@ -94,7 +100,17 @@ net.host = 10.2.21.174
 | `netlog` | `off`: don't send the log, even with `net.host` set |
 | `ntp.server` | where the clock comes from (SNTP): an IPv4 address or a name. Without it, the network's gateway, then `pool.ntp.org` if the gateway gives no time |
 | `ntp` | `off`: don't set the clock from the network (it stays the real-time clock's, as `rtc` says) |
+| `ssh` | `off`: don't start the SSH server (it also stays off with no key in `authorized_keys`) |
 | `terminal.font` | the terminal windows' text: `smooth` (JetBrains Mono, the default) or `bitmap` (the 8x16 font); from when the stick is mounted |
+
+The stick's `/data` is an ext volume by default, which the Mac can't read
+or write, so a file the PC needs before its first boot goes into the Mac's
+`~/.config/jamos/data` (for example `etc/settings` and
+`etc/authorized_keys`): `make usb` copies that folder into `/data`. After
+that, change a setting from Jam OS: `write -a /data/etc/settings ssh = off`
+adds a line, `write /data/etc/settings ...` replaces the file. A stick
+made with `DATA_FS=fat` (`make usb DATA_FS=fat`) is the old kind: the
+Mac mounts it and `etc/settings` is edited there.
 
 ## The clock from the network
 
@@ -103,6 +119,41 @@ asks the time (SNTP, UDP port 123) and sets the clock, then asks again
 every hour; `date -r` says whether the clock came from the network or
 from the PC's real-time clock, and the log has a line with how far off
 the clock was ([ARCHITECTURE.md](../ARCHITECTURE.md#time-and-settings)).
+
+## Names
+
+Names come from `/svc/dns`, a resolver process of its own. It asks the DNS
+servers the network gave (from DHCP, or the ones `net.address` names) over
+UDP, for IPv4 addresses (A records only), and keeps the answers for their
+TTLs (32 names; a failed lookup is not kept). A program's list asks for
+`svc dns`; ported programs just call `getaddrinfo`, which libc sends to
+it, so a name works the same in `host`, `ping`, `fetch` and Chromium.
+`localhost` is the loopback and never leaves the machine
+([Loopback](#loopback)).
+
+## SSH into Jam OS
+
+`bin/sshd` is tinyssh, an SSH server for key login only (no passwords),
+on port 22. It starts at boot when `/data/etc/authorized_keys` has a
+`ssh-ed25519` line, and stays off without one or with `ssh = off` in the
+settings; a key added later counts from the next boot. The account is
+`jam`:
+
+```sh
+ssh jam@10.2.21.241          # the PC's address; `net` shows it
+ssh jam@10.2.21.241 ls /data # one command instead of a shell
+```
+
+The first connection shows the host key's fingerprint; the shell's `ssh`
+command prints the same one (init makes the key at the first boot that has
+a key to let in, in `/data/etc/ssh`). To let a Mac's key in, put the
+`ssh-ed25519` line of its public key in the Mac's
+`~/.config/jamos/data/etc/authorized_keys` before `make usb`, or, from
+Jam OS, `write -a /data/etc/authorized_keys ssh-ed25519 AAAA...`. At most
+8 connections at once; each is a terminal session, so the shell it opens
+is the Jam OS shell (a command line is limited to 240 characters). There is
+no scp or sftp, and a command that would erase a drive (`disk prepare`
+over an unempty drive) never takes its confirmation over SSH.
 
 ## Files and speed over the network
 
@@ -186,6 +237,30 @@ its file on the Mac ends at init's `the run is over` line, which comes
 after every program's result and volumes' stop
 ([TESTING.md](TESTING.md#the-regression-runs-network)).
 
+## The tests' network and the real internet in QEMU
+
+The tests never need the internet. With `QEMU_NET=1` a test machine gets
+an e1000e card wired to `tools/netpeer.py`, a small network of its own
+that answers ARP, ICMP, DHCP, DNS (names like `www.jam` and `mac.jam`),
+SNTP, netlog and the update server, and relays TCP to a web server on the
+test host, tagging or not tagging every frame by the rule above
+([TESTING.md](TESTING.md#the-network-peer)). QEMU's own user networking
+(slirp) is not used there because it doesn't speak 802.1Q.
+
+To give Jam OS in QEMU the real internet (to browse with `content_shell`,
+say), use exactly that slirp network, which hands out an address and a
+DNS server and shares the host's connection:
+
+- build untagged: no `local.mk`, or `make JAMOS_VLAN=none` (a build whose
+  default is a VLAN tags every frame, and slirp would never answer;
+  the boot word `vlan=none` does the same for one boot);
+- run QEMU with the flags `QEMU_FLAGS` holds in the Makefile, but with
+  `-nic user,model=e1000e` in place of `-nic none` (`make run` has no
+  network card);
+- in Jam OS `net` should show the address from DHCP, and `host`, `fetch`
+  and a browser use the host's connection. A plain `make image`
+  afterwards builds for `local.mk`'s VLAN again.
+
 ## A new build without moving the stick
 
 Updates are signed: the PC
@@ -239,7 +314,22 @@ made without the key takes no update at all.
    A build with another network default (the Mac's tree without
    `local.mk`, say) is refused: `update -f` takes it anyway.
 
-### What `update` does to the stick
+### What `update` does to the stick or the drive
+
+`update` writes the boot partition of the disk the PC booted from: the
+stick, or, on a PC started from an installed NVMe drive
+([USING](USING.md#files-and-sticks): `install`), that drive's ESP, with
+the same steps and checks. The rest of this section says "the stick".
+
+A kernel or a boot image over 64 MiB is refused (`UPDATE_FILE_MAX` in
+`user/include/update.h`: the stored copy of the build must fit the kexec
+region; the build's own size check says how close the boot image is:
+about 29 MiB today). The limit is the running build's: a PC running a
+build made before the limit went from 32 to 64 MiB (2026-10-18) takes at
+most 32 MiB, so update it once, while the boot image is still under
+32 MiB, to a build with the new limit. The ESP must also hold three
+builds while one is written (the 255 MiB ESP `make usb` makes and the
+512 MiB one `install` makes are enough).
 
 Once init has checked and loaded the
 build, it writes it to the stick (only init can: no program, the shell
