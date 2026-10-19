@@ -54,6 +54,7 @@
 #include <posixfds.h>
 
 struct stat;
+struct path;   /* files.h */
 
 #define FD_MAX        POSIXFDS_FD_MAX   /* descriptors 0 .. FD_MAX - 1 (RLIMIT_NOFILE) */
 #define FD_RW_MAX     0x7ffff000L       /* the most one read or write moves (Linux's
@@ -129,10 +130,18 @@ struct fd_ops {
      * F_SETFL, ioctl's FIONBIO): 0 lets them (fd_status_set then stores
      * them), -errno refuses. [0] */
     long (*setfl)(struct fd_desc *d, uint32_t old, uint32_t new);
-    /* The absolute path a file or directory was opened by (fstatfs,
-     * fchdir, the *at calls); NULL for other kinds. Valid while the
-     * reference is held. [NULL] */
+    /* The absolute text of a file or directory, for log lines and /proc's
+     * links: the path it was opened by, or for one opened from a
+     * directory channel the last known text (a hint: it may be stale, or
+     * NULL when too long). Valid while the reference is held. [NULL] */
     const char *(*path)(struct fd_desc *d);
+    /* The description as a struct path (files.h; path_of calls it), for
+     * the calls on it that go by its path (fstatfs, fsync, fchmod, the
+     * *at calls' base): a directory channel's is the directory itself
+     * (`at` d, ""), a file opened from one is its directory and its name,
+     * anything else its text. 0, or -errno; the caller ends it with
+     * path_done. [the text of `path`, if any] */
+    long (*place)(struct fd_desc *d, struct path *out);
 
     /* poll, select and epoll (B5): the readiness libc knows without the
      * kernel (NETWAIT_* bits for interest: a pipe's leftover bytes are

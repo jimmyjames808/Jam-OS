@@ -227,7 +227,11 @@ static long busy(const struct path *p, uint32_t ff, struct fobj **out)
     if (!o)
         return -EBUSY;   /* another process writes it, or reads it while we want to write */
     lock_take(&o->lock);
-    status_t st = fobj_back_locked(o, p->abs);   /* lent to a child: ours again first */
+    uint32_t len;
+    const char *rel = path_rel(p, &len);
+    struct file_where w = { .path = p->at ? NULL : (char *)p->abs, .dir = p->at,
+                            .name = p->at ? (char *)rel : NULL };   /* p's, borrowed */
+    status_t st = fobj_back_locked(o, &w);   /* lent to a child: ours again first */
     if (st == OK && !(o->jf.flags & FS_WRITE))
         st = upgrade_locked(o, p, ff);
     else if (st == OK && (ff & FS_TRUNCATE))
@@ -287,17 +291,15 @@ void fobj_lend_locked(struct fobj *o)
     o->lent = true;
 }
 
-status_t fobj_back_locked(struct fobj *o, const char *path)
+status_t fobj_back_locked(struct fobj *o, const struct file_where *where)
 {
     if (!o->lent)
         return OK;
     struct path p;
     handle_t ch, buf;
     uint64_t size, id;
-    if (!path)
-        return ERR_IO;   /* never: only a file with its path is given, so lent */
-    status_t st = ERR_IO;
-    if (!path_set(path, &p) && p.where == PATH_MOUNT)
+    status_t st = ERR_IO;   /* nothing names it (never: only a file with its path is lent) */
+    if (!file_where_path(where, &p) && p.where == PATH_MOUNT)
         st = fobj_open_settled(&p, o->lent_flags, &ch, &buf);
     path_done(&p);
     if (st == OK)

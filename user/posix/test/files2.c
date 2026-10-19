@@ -330,14 +330,15 @@ static void path_bases(void)
 /* Names of NAME_MAX bytes, one inside another through directory descriptors
  * (the start of base's DeleteDeep: 26 levels, deleted from the top). A
  * name of 255 bytes is made, opened, listed and removed, and 256 is
- * ENAMETOOLONG; the tree goes down as far as a path the layer keeps and the
- * fs protocol carries (4095 bytes: PATH_BYTES, FS_PATH_LEN) holds, 15 levels
- * of 256 bytes under PT_DIR/deep, and the next level is ENAMETOOLONG where
- * Linux goes on (a directory description here is a path; DeleteDeep's 26
- * levels need directory handles in the fs protocol). Removed bottom up. */
+ * ENAMETOOLONG. On ext a directory descriptor is the directory's own
+ * channel (docs/DIRHANDLE-PLAN.md, DL1), so the tree goes all 26 levels
+ * down, as Linux's; on FAT a description is a path, so it goes as far as a
+ * path the layer keeps and the fs protocol carries (4095 bytes:
+ * PATH_BYTES, FS_PATH_LEN) holds, 15 levels of 256 bytes under
+ * PT_DIR/deep, and the next level is ENAMETOOLONG. Removed bottom up. */
 static void deep_names(void)
 {
-    enum { LEVELS = 24 };
+    enum { LEVELS = 26 };   /* base's DeleteDeep: about 6.6 KB of path */
     char name[258];
     memset(name, 'a', 255);
     name[255] = '\0';
@@ -353,7 +354,10 @@ static void deep_names(void)
         fds[++levels] = next;
     }
     int why = errno;
-    CHECK(levels >= 14 && levels < LEVELS && why == ENAMETOOLONG);   /* 13 + 256 * 15 is 3853 */
+    if (pt_data_ext())   /* directory channels: any depth (docs/DIRHANDLE-PLAN.md, DL1) */
+        CHECK(levels == LEVELS);
+    else   /* FAT's are text: 13 + 256 * 15 is 3853 */
+        CHECK(levels >= 14 && levels < LEVELS && why == ENAMETOOLONG);
     CHECK(fds[levels] >= 0);
     if (fds[levels] >= 0) {
         struct stat st;

@@ -790,6 +790,8 @@ check: all
 	    OUT="$(BUILD)/checkdriver-tests" sh tools/checkdriver-selftest.sh
 	python3 tools/checkdocs.py
 	python3 tools/sortincludes.py
+	python3 tools/checkpathdone.py --selftest
+	python3 tools/checkpathdone.py
 	sh tools/checkaudio.sh
 	sh tools/checknotx.sh
 	sh tools/init-test.sh --check

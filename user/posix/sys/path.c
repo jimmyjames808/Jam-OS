@@ -19,7 +19,15 @@
  * asks fs.resolve where it goes on, which is resolved again from our own
  * "/": the link's target, or "/" and the rest for a ".." above the
  * mount's root. Each such step counts as a link, 40 at most (ELOOP); a
- * loop inside one walk is the service's ERR_LINK_LOOP. */
+ * loop inside one walk is the service's ERR_LINK_LOOP.
+ *
+ * A relative path from a directory channel's description (dir.c) is not
+ * joined to anything: the path keeps the description (`at`) and the text
+ * as written, which path_rel gives and path_fs's channel (the
+ * directory's) takes; the service walks it from the directory. A link out
+ * of the mount, or ".." above the view's root, comes back as
+ * ERR_LINK_OUT as from the mount's channel, and the path goes on from our
+ * "/" as text (go_on drops `at`). */
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -185,8 +193,9 @@ static long resolve_abs(const char *in, size_t n, struct path *out)
     return resolve(in, n, out);
 }
 
-/* The directory a relative path starts from, as text into out->abs. */
-static long base_of(long dirfd, struct path *out)
+/* The directory relative path in (n bytes) starts from: 0 with its text
+ * in out->abs, or 1 with out made from a directory channel (dir_from). */
+static long base_of(long dirfd, const char *in, size_t n, struct path *out)
 {
     if (dirfd == AT_FDCWD) {
         path_cwd(out->abs);
@@ -196,12 +205,10 @@ static long base_of(long dirfd, struct path *out)
     if (!d)
         return -EBADF;
     long r = -ENOTDIR;
-    if (dir_is(d)) {
-        memcpy(out->abs, d->ops->path(d), strlen(d->ops->path(d)) + 1);
+    if (dir_is(d))
+        r = dir_from(d, in, n, out);
+    else if (proc_dir_base(d, out->abs))
         r = 0;
-    } else if (proc_dir_base(d, out->abs)) {
-        r = 0;
-    }
     fd_put(d);
     return r;
 }
@@ -221,8 +228,47 @@ long path_get(long dirfd, const char *in, struct path *out)
     out->hops = 0;
     if (in[0] == '/')
         return resolve_abs(in, n, out);
-    long r = base_of(dirfd, out);
-    return r ? r : resolve(in, n, out);
+    long r = base_of(dirfd, in, n, out);
+    return r < 0 ? r : r ? 0 : resolve(in, n, out);
+}
+
+long path_in_dir(struct fd_desc *dir, const char *rel, size_t n, struct path *out)
+{
+    const char *m = dir_mount(dir);
+    size_t ml = strlen(m);
+    out->at = NULL;
+    out->nofollow = false;
+    out->hops = 0;
+    if (n >= PATH_BYTES || ml + 1 + n >= sizeof(out->abs))
+        return -ENAMETOOLONG;
+    memcpy(out->abs, m, ml);
+    out->abs[ml] = '/';
+    memcpy(out->abs + ml + 1, rel, n);   /* the program's string for path_get: checked there */
+    out->abs[ml + 1 + n] = '\0';
+    out->mount_len = (uint32_t)ml;
+    out->where = PATH_MOUNT;
+    out->links = mount_links(out);
+    if (n) {
+        ending(rel, n, out);
+    } else {   /* the directory itself */
+        out->must_dir = true;
+        out->last_dot = out->last_dotdot = false;
+    }
+    fd_ref(dir);
+    out->at = dir;
+    return 0;
+}
+
+long path_of(struct fd_desc *d, struct path *out)
+{
+    out->at = NULL;
+    if (d->ops->place)
+        return d->ops->place(d, out);
+    const char *abs = d->ops->path ? d->ops->path(d) : NULL;
+    if (abs)
+        return path_set(abs, out);
+    long r = path_set("/", out);   /* a pipe, a device: no mount */
+    return r ? r : 1;
 }
 
 long path_set(const char *abs, struct path *out)
@@ -323,6 +369,10 @@ long path_place(struct path *p)
     while (!r && p->links && p->where == PATH_MOUNT) {
         uint8_t kind = 0;
         r = ask_resolve(p, &kind, buf);
+        if (p->at && ((!r && kind == FS_RESOLVE_INSIDE) || r == -ENAMETOOLONG)) {
+            r = 0;   /* inside: walked from the directory as it is (its text may not fit) */
+            break;
+        }
         if (!r)
             r = go_on(p, kind, buf, buf + PATH_BYTES);
         if (!r && kind == FS_RESOLVE_INSIDE)
@@ -335,6 +385,10 @@ long path_place(struct path *p)
 const char *path_rel(const struct path *p, uint32_t *len)
 {
     const char *rel = p->abs + p->mount_len;
+    if (p->at) {   /* as written, after the mount's '/': "" for the directory itself */
+        *len = (uint32_t)strlen(rel + 1);
+        return rel + 1;
+    }
     *len = (uint32_t)strlen(rel);
     if (*len)
         return rel;
@@ -355,6 +409,8 @@ static bool mount_name(const struct path *p, char m[NS_NAME_MAX])
 long path_fs(const struct path *p, handle_t *fs)
 {
     char m[NS_NAME_MAX];
+    if (p->at)
+        return dir_channel(p->at, fs);
     if (!mount_name(p, m) || ns_channel(m, fs) != OK)
         return -ENOENT;
     return 0;
@@ -718,6 +774,8 @@ void path_fork(int step)
 
 enum path_libc path_libc(const struct path *p)
 {
+    if (p->at)
+        return LIBC_NONE;   /* a directory channel's mount: a service's */
     if (dev_path(p->abs))
         return LIBC_DEV;
     if (proc_path(p->abs))

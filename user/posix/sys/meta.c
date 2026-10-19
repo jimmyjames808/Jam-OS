@@ -81,16 +81,14 @@ static long stat_path(struct path *p, struct stat *st)
  * the path's, or with AT_EMPTY_PATH and "" dirfd's own. The path goes
  * into *p (for the caller's next question about it, and the caller's
  * path_done, whatever the answer); p->abs is "" for a descriptor's stat
- * without a path. */
+ * without a path. (path_done: the caller's) */
 static long stat_at(long dirfd, const char *pathname, long flags, struct path *p,
                     struct stat *st)
 {
     p->at = NULL;
     if ((flags & AT_EMPTY_PATH) && pathname && !uc_strnlen(pathname, 1)) {   /* the caller's "" */
-        if (dirfd == AT_FDCWD) {
-            char cwd[PATH_BYTES];
-            path_cwd(cwd);
-            long r = path_set(cwd, p);
+        if (dirfd == AT_FDCWD) {   /* the current directory: "." from it */
+            long r = path_get(AT_FDCWD, ".", p);
             return r ? r : stat_path(p, st);
         }
         p->abs[0] = '\0';
@@ -175,12 +173,9 @@ long lx_fstatfs(long fd, long out, long c, long d, long e, long f)
     if (!desc)
         return -EBADF;
     struct path p;
-    const char *abs = desc->ops->path ? desc->ops->path(desc) : NULL;
-    long r = abs ? path_set(abs, &p) : 0;
-    if (!abs)
-        p = (struct path){ .abs = "/", .where = PATH_ROOT };   /* a pipe, a device: no mount */
+    long r = path_of(desc, &p);   /* a pipe, a device: "/", no mount */
     struct statfs s;
-    if (!r)
+    if (r >= 0)
         r = statfs_path(&p, &s);
     path_done(&p);
     fd_put(desc);
@@ -295,24 +290,18 @@ static long change_at(long dirfd, const char *pathname, long flags, const struct
         long done = c->owner_ok ? file_setattr_fd(d, c->mask, c->mode, c->uid, c->gid,
                                                   c->atime_ns, c->mtime_ns)
                                 : -ENOTSUP;
-        const char *abs = d->ops->path ? d->ops->path(d) : NULL;
         if (done != -ENOTSUP)
             r = done;
-        else if (abs && !path_set(abs, p) && (path_features(p) & FS_FEAT_MODES))
-            r = BY_PATH;   /* a directory, an O_PATH file */
+        else if (!path_of(d, p) && (path_features(p) & FS_FEAT_MODES))
+            r = BY_PATH;   /* a directory, an O_PATH file (the link itself, if opened so) */
         else
             r = c->owner_ok ? 0 : -EPERM;
         fd_put(d);
         if (r == BY_PATH)
             r = change_path(p, c);
     } else if ((flags & AT_EMPTY_PATH) && pathname && !*pathname) {   /* the current directory */
-        char *cwd = jam_malloc(PATH_BYTES);
-        r = cwd ? 0 : -ENOMEM;
-        if (cwd)
-            path_cwd(cwd);
-        if (!r && !(r = path_set(cwd, p)))
+        if (!(r = path_get(AT_FDCWD, ".", p)))
             r = change_path(p, c);
-        jam_free(cwd);
     } else if (!(r = path_get(dirfd, pathname, p))) {
         p->nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
         r = change_path(p, c);
@@ -474,6 +463,8 @@ static long link_paths(struct path *a, struct path *b)
         return cant_make(b);
     if (S_ISDIR(st.st_mode))
         return -EPERM;   /* link(2): no hard link to a directory */
+    if (a->at != b->at)
+        return dir_meet(a, b, 0, true);   /* two directories: fs.link_at */
     handle_t fs;
     if ((r = path_fs(a, &fs)) != 0)
         return r;
@@ -687,19 +678,16 @@ long lx_syncfs(long fd, long b, long c, long d, long e, long f)
     if (!desc)
         return -EBADF;
     struct path p;
-    const char *abs = desc->ops->path ? desc->ops->path(desc) : NULL;
     long r = 0;
-    if (abs) {
-        if (!path_set(abs, &p) && p.where == PATH_MOUNT && path_libc(&p) == LIBC_NONE &&
-            p.mount_len < NS_NAME_MAX) {
-            char m[NS_NAME_MAX];
-            memcpy(m, p.abs, p.mount_len);
-            m[p.mount_len] = '\0';
-            status_t st = fs_sync(m);
-            r = st == OK ? 0 : path_err(&p, st);
-        }
-        path_done(&p);
+    if (!path_of(desc, &p) && p.where == PATH_MOUNT && path_libc(&p) == LIBC_NONE &&
+        p.mount_len < NS_NAME_MAX) {   /* a pipe, a device: nothing to sync */
+        char m[NS_NAME_MAX];
+        memcpy(m, p.abs, p.mount_len);
+        m[p.mount_len] = '\0';
+        status_t st = fs_sync(m);
+        r = st == OK ? 0 : path_err(&p, st);
     }
+    path_done(&p);
     fd_put(desc);
     return r;
 }

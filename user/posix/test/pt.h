@@ -41,7 +41,9 @@
  * clone without CLONE_VM, each case in a job of its own; forkfd.c's and
  * forknote.c's cases too: descriptors, vfork's wait, a child's notices), exec.c (execve
  * in place from a forked child, each case in a job of its own), inotify.c
- * (the inotify descriptor against fake file services of its own) and
+ * (the inotify descriptor against fake file services of its own), dirfd.c
+ * (directory descriptors as their directories' channels: base's DeleteDeep,
+ * renames followed, the *at calls between two of them, on /data and /tmp) and
  * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
  * start.c, mem.c, memres.c (the job's counts), clock.c, fds.c, poll.c,
@@ -125,6 +127,7 @@ void pt_fork(char **argv);         /* fork, vfork and clone without CLONE_VM (fo
 void pt_exec(char **argv);         /* execve in place (exec.c) */
 void pt_inotify(char **argv);      /* inotify against fake services, and the real ones (inotify.c) */
 void pt_locks(char **argv);        /* record locks between processes (locks.c) */
+void pt_dirfd(char **argv);        /* directory descriptors as channels, the *at calls (dirfd.c) */
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 /* The mem section's second half (memres.c): big sparse reservations. */
