@@ -1,12 +1,17 @@
-Description: V8 compiles code in renderers only on Jam OS; every other process type gives the JIT power up
+Description: V8 compiles code in renderers only on Jam OS, SwiftShader in a software-GL GPU process; every other process type gives the JIT power up
  Jam OS's JIT power (`right jit` in content_shell's list, docs/CR-PLAN.md
  section 12) is a handle of its own, SR_JIT, that every child the browser
  forks keeps across its exec of /proc/self/exe; Chromium's own launcher,
  unpatched, can't choose which child gets it. The owner's rule is
- renderers only (docs/FORK-PLAN.md Q4, answered (A)): this is that policy,
- a few lines away from the launcher.
+ renderers only (docs/FORK-PLAN.md Q4, answered (A)), and since SwiftShader
+ (patch 0915) the GPU process too when it runs SwiftShader, whose Reactor
+ compiles WebGL's shaders to code: this is that policy, a few lines away
+ from the launcher.
  - content's child start (ContentMainRunnerImpl::Initialize): every
-   process type but the renderer gives the power up at once, before it
+   process type but the renderer, and the GPU process started with
+   --use-angle=swiftshader or swiftshader-webgl (what the browser gives it
+   for software WebGL: --enable-unsafe-swiftshader, or that --use-angle),
+   gives the power up at once, before it
    reads anything and while it is one thread, with Linux's own call for
    it, prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN) (memory-deny-write-
    execute: never undone, inherited by its children), which Jam OS's libc
@@ -36,20 +41,27 @@ Forwarded: not-needed (Jam OS's: its JIT power)
  #if BUILDFLAG(USE_ZYGOTE)
  #include "base/stack_canary_linux.h"
  #include "content/browser/sandbox_host_linux.h"
-@@ -865,6 +874,20 @@
+@@ -865,6 +874,27 @@
    std::string process_type =
        command_line.GetSwitchValueASCII(switches::kProcessType);
- 
+
 +#if defined(__jamos__)
 +  // Jam OS (docs/CR-PLAN.md section 12, docs/FORK-PLAN.md Q4): the JIT
 +  // power (the program's `right jit`) is the browser's, which keeps it to
 +  // hand on (every child it forks keeps it across its exec of this program),
-+  // and the renderers', where V8 compiles code. Every other process type
-+  // gives it up here, at its start, before it reads anything and while it
-+  // is one thread: PR_SET_MDWE closes it for good, as Linux's
-+  // memory-deny-write-execute; V8 runs --jitless there
-+  // (gin/v8_initializer.cc).
-+  if (!process_type.empty() && process_type != switches::kRendererProcess) {
++  // the renderers', where V8 compiles code, and the GPU process's when it
++  // runs SwiftShader (ui/gl's --use-angle=swiftshader, or swiftshader-webgl,
++  // which the browser gives it for software WebGL), whose Reactor compiles
++  // shaders to code. Every other process type gives it up here, at its
++  // start, before it reads anything and while it is one thread:
++  // PR_SET_MDWE closes it for good, as Linux's memory-deny-write-execute;
++  // V8 runs --jitless there (gin/v8_initializer.cc), and in the GPU process.
++  const std::string angle = command_line.GetSwitchValueASCII("use-angle");
++  const bool swiftshader_gpu =
++      process_type == switches::kGpuProcess &&
++      (angle == "swiftshader" || angle == "swiftshader-webgl");
++  if (!process_type.empty() && process_type != switches::kRendererProcess &&
++      !swiftshader_gpu) {
 +    PCHECK(prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0UL, 0UL, 0UL) == 0);
 +  }
 +#endif  // defined(__jamos__)
