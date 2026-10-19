@@ -271,6 +271,62 @@ static void at_calls(void)
     close(dfd);
 }
 
+/* Do a and b (absolute or relative, to the current directory) name one
+ * file? */
+static bool same_file(const char *a, const char *b)
+{
+    struct stat sa, sb;
+    return !stat(a, &sa) && !stat(b, &sb) && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+}
+
+/* As same_file, a relative to the directory descriptor dfd. */
+static bool same_file_at(int dfd, const char *a, const char *b)
+{
+    struct stat sa, sb;
+    return !fstatat(dfd, a, &sa, 0) && !stat(b, &sb) && sa.st_dev == sb.st_dev &&
+           sa.st_ino == sb.st_ino;
+}
+
+/* A relative path goes on from where its base ends (the layer takes the
+ * current directory's or a descriptor's text as it is, and walks the path
+ * on from its end): from "/" (a mount named without a slash), from a
+ * mount's root, from a directory by the current directory and by a
+ * descriptor, with "." and ".." and slashes in it, from a directory that
+ * was reached through a link, and from a /proc directory. */
+static void path_bases(void)
+{
+    char cwd[PATH_MAX];
+    CHECK(mkdir(PT_DIR "/pb", 0755) == 0 && mkdir(PT_DIR "/pb/x", 0755) == 0);
+    CHECK(chdir("/") == 0 && same_file("data", "/data"));
+    CHECK(same_file("data/./ptfiles//pb/x/..", PT_DIR "/pb"));
+    CHECK(chdir("/data") == 0 && same_file(".", "/data") &&
+          same_file("ptfiles/pb//x/", PT_DIR "/pb/x"));
+    CHECK(chdir(PT_DIR "/pb") == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, PT_DIR "/pb"));
+    CHECK(same_file("x/../x/.", PT_DIR "/pb/x") && same_file("../pb/x", PT_DIR "/pb/x") &&
+          same_file(".", PT_DIR "/pb") && same_file("..", PT_DIR));
+    int dfd = open(PT_DIR "/pb/x", O_RDONLY | O_DIRECTORY);
+    CHECK(dfd >= 0);
+    CHECK(chdir("/") == 0);   /* a descriptor's base is not the current directory's */
+    CHECK(same_file_at(dfd, ".", PT_DIR "/pb/x") && same_file_at(dfd, "..", PT_DIR "/pb") &&
+          same_file_at(dfd, "../x/./", PT_DIR "/pb/x") &&
+          same_file_at(dfd, "../../pb", PT_DIR "/pb"));
+    if (dfd >= 0)
+        close(dfd);
+    if (pt_data_ext()) {   /* the base is the physical directory the link led to */
+        CHECK(symlink("x", PT_DIR "/pb/lnk") == 0 && chdir(PT_DIR "/pb/lnk") == 0);
+        CHECK(getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, PT_DIR "/pb/x") &&
+              same_file("..", PT_DIR "/pb"));
+        CHECK(chdir("/") == 0 && unlink(PT_DIR "/pb/lnk") == 0);
+    }
+    int pfd = open("/proc/self", O_RDONLY | O_DIRECTORY);   /* libc's own tree: its base is made */
+    struct stat st;
+    CHECK(pfd >= 0 && fstatat(pfd, "fd", &st, 0) == 0 && S_ISDIR(st.st_mode) &&
+          fstatat(pfd, "fd/..", &st, 0) == 0 && S_ISDIR(st.st_mode));
+    if (pfd >= 0)
+        close(pfd);
+    CHECK(rmdir(PT_DIR "/pb/x") == 0 && rmdir(PT_DIR "/pb") == 0);
+}
+
 /* Names of NAME_MAX bytes, one inside another through directory descriptors
  * (the start of base's DeleteDeep: 26 levels, deleted from the top). A
  * name of 255 bytes is made, opened, listed and removed, and 256 is
@@ -507,6 +563,7 @@ void pt_files2(void)
     many_files(FEW);
     current_dir();
     at_calls();
+    path_bases();
     deep_names();
     sendfile_calls();
     stats();
