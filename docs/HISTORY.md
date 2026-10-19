@@ -325,7 +325,7 @@ What was built:
   Linux reads and checks it: `e2fsck -fn` is the judge of every crash test.
 - **The service** (`bin/extfs`, `user/services/extfs/`): the `fs` and
   `file` protocols on the ext core, a journal transaction per request, a
-  restart as recovery (the state VMO, the keeper, a warm spare), views
+  restart as recovery (the state VMO and the keeper; the warm spare is fat's only: an ext restart starts a process), views
   judged where paths resolve, subviews, many writers (`FS_APPEND`),
   unlink of open files, remount read-only on an error. New protocol calls
   (`getattr`, `setattr`, `symlink`, `readlink`, `link`, `resolve`,
