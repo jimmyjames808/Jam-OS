@@ -898,6 +898,49 @@ static void replaced(void)
     printf("posixtest: dirfd: a closed channel replaced by its text, or ENOENT\n");
 }
 
+/* --child-dirfd ra <mount>: utest's extfs_posix_view starts us with only
+ * <mount>, a view like the SSH server's `:ra` (etc/authorized_keys and
+ * nothing else of etc): a chdir into etc works and authorized_keys reads
+ * from there, as tinysshd-auth does it; etc's other names stay hidden and
+ * etc lists nothing. 0, or the number of the check that failed. */
+static int child_walk_only(const char *mount)
+{
+    char etc[64], buf[16];
+    struct stat st;
+    snprintf(etc, sizeof(etc), "%s/etc", mount);
+    if (chdir(etc))
+        return 20;
+    int f = open("authorized_keys", O_RDONLY | O_CLOEXEC);
+    ssize_t n = f >= 0 ? read(f, buf, sizeof(buf)) : -1;
+    if (f >= 0)
+        close(f);
+    if (n != 4 || memcmp(buf, "keys", 4) || stat("authorized_keys", &st) || !S_ISREG(st.st_mode))
+        return 21;
+    if (!getcwd(buf, sizeof(buf)) || strcmp(buf, etc))
+        return 22;
+    errno = 0;
+    if (open("settings", O_RDONLY | O_CLOEXEC) != -1 || errno != EACCES)
+        return 23;   /* etc's other names: hidden, from here and by a whole path */
+    snprintf(etc, sizeof(etc), "%s/etc/settings", mount);
+    if (stat(etc, &st) == 0)
+        return 24;
+    int d = open(".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);   /* nor is etc listed */
+    if (d >= 0) {
+        DIR *l = fdopendir(d);
+        struct dirent *e = l ? readdir(l) : NULL;
+        bool listed = e && strcmp(e->d_name, ".") && strcmp(e->d_name, "..");
+        while (l && !listed && (e = readdir(l)))
+            listed = strcmp(e->d_name, ".") && strcmp(e->d_name, "..");
+        if (l)
+            closedir(l);
+        else
+            close(d);
+        if (listed)
+            return 25;
+    }
+    return chdir("..") == 0 && stat("etc/authorized_keys", &st) == 0 ? 0 : 26;
+}
+
 /* posixtest --child-dirfd <mode> [path], its 3 a directory: "deep" (the
  * bottom of the deep tree: getcwd ENAMETOOLONG, "file" there from both)
  * or "here" (getcwd says path, "kid" under 3, "exec" made in the current
@@ -906,6 +949,8 @@ int pt_child_dirfd(int argc, char **argv)
 {
     char cwd[PATH_MAX];
     struct stat st;
+    if (argc >= 4 && !strcmp(argv[2], "ra"))
+        return child_walk_only(argv[3]);
     if (fstat(3, &st) || !S_ISDIR(st.st_mode))
         return 10;
     if (argc >= 3 && !strcmp(argv[2], "deep")) {

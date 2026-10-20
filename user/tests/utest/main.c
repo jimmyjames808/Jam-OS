@@ -809,6 +809,7 @@ static const struct {
     { "extfs_restart_wback", t_extfs_restart_wback },
     { "extfs_wpress", t_extfs_wpress },
     { "extfs_posix", t_extfs_posix },
+    { "extfs_posix_view", t_extfs_posix_view },
     { "extfs_watch_rows", t_extfs_watch_rows },
     { "extfs_watch_nameless", t_extfs_watch_nameless },
     { "extfs_watch_moves", t_extfs_watch_moves },
