@@ -399,3 +399,21 @@ Counts: **0 High, 1 Medium, 2 Low, 10 notes.**
 - `vmar_clone_turn_waits` (changed): the thread that takes the turn first
   also claims the clone's two VMOs, as a holder's try does, and releases
   them before it gives the turn back; the rest as before.
+
+**Without the fix** (dab550c9, the test on FZ's code, the PC, 4 CPUs,
+batch 20100553): `vmar_clone_turn_local` failed ("an unrelated clone
+waited for the turn, a child's creation waited for the turn").
+
+**On the branch** (the PC, `JAMOS_TIER=kernel`, batch 20101155): `make
+check`; the full ktest at 4 and at 8 CPUs; `ktest=vmar_clone loops=3` at
+4 and at 8; the lock checker's crash tests (`crash2`: lockorder,
+lockself, locknest, lockirq, mutexorder, mutexspin); posix-fork; all
+PASS. posix-run passed on its second try (the first: posixtest's
+`mempat.c:165` timing bound under a full PC). The init run and the soak at
+4 CPUs failed, twice each, on one utest only, `extfs_restart_deep` ("failed
+at a file made: `ERR_PEER_CLOSED`", line 1312), which fails the same way
+on main 41a28b23 without FZR (`utest only extfs_restart_deep 15` from the
+shell, two boots each: FZR batch 20105053, main batch 20110020, every boot
+failing within its first four rounds); everything else in them passed
+(815 utests in the other two init boots). Not this track's: DR's test,
+reported to the main session.
