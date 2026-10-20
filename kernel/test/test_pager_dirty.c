@@ -167,6 +167,9 @@
 #define RW     (ASPACE_READ | ASPACE_WRITE)
 #define PTE_W  (1ull << 1)
 #define DIRTY  PAGER_PAGE_DIRTY
+/* The smallest budget for a writable VMO, and the VMO's two tables
+ * (a mid and a leaf table), which the budget holds too: eight pages. */
+#define MIN_BUDGET (PAGER_WRITABLE_MIN_PAGES + 2)
 
 /* ---- helpers ------------------------------------------------------------- */
 
@@ -528,7 +531,7 @@ KTEST(pager_dirty_ring3_store)
 KTEST(pager_dirty_never_evicted)
 {
     struct job *j = kt_fresh_job();
-    struct pager *pg = pg_new(j, PAGER_WRITABLE_MIN_PAGES);
+    struct pager *pg = pg_new(j, MIN_BUDGET);
     struct vmo *v = wvmo(pg, 3, 16);
     struct aspace *as;
     KT_EQ(aspace_create(&as), OK);
@@ -591,7 +594,7 @@ static void store_popped(void *arg)
 KTEST(pager_dirty_popped_then_stored)
 {
     struct job *j = kt_fresh_job();
-    struct pager *pg = pg_new(j, PAGER_WRITABLE_MIN_PAGES);
+    struct pager *pg = pg_new(j, MIN_BUDGET);
     struct vmo *v = wvmo(pg, 13, 16);
     struct aspace *as;
     KT_EQ(aspace_create(&as), OK);
@@ -603,17 +606,19 @@ KTEST(pager_dirty_popped_then_stored)
     __atomic_store_n(&dbg_hooks[DBG_PAGER_EVICT], store_popped, __ATOMIC_RELEASE);
     KT_EQ(supply(pg, 13, 8, 1), OK);
     __atomic_store_n(&dbg_hooks[DBG_PAGER_EVICT], NULL, __ATOMIC_RELEASE);
-    KT_EQ(popped_hits, 1);
+    KT_EQ(popped_hits, 2);
     /* The evictor left the page the store dirtied: still there, dirty and
-     * counted again (one past the budget until a clean page goes). */
+     * counted again, one past the budget, so the supply evicted the next
+     * oldest clean page (1) before it published its own. */
     KT_EQ(vmo_pager_page_state(v, 0), DIRTY);
     KT_ASSERT(pte_w(as, a));
     KT_ASSERT(vmo_page_phys(v, 8 * PG));
-    KT_EQ(pager_resident(pg), PAGER_WRITABLE_MIN_PAGES + 1);
-    KT_EQ(pager_dirty_pages(pg), 1);
-    KT_EQ(supply(pg, 13, 9, 1), OK);   /* takes the oldest clean page's slot: page 1 */
     KT_EQ(vmo_page_phys(v, PG), 0);
-    KT_EQ(pager_resident(pg), PAGER_WRITABLE_MIN_PAGES + 1);
+    KT_EQ(pager_resident(pg), PAGER_WRITABLE_MIN_PAGES);
+    KT_EQ(pager_dirty_pages(pg), 1);
+    KT_EQ(supply(pg, 13, 9, 1), OK);   /* takes the oldest clean page's slot: page 2 */
+    KT_EQ(vmo_page_phys(v, 2 * PG), 0);
+    KT_EQ(pager_resident(pg), PAGER_WRITABLE_MIN_PAGES);
     KT_EQ(vmo_pager_page_state(v, 0), DIRTY);
     no_clean_writable(as, v, a, 16);
 
@@ -646,7 +651,7 @@ KTEST(pager_dirty_evict_storm)
 {
     enum { PAGES = 32, ROUNDS = 300 };
     struct job *j = kt_fresh_job();
-    struct pager *pg = pg_new(j, PAGER_WRITABLE_MIN_PAGES);
+    struct pager *pg = pg_new(j, MIN_BUDGET);
     struct vmo *v = wvmo(pg, 4, PAGES);
     struct aspace *as;
     KT_EQ(aspace_create(&as), OK);

@@ -577,7 +577,7 @@ KTEST(vmo_child_pager)
 {
     struct pager *pg;
     struct vmo *f, *x;
-    KT_EQ(pager_create(NULL, 4, ANSWER, &pg), OK);   /* a budget of 4 pages */
+    KT_EQ(pager_create(NULL, 4 + 2, ANSWER, &pg), OK);   /* 4 pages (and the VMO's 2 tables) */
     KT_EQ(pager_create_vmo(pg, 61, 8 * PG, &f), OK);
     KT_EQ(vmo_create_child(NULL, f, SNAP, 0, 8 * PG, &x), ERR_NOT_SUPPORTED);
     struct vmo *c = child(f, ALOW, 0, 8 * PG);

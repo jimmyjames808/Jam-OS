@@ -84,7 +84,7 @@ bool fat_wait(struct fatrun *r, int code)
     struct job_info ji;
     CHECK_ST(info_of(r->job, &ji), OK);
     for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
-        if (ji.used[k])
+        if (ji.used[k] > (k == JOB_LIMIT_HANDLES ? r->kept : 0))
             FAIL("fat's job still has %lu units of kind %u", (unsigned long)ji.used[k], k);
     CHECK_ST(jam_handle_close(r->job), OK);
     return true;

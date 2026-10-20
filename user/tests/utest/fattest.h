@@ -21,6 +21,10 @@ struct fatrun {
     handle_t        proc;   /* fat */
     handle_t        fs;     /* the client end of its `fs` channel */
     handle_t        ctl;    /* the client end of its `fsctl` channel */
+    /* Handle units its job may still owe once it ended (0 unless the test
+     * sets it after the start): 2 for each pager VMO it made that the test
+     * keeps, the link and the struct being their maker's while they live. */
+    uint64_t        kept;
 };
 
 /* One open file. */
