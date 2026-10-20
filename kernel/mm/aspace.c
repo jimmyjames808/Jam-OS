@@ -1958,6 +1958,22 @@ static void clone_end_all(struct aspace *src, struct mapping *stop, bool begun)
         vmo_clone_end(stop->vmo);
 }
 
+/* src's region lock held, with the freeze turn: claim (on) every VMO src
+ * maps as a copy, the ones clone_walk will freeze, before it begins any,
+ * or release them (off) after clone_end_all (vmo.c's "Freezes and
+ * writers": no other freeze of them begins meanwhile). */
+static void clone_claim_all(struct aspace *src, bool on)
+{
+    for (struct mapping *m = vmaps_first(src); m;) {
+        struct vmo *v = m->vmo;
+        bool copy = false;
+        for (; m && m->vmo == v; m = vmaps_next(m))
+            copy |= m->clone == 0;
+        if (copy)
+            vmo_freeze_claim(v, on);
+    }
+}
+
 /* Free stg's twins (off their VMOs' reverse maps: a child whose last twin
  * goes is destroyed, its pages and charges given back). */
 static void staging_free(struct aspace *stg)
@@ -2029,12 +2045,12 @@ static status_t clone_install(struct aspace *dst, struct aspace *stg, uint64_t t
     return st;
 }
 
-/* One try of aspace_clone, with r[] holding no child. ERR_SHOULD_WAIT: a
- * copied VMO's freeze backed off (vmo_clone_begin) and everything was
- * undone as on an error; *wait is that VMO (a reference of the
- * caller's). */
+/* One try of aspace_clone, with r[] holding no child; `turn`: with the
+ * freeze turn, its VMOs claimed throughout. ERR_SHOULD_WAIT: a copied
+ * VMO's freeze backed off (vmo_clone_begin) and everything was undone as
+ * on an error; *wait is that VMO (a reference of the caller's). */
 static status_t clone_try(struct aspace *src, struct aspace *dst, struct aspace_clone_req *r,
-                          uint32_t n, struct vmo **wait)
+                          uint32_t n, bool turn, struct vmo **wait)
 {
     /* The twins are made in a tree of their own, installed in dst at the
      * end: the two region locks are never held at once. A new one each
@@ -2045,6 +2061,8 @@ static status_t clone_try(struct aspace *src, struct aspace *dst, struct aspace_
     avl_init(&stg->maps, gap_update);
     avl_init(&stg->vmaps, vmax_update);
     mutex_lock(&src->lock);
+    if (turn)
+        clone_claim_all(src, true);
     uint32_t made = 0;
     uint64_t tables = 0;
     bool charged = false, walked = false, begun = false;
@@ -2069,6 +2087,8 @@ static status_t clone_try(struct aspace *src, struct aspace *dst, struct aspace_
         *wait = stop->vmo;   /* it may be unmapped once the lock goes */
         kobject_ref(vmo_kobject(*wait));
     }
+    if (turn)
+        clone_claim_all(src, false);
     mutex_unlock(&src->lock);
 
     if (st == OK)
@@ -2108,7 +2128,7 @@ status_t aspace_clone(struct aspace *src, struct aspace *dst, struct aspace_clon
     bool turn = false;
     for (unsigned tries = 1;; tries++) {
         struct vmo *wait = NULL;
-        st = clone_try(src, dst, r, n, &wait);
+        st = clone_try(src, dst, r, n, turn, &wait);
         if (!wait)
             break;
         st = vmo_freeze_backoff(wait, tries, &turn);

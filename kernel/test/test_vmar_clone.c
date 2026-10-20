@@ -76,6 +76,11 @@
  *       with the turn holds its first VMO frozen while it waits for the
  *       second's writer; another freezer that wants the first backs off,
  *       and everything goes on.
+ *   vmar_clone_turn_local
+ *       while another thread has the freeze turn, a clone and a child's
+ *       creation of VMOs that thread doesn't freeze go straight through:
+ *       the turn holds back only the freezes of its holder's VMOs (FZR,
+ *       FORK-REVIEW-KERNEL's finding FZR-1).
  *
  * Faults go through the real page-fault path: the test thread enters an
  * address space and copies to and from its user addresses, as a system
@@ -1489,8 +1494,9 @@ KTEST(vmar_clone_backs_off)
     bo_free(x);
 }
 
-/* The clone meets this thread's freeze turn at its first begin and waits
- * for the turn. With the turn it holds va frozen (a writer waits for it)
+/* The clone meets this thread's freeze turn at its first begin (the turn's
+ * claim on both VMOs, as a holder's try makes) and waits for the turn.
+ * With the turn it holds va frozen (a writer waits for it)
  * while it waits for vb's writer, which waits for this thread's freeze of
  * vb. This thread's next freeze, of va, backs off (the turn is the
  * clone's), it lets vb go, and everything goes on: no deadlock. */
@@ -1501,12 +1507,16 @@ KTEST(vmar_clone_turn_waits)
     bool turn = false;
     KT_EQ(vmo_freeze_backoff(x->v[0], 1000, &turn), OK);   /* past any try: the turn */
     KT_ASSERT(turn);
+    vmo_freeze_claim(x->v[0], true);
+    vmo_freeze_claim(x->v[1], true);
     struct thread *ct;
     bo_start(x, &ct);
     if (!bo_begun(x, 1))
         ktest_fail("vmar_clone_turn_waits: the clone never began");
     thread_sleep_ms(20);
     if (__atomic_load_n(&x->done, __ATOMIC_ACQUIRE)) {
+        vmo_freeze_claim(x->v[0], false);
+        vmo_freeze_claim(x->v[1], false);
         vmo_freeze_turn_end();
         bo_stop();
         ktest_fail("vmar_clone_turn_waits: the clone went on past another thread's turn");
@@ -1516,6 +1526,8 @@ KTEST(vmar_clone_turn_waits)
     KT_EQ(vmo_clone_begin(NULL, vb, &cf), OK);   /* with the turn: no writer, so it begins */
     struct fc_ctx wa = { .v = va }, wb = { .v = vb };
     struct thread *tb = start_waiter(&wb);
+    vmo_freeze_claim(x->v[0], false);
+    vmo_freeze_claim(x->v[1], false);
     vmo_freeze_turn_end();
     bool second = bo_begun(x, 3);   /* va again, then vb: waiting for vb's writer */
     thread_sleep_ms(10);
@@ -1553,5 +1565,47 @@ KTEST(vmar_clone_turn_waits)
     KT_EQ(word(bo_child(x, vb), 0), 7);   /* vb's writer went first */
     KT_EQ(word(bo_child(x, va), 0), 1);   /* va's writer waited for the clone */
     KT_EQ(word(va, 0), 7);
+    bo_free(x);
+}
+
+/* FZR-1: the turn holds back only the freezes its holder makes. With this
+ * thread holding the turn (and freezing nothing), a clone of two VMOs and
+ * a child's creation of a third, none of which it touches, go straight
+ * through. Under FZ's first rule both backed off at their first freeze and
+ * waited for the turn: every freeze in the system queued behind it. */
+KTEST(vmar_clone_turn_local)
+{
+    struct bo_ctx *x = bo_new();
+    struct vmo *u = mk(1);
+    bool turn = false;
+    KT_EQ(vmo_freeze_backoff(u, 1000, &turn), OK);   /* past any try: the turn */
+    KT_ASSERT(turn);
+    uint64_t backoffs = __atomic_load_n(&vmo_freeze_backoffs, __ATOMIC_RELAXED);
+    struct thread *ct;
+    bo_start(x, &ct);
+    bool cloned = set_within(&x->done, 500);
+    struct cc_ctx cc = { .p = mk(1) };
+    stamp(cc.p, 0, 3);
+    struct thread *cct = thread_create("kt-fz-child", cc_creator, &cc, PRIO_DEFAULT);
+    bool created = set_within(&cc.done, 500);
+    vmo_freeze_turn_end();
+    thread_join(ct);
+    thread_join(cct);
+    bo_stop();
+    kprintf("vmar_clone_turn_local: with another thread's turn, an unrelated clone %s, a "
+            "child's creation %s (%lu back-offs)\n",
+            cloned ? "went through" : "waited for the turn",
+            created ? "went through" : "waited for the turn",
+            __atomic_load_n(&vmo_freeze_backoffs, __ATOMIC_RELAXED) - backoffs);
+    KT_ASSERT(cloned);
+    KT_ASSERT(created);
+    KT_EQ(x->st, OK);
+    KT_EQ(aspace_check(x->dst), 2);
+    KT_EQ(word(x->r[0].child, 0), 1);
+    KT_EQ(cc.st, OK);
+    KT_EQ(word(cc.c, 0), 3);
+    put(cc.c);
+    put(cc.p);
+    put(u);
     bo_free(x);
 }

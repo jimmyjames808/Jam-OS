@@ -156,8 +156,10 @@ header's "Freezes and writers"), `aspace_clone` in `kernel/mm/aspace.c`.
   else's turn, a freezer waits for the **freeze turn**: one mutex for
   every VMO, which hands itself to its longest waiter once one has
   waited 1 ms. While a thread has the turn nobody else begins a freeze
-  anywhere (they back off and queue for it), and the holder's begins
-  wait for the VMO's writers instead of backing off.
+  of a VMO it claimed, the VMOs of its try (they back off and queue for
+  it; at first this was of any VMO: [FZR](#fzr-the-review-of-fz)'s
+  FZR-1), and the holder's begins wait for the VMO's writers instead of
+  backing off.
 
 **No deadlock.** What waits for what:
 
@@ -189,16 +191,16 @@ already), and ranks above a region lock and "vmo resize".
   for the freezes held then. Each is a clone's walk or a creation's
   sharing, which waits for nothing, or (the turn's) for the writers of a
   VMO not yet frozen, who wait only for freezes begun before that turn
-  began. So a write waits about two walks at most, however many freezers
-  come after it. A write that lets the lock go to make its page (a copy,
+  began. So a write waits about two walks at most for each page it
+  takes (FZR-3), however many freezers come after it. A write that lets the lock go to make its page (a copy,
   a fill) can meet a freeze begun meanwhile: it keeps that page across
   the wait and puts it in the hold that sees the freeze over, so that
   happens once per page it makes.
 - A clone or a creation: at most three back-offs, each a wait for one
   VMO's writers (bounded as above), then the turns queued before its own
   (the mutex's hand-off makes that a queue), then its own try, which
-  never backs off: its waits end once the freezes begun before it had
-  the turn have ended, and no other begins.
+  never backs off: its waits end once the freezes begun before its
+  claims have ended, and no other of its VMOs begins.
 
 **One instant, kept.** The try that completes begins every freeze before
 its one shootdown and ends them after it, as before; an earlier try
@@ -219,7 +221,8 @@ The rule covers creations the same way, so nothing more is needed.
 only when a writer outside the cloned address space waits on a VMO the
 clone copies (the source's own threads wait for its region lock and are
 never counted). `struct vmo` grows by 40 bytes (the queue and two
-counts).
+counts; 48 with FZR-1's claim: 856 bytes before, 904 now, all in
+kmalloc's 1,024-byte class, so no page more).
 
 **Tests** (`kernel/test/test_vmar_clone.c`; hooks `DBG_VMO_CLONE_BEGIN`
 and `DBG_VMAR_CLONE_WALKED`):
@@ -269,3 +272,148 @@ soak at 4 CPUs passed on its second try (+1,234 pages, +4,800 message
 bytes); the first hit the known watchdog panic in the serial driver
 (`fill_fifo_locked`) under a full PC. `ktest=vmo_child` at 4 CPUs, PASS
 (batch 20082924).
+
+## FZR: the review of FZ
+
+Track FZR (2026-10-20, from main 41a28b23): FZ's three commits (5858acee
+the queue per VMO, 008187b8 writers first, the back-offs, the turn and
+its tests, 36402d7d the notes above) read by an agent that wrote none of
+them, against [FZ notes](#fz-notes)' claims: writers counted while they
+wait, no freeze begins while one is counted, a clone or creation that
+meets one undoes its try and waits holding nothing, after three
+back-offs one freeze turn whose holder alone waits with a freeze held,
+one shootdown per completed clone, `ERR_CANCELED` from
+`vmo_create_child` and `vmar_clone`. Severity as in FR1's part above.
+
+Counts: **0 High, 1 Medium, 2 Low, 10 notes.**
+
+### Findings
+
+| # | Sev | Where | What is wrong | How to make it happen | Outcome |
+|---|---|---|---|---|---|
+| FZR-1 | Medium | `kernel/object/vmo.c:574` (freeze_begin) and `:594` (vmo_freeze_backoff), at 41a28b23 | While any thread has the freeze turn, every freeze of every VMO backs off (`t \|\| v->frozen_waiters`) and queues for the turn at once. A fork or a copy-on-write child's creation that shares nothing with the holder undoes its partial try (a shootdown), then waits for the holder's whole try and for every turn queued before its own (the 1 ms hand-off makes that a queue), and takes the turn itself, so the next newcomers queue behind it in turn. One program whose own forks meet writers (its turns) puts every fork and child creation in the system behind those turns, each as long as its walk, which it sizes; before FZ freezes of unrelated VMOs never met. | Thread A takes the turn (`vmo_freeze_backoff` past `FREEZE_TRIES`); thread B clones an address space mapping two VMOs A never touches, thread C makes a child of a third: both back off and finish only when A gives the turn back. | Fixed (c618496d): the holder **claims** the VMOs its try will freeze before it begins any (a clone's copied VMOs under the source's region lock, `clone_claim_all`; a creation's parent under "vmo resize") and releases them when the try is over (`vmo_freeze_claim`, `turn_claim`); only a freeze of a claimed VMO backs off and queues. The deadlock argument and the bounds are as before (only the holder waits with a freeze held; no freeze of its VMOs begins after its claims, so its waits end once the freezes begun before them end). ktest `vmar_clone_turn_local` (without the fix: "an unrelated clone waited for the turn, a child's creation waited for the turn", batch 20100553). |
+| FZR-2 | Low | `kernel/object/vmo.c` (`freeze_turn`) | After FZR-1 the turn is still one mutex: a freezer that needs it (three back-offs on its own VMOs, or a claim met) queues behind every turn in the system, unrelated ones too. Only freezers whose own VMOs are contended get there. | Two processes each forking with writers on their own VMOs: their turns alternate. | Not fixed: a turn per disjoint set of VMOs needs claims taken in one global order (waiting for a claim while holding others), a bigger change for a rare case. |
+| FZR-3 | Low | `kernel/object/vmo.c:1410` (write_bytes), likewise commit_pages (a pin, a kernel mapping) and decommit_pages | FZ notes' writer bound ("about two walks at most") is per page: a writer is counted only while it waits, not between its pages, so a freeze can begin between two pages and the next page waits for it. A write of n pages can wait about 2n walks: bounded, linear in a length the caller chooses. | A `vmo_write` of 64 pages while another process forks an address space mapping the VMO as a copy in a loop. | Docs: FZ notes' bound now says per page. No code change: counting a writer for its whole call would hold off every freeze of the VMO for as long as a write the caller sizes. |
+
+### Notes
+
+1. **No deadlock: the argument holds.** Checked, each with what it holds
+   while it waits: the turn is taken with only the new process's `setup`
+   mutex held (`process_clone_begin`, kernel/object/process.c:937) or
+   nothing (a creation), and is held over the source's region lock and
+   "vmo resize", never under them (a new lock class, "vmo freeze turn",
+   below "process setup"; no path takes the turn with a region lock or
+   "vmo resize" held: `vmo_create_child` and `aspace_clone` have only the
+   system calls as callers). A counted writer holds its fault's region
+   lock (never the source's: the clone holds that, so the source's own
+   faults wait for the lock uncounted), or a resize's "vmo resize" (which
+   no clone takes, and a creation takes before its freeze), or nothing
+   (`vmo_write`, decommit). `inflight` copies hold nothing and never
+   block: `vmo_write`'s buffer is the kernel's bounce buffer
+   (kernel/abi/sysc_vm.c:64), and get_page's only GET_WRITE caller is
+   write_bytes. No freezer waits for a pager (the walk shares present
+   pages, `window_set` only charges and makes tables), and no writer waits
+   for a pager while counted (the count is taken and dropped in one wait,
+   before the fill). Page allocation and `job_charge` never block. A
+   thread killed mid-back-off: every wait there is cancellable (the drain
+   wait, `mutex_lock_cancellable`, the holder's writer wait), the try was
+   already undone, and the turn and its claims are given back on the way
+   out. No freezer ever freezes one VMO twice in a try (the walk goes a
+   VMO at a time in vmaps order). Lock order: the crash tests (`crash2`)
+   and the full ktest run with the checker on.
+2. **A writer across two VMOs.** No single wait is on two VMOs: a write
+   waits only on the VMO it writes (a pager child's window source is a
+   pager VMO, never frozen), and a fault, a page of `vmo_write` or a
+   resize waits once (twice with a copy made meanwhile). A user store that
+   crosses a page boundary needs both entries writable at once: each
+   fault's wait is bounded, but a freeze between the two faults takes the
+   first entry's write bit again, so such an instruction has no fixed
+   bound on its faults, only in theory (the freeze must land between a
+   fault's return and the retry each time). The same before FZ.
+3. **A forker's bound holds:** at most three back-offs, each a wait for
+   one drain of one VMO's writers; then the turn's queue (the mutex hands
+   itself to its longest waiter once one has waited 1 ms,
+   kernel/sched/wait.c's mutex_pass_on, so a newcomer overtakes a waiter
+   for 1 ms at most); then its own try, which never backs off.
+4. **An undone try is undone.** Checked: the shootdown of its
+   write-protects comes before its freezes end (clone_try and share_pages
+   alike); its children are destroyed at once when their last reference
+   goes (kobject_unref runs the destroy before it returns), with their
+   pages, windows and charges, and the try's own charge (tables and
+   mapping structs) is given back, all before the back-off waits, so the
+   next try's charge doesn't fail on the last one's; `r[].child` is
+   cleared; the twins leave their VMOs' reverse maps (staging_free) and
+   the staging tree is new each try (FZ's own fix). Siblings looked for:
+   a creation's child is kept across tries, but a back-off (only
+   freeze_begin returns `ERR_SHOULD_WAIT`) comes before `window_set` and
+   share_pages touch it; neither the walk's other steps nor
+   `vmo_clone_share` return `ERR_SHOULD_WAIT`, so a try with the turn
+   can't reach vmo_freeze_backoff's `ASSERT(!*turn)`. What stays: the
+   write bits taken (note 10).
+5. **One instant holds** for a clone that completes after back-offs: its
+   try begins every freeze before its single shootdown and ends them
+   after it; the earlier tries' children are gone. A writer that kept its
+   page across the wait re-checks the slot in the hold that sees the
+   freeze over (`page_shared`, `fr.from == p`, the window), so a page
+   shared before the freeze is replaced by its copy and the child keeps
+   the original; nothing the parent writes after its wait reaches the
+   child (`vmar_clone_backs_off` and `_writer_bounded` check it).
+6. **`ERR_CANCELED` never reaches user code.** Only a cancel causes it
+   (thread_cancel: a kill, a replace ending the other threads, a dying
+   process's new thread), and a cancelled thread leaves at its return to
+   user mode (kernel/arch/x86_64/uentry.c:156) instead of returning. The
+   only in-kernel callers are the system calls; libjam's fork, posixfork
+   and the utests never see it. The ktests that cancel check it.
+7. **+40 bytes is right, and so are the wakes.** `struct vmo` measured
+   with the cross compiler: 856 bytes before FZ, 896 after (FZR-1's claim
+   makes 904), all in kmalloc's 1,024-byte class: no memory more per VMO.
+   The count's last writer out wakes the queue in the hold that drops it
+   to 0 (with `drains` moved on), which is what the holder's writer wait
+   and the drain wait sleep on; protect_end and write_done wake the same
+   queue, so those waiters also wake spuriously and look again.
+8. **The hooks compile out:** `DBG_HOOK` is `((void)(arg))` with `make
+   KTESTS=0` (kernel/include/jam/dbghook.h:66). Both are called with the
+   source's region lock held and no spinlock, as their comments say.
+9. **Between tries the source's region lock is free:** the forking
+   process's other threads can map, unmap and protect meanwhile. The try
+   that completes copies the address space as it is then (one instant
+   still), and a VMO named in the request that was unmapped meanwhile
+   makes the clone `ERR_BAD_STATE` (clone_count), as if the unmap came
+   before the call. libjam's fork holds the C library's locks around the
+   call (user/lib/fork.c:203, `prepare`), so only mappings made outside
+   the C library meet it. No change.
+10. **A back-off's cost falls partly on others.** A try write-protects the
+    writable entries of every address space mapping the pages it walked
+    (wrprotect_umaps_locked, kernel/object/vmo.c:2184), not only the
+    source's, and shoots them down; undone, it leaves them read-only, so
+    each such writer takes a fault, and one that faults before the dead
+    child is destroyed copies its page for nothing. At most
+    `FREEZE_TRIES` times per fork. No change.
+
+### Tests
+
+- `vmar_clone_turn_local` (new, with FZR-1's fix): this thread holds the
+  turn and claims nothing; a clone of two other VMOs and a child's
+  creation of a third each finish within 500 ms, the clone whole and the
+  child holding its parent's bytes.
+- `vmar_clone_turn_waits` (changed): the thread that takes the turn first
+  also claims the clone's two VMOs, as a holder's try does, and releases
+  them before it gives the turn back; the rest as before.
+
+**Without the fix** (dab550c9, the test on FZ's code, the PC, 4 CPUs,
+batch 20100553): `vmar_clone_turn_local` failed ("an unrelated clone
+waited for the turn, a child's creation waited for the turn").
+
+**On the branch** (the PC, `JAMOS_TIER=kernel`, batch 20101155): `make
+check`; the full ktest at 4 and at 8 CPUs; `ktest=vmar_clone loops=3` at
+4 and at 8; the lock checker's crash tests (`crash2`: lockorder,
+lockself, locknest, lockirq, mutexorder, mutexspin); posix-fork; all
+PASS. posix-run passed on its second try (the first: posixtest's
+`mempat.c:165` timing bound under a full PC). The init run and the soak at
+4 CPUs failed, twice each, on one utest only, `extfs_restart_deep` ("failed
+at a file made: `ERR_PEER_CLOSED`", line 1312), which fails the same way
+on main 41a28b23 without FZR (`utest only extfs_restart_deep 15` from the
+shell, two boots each: FZR batch 20105053, main batch 20110020, every boot
+failing within its first four rounds); everything else in them passed
+(815 utests in the other two init boots). Not this track's: DR's test,
+reported to the main session.
