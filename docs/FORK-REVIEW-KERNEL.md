@@ -409,7 +409,11 @@ Counts: **0 High, 1 Medium, 2 Low, 11 notes.**
     `vmar_clone_hostile_storm`; a B behind its A by more than one store
     still fails. Before the change `ktest=vmar_clone_writers_not_torn
     loops=300 load=16` failed at 4 and at 8 CPUs, each at a carry ("A
-    7168, B 6912", "A 57088, B 56832", batch 20112440).
+    7168, B 6912", "A 57088, B 56832", batch 20112440); after it, the
+    same at 4 and 8 and `ktest=vmar_clone_hostile_storm loops=100 load=16`
+    at 8 passed, with `make check`, the full ktest at 4 and 8 and the soak
+    at 4 CPUs (on its second try: the first failed
+    `pager_invalidate_many_mappings`'s timing bound), batch 20113422.
 
 ### Tests
 
