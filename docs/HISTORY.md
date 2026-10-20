@@ -175,6 +175,17 @@ Left, none on Chromium's path:
   fails the open that made the handle (`ERR_SHOULD_WAIT`). volumes takes
   everything at each event, so only utest's slow supervisor met it.
   Recommended: a put that waits a little for room.
+- **A directory a view lets a program walk through but not open** (found
+  after the push: ssh logins failed). The SSH server's `:ra` view shows
+  `etc/authorized_keys` and nothing else of etc, so `fs.opendir` of etc is
+  refused while its stat answers; DL2's `chdir` (an opendir) failed where
+  the text one had worked, and tinysshd-auth could not reach the keys.
+  libc's `dir_open` now makes such a directory a text description when no
+  read is asked of it (`chdir`, `O_PATH`) and its stat says it is one, as
+  before channels: every path from it is whole, judged by the view as
+  always (etc's other names stay hidden; etc lists nothing; a view that
+  hides etc whole refuses the stat too). utest `extfs_posix_view`
+  (posixtest's `--child-dirfd ra`) and `tools/ssh-test.sh` failed without it.
 - **DF, fat.** FatFs's relative paths (`FF_FS_RPATH`) would give channels by
   first cluster, with removal marks and no pin; built only if a FAT `/data`
   needs more than text (the owner's "later").

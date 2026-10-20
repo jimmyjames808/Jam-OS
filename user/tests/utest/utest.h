@@ -440,6 +440,8 @@ bool t_extfs_restart_wback(void);
 bool t_extfs_wpress(void);
 /* extfs_posix.c: posixtest's links section on an extfs volume (libc, U6). */
 bool t_extfs_posix(void);
+/* ... and libc's chdir through a view like the SSH server's `:ra` (DL2). */
+bool t_extfs_posix_view(void);
 /* extfs_watch.c: file watching on extfs (INOTIFY-PLAN's IE1 and IE2):
  * 2.2's rows, moves, views and a second process, the close rule, the
  * queue's bound and the caps; what a view hides, a watch moved out of its

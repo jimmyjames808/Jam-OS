@@ -274,6 +274,23 @@ static long text_open(struct path *p, uint32_t status, struct fd_desc **out)
     return r;
 }
 
+/* A directory a view lets us walk through but not open: the SSH server's
+ * `:ra` view of /data shows etc/authorized_keys and nothing else of etc,
+ * so fs.opendir of etc is refused while its stat answers (<fsview.h>'s
+ * hiding flags). An open with no read asked of it (O_PATH, chdir) is a
+ * text description then, once its stat says it is a directory, as before
+ * directory channels: every path from it is a whole one, which the view
+ * judges as it always did (etc's other names stay hidden, and it lists
+ * nothing). A view that hides the directory whole refuses the stat too. */
+static long walk_only(struct path *p, uint32_t status, struct fd_desc **out)
+{
+    struct path_info i;
+    long r = path_info(p, &i);
+    if (!r && !i.is_dir)
+        r = -ENOTDIR;
+    return r ? r : text_open(p, status, out);
+}
+
 long dir_open(struct path *p, uint32_t status, struct fd_desc **out)
 {
     if (p->where == PATH_MOUNT && (path_features(p) & FS_FEAT_DIRS)) {
@@ -285,6 +302,8 @@ long dir_open(struct path *p, uint32_t status, struct fd_desc **out)
             return chan_new(p, ch, id, volume, ff, status, out);
         if (st == ERR_INVALID_ARGS && p->nofollow)
             return -ELOOP;   /* FS_NOFOLLOW: a link as the last name */
+        if (st == ERR_ACCESS_DENIED && !(ff & FS_READ))
+            return walk_only(p, status, out);
         if (st != ERR_NO_RESOURCES && st != ERR_NOT_SUPPORTED)
             return path_err_read(p, st);   /* ERR_LINK_OUT: openat follows it */
         if (st == ERR_NO_RESOURCES)
