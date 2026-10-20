@@ -28,7 +28,7 @@ wait run: /data/pn is not allowed to run: `allow /data/pn` first
 wait st-e=126
 wait {prompt}
 send allow /data/px; echo st-$T=$?
-wait allow px: /data (read)? y/n
+wait allow px: /data (read), may run for a program approved for less (a deputy)? y/n
 type y
 wait allow: /data/px may run
 wait st-e=0
@@ -102,17 +102,17 @@ send cp /data/px /data/py && cp /data/px /data/pz && echo cp-$T-more
 wait 60 cp-e-more
 wait {prompt}
 send allow /data/py; echo st-$T=$?
-wait allow py: /data (read)? y/n
+wait allow py: /data (read), may run for a program approved for less (a deputy)? y/n
 type y
 wait st-e=0
 wait {prompt}
 send allow /data/pz; echo st-$T=$?
-wait allow pz: /data (read)? y/n
+wait allow pz: /data (read), may run for a program approved for less (a deputy)? y/n
 type y
 wait st-e=0
 wait {prompt}
 send allow /data/pq; echo st-$T=$?
-wait allow pq: /data (read)? y/n
+wait allow pq: /data (read), may run for a program approved for less (a deputy)? y/n
 type y
 wait st-e=0
 wait {prompt}
