@@ -20,7 +20,8 @@
  *   vmar_clone_writers_not_torn
  *       writers on every CPU write a counter to a page of VMO A, then to a
  *       page of VMO B, while clone after clone is made: no clone ever holds
- *       a B ahead of its A, and no writer ever loses a write.
+ *       a B ahead of its A (byte by byte: a store can be stopped between
+ *       two bytes, one_instant), and no writer ever loses a write.
  *   vmar_clone_storm
  *       maps, unmaps, protects, vmo_writes and decommits from other threads
  *       while clones are made: each clone is whole (aspace_check), each
@@ -443,6 +444,30 @@ struct nt_writer {
 #define NT_A BASE
 #define NT_B (BASE + 64 * PG)
 
+/* Every byte of z is p's or q's at its place. */
+static bool bytes_of(uint64_t z, uint64_t p, uint64_t q)
+{
+    for (unsigned i = 0; i < 64; i += 8) {
+        uint64_t m = 0xffull << i;
+        if ((z & m) != (p & m) && (z & m) != (q & m))
+            return false;
+    }
+    return true;
+}
+
+/* A child's words a and b of a writer that stores v to A, then v to B,
+ * held at one instant of the writer. Each store is copy_to_user, a `rep
+ * movsb`, which an interrupt can stop between two bytes: a clone's
+ * shootdown landing there leaves the bytes stored so far in the page the
+ * child now shares, and the rest fault and go to the parent's own copy.
+ * So the instant may fall inside a store: A part v and part v - 1 with B
+ * at v - 1, or A at v with B part v and part v - 1 (FORK-REVIEW-KERNEL's
+ * FZR note 11). A B behind its A by more than a store is still torn. */
+static bool one_instant(uint64_t a, uint64_t b)
+{
+    return bytes_of(a, b, b + 1) || bytes_of(b, a - 1, a);
+}
+
 static void nt_main(void *arg)
 {
     struct nt_writer *w = arg;
@@ -460,6 +485,12 @@ static void nt_main(void *arg)
 
 KTEST(vmar_clone_writers_not_torn)
 {
+    /* PGF's soak (seed 1005): B's store of 0x5afc00 stopped after its low
+     * byte, over 0x5afbff. A B 256 stores behind is torn. */
+    KT_ASSERT(one_instant(0x5afc00, 0x5afb00));
+    KT_ASSERT(one_instant(0x5afb00, 0x5afbff));   /* A's store stopped likewise */
+    KT_ASSERT(!one_instant(0x5afc05, 0x5afb05));
+    KT_ASSERT(!one_instant(7, 9));
     struct vmo *a = mk(NT_WRITERS), *b = mk(NT_WRITERS);
     struct aspace *src = new_as(NULL);
     map_at(src, a, 0, NT_WRITERS, NT_A, RW | CAN_RW);
@@ -483,7 +514,7 @@ KTEST(vmar_clone_writers_not_torn)
         struct vmo *cb = r[0].v == a ? r[1].child : r[0].child;
         for (unsigned k = 0; k < NT_WRITERS; k++) {
             uint64_t x = word(ca, k), y = word(cb, k);
-            if (x != y && x != y + 1)
+            if (!one_instant(x, y))
                 ktest_fail("clone %u, writer %u: A %lu, B %lu: torn", i, k, x, y);
             ahead += x != y;
         }
@@ -988,9 +1019,10 @@ static void hs_cloner(void *arg)
         if (st == OK) {
             KT_EQ(aspace_check(dst), 2);
             /* The child's B is never ahead of its A (the writer stores A
-             * first); its reads draw on the reserve, never the job. */
+             * first, byte by byte: one_instant); its reads draw on the
+             * reserve, never the job. */
             uint64_t x = uword(dst, HS_A), y = uword(dst, HS_B);
-            if (x != y && x != y + 1)
+            if (!one_instant(x, y))
                 ktest_fail("vmar_clone_hostile_storm: A %lu, B %lu: torn", x, y);
             __atomic_add_fetch(&s->ahead, x != y, __ATOMIC_RELAXED);
             KT_EQ(word(c, 0), x);

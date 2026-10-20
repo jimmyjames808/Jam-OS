@@ -285,7 +285,7 @@ back-offs one freeze turn whose holder alone waits with a freeze held,
 one shootdown per completed clone, `ERR_CANCELED` from
 `vmo_create_child` and `vmar_clone`. Severity as in FR1's part above.
 
-Counts: **0 High, 1 Medium, 2 Low, 10 notes.**
+Counts: **0 High, 1 Medium, 2 Low, 11 notes.**
 
 ### Findings
 
@@ -389,6 +389,31 @@ Counts: **0 High, 1 Medium, 2 Low, 10 notes.**
     each such writer takes a fault, and one that faults before the dead
     child is destroyed copies its page for nothing. At most
     `FREEZE_TRIES` times per fork. No change.
+11. **A store stopped between two bytes (the tests' own race).** PGF's
+    soak (seed 1005) failed `vmar_clone_writers_not_torn` with "A
+    5962752, B 5962496: torn": 0x5afc00 and 0x5afb00, B's store of
+    0x5afc00 over 0x5afbff stopped after its low byte. The ktests' writers
+    store with copy_to_user, a `rep movsb` (kernel/arch/x86_64/usercopy.S),
+    which an interrupt can stop between two bytes: the clone's shootdown
+    landing there leaves the bytes stored so far in the page the child now
+    shares, and the next byte faults, waits for the clone, and separates
+    the page (the parent's copy takes those bytes and the rest of the
+    store). The child holds the writer at one instant, inside a store: no
+    kernel fault, and nothing FZ or FZR changed (that test has one cloner
+    and its writers are the source's own threads: no back-off, no turn).
+    A program's aligned 8-byte store is one instruction and can't be
+    split; a `memcpy` caught half done by a fork is, as on Linux. The
+    tests' check asked each value whole; it now asks byte by byte
+    (`one_instant`: A part v and part v - 1 with B at v - 1, or A at v
+    with B part each), in `vmar_clone_writers_not_torn` and
+    `vmar_clone_hostile_storm`; a B behind its A by more than one store
+    still fails. Before the change `ktest=vmar_clone_writers_not_torn
+    loops=300 load=16` failed at 4 and at 8 CPUs, each at a carry ("A
+    7168, B 6912", "A 57088, B 56832", batch 20112440); after it, the
+    same at 4 and 8 and `ktest=vmar_clone_hostile_storm loops=100 load=16`
+    at 8 passed, with `make check`, the full ktest at 4 and 8 and the soak
+    at 4 CPUs (on its second try: the first failed
+    `pager_invalidate_many_mappings`'s timing bound), batch 20113422.
 
 ### Tests
 
